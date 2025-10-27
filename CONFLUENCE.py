@@ -1,696 +1,614 @@
+#!/usr/bin/env python3
+"""
+CONFLUENCE - Community Optimization Nexus for Leveraging
+Understanding of Environmental Networks in Computational Exploration
+
+Enhanced main entry point for the CONFLUENCE hydrological modeling platform.
+CONFLUENCE provides an integrated framework for:
+- Hydrological model setup and configuration
+- Multi-model comparison and evaluation  
+- Parameter optimization and calibration
+- Workflow management
+- Individual workflow step execution
+- Pour point-based domain setup
+- SLURM job submission for HPC environments
+
+Usage:
+    # Run complete workflow
+    python CONFLUENCE.py [--config CONFIG_PATH]
+    
+    # Run individual workflow steps
+    python CONFLUENCE.py --calibrate_model --run_benchmarking
+    
+    # Set up for a specific pour point
+    python CONFLUENCE.py --pour_point 51.1722/-115.5717 --domain_def delineate
+    
+    # Submit as SLURM job
+    python CONFLUENCE.py --calibrate_model --submit_job --job_account ees250064
+    
+    # Check status
+    python CONFLUENCE.py --status
+
+For more information, see the documentation at:
+    https://github.com/DarriEy/CONFLUENCE
+
+License: MIT License
+Version: 1.0.0
+"""
+
 from pathlib import Path
 import sys
-from pathlib import Path
+import yaml
 from datetime import datetime
-import subprocess
-import pandas as pd # type: ignore
-import rasterio # type: ignore
-import numpy as np # type: ignore
-import shutil
-from scipy import stats # type: ignore
-import argparse
+from typing import Dict, Any, List
 
-# Import CONFLUENCE utility functions
+# Add the parent directory to the path to enable imports
 sys.path.append(str(Path(__file__).resolve().parent))
 
-# Data and config management utilities 
-from utils.dataHandling_utils.data_utils import ProjectInitialisation, ObservedDataProcessor, BenchmarkPreprocessor, DataAcquisitionProcessor # type: ignore  
-from utils.dataHandling_utils.data_acquisition_utils import gistoolRunner, datatoolRunner # type: ignore
-from utils.dataHandling_utils.agnosticPreProcessor_util import forcingResampler, geospatialStatistics # type: ignore
-from utils.dataHandling_utils.variable_utils import VariableHandler # type: ignore
-from utils.configHandling_utils.config_utils import ConfigManager # type: ignore
-from utils.configHandling_utils.logging_utils import setup_logger, get_function_logger, log_configuration # type: ignore
-
-# Domain definition utilities
-from utils.geospatial_utils.geofabric_utils import GeofabricSubsetter, GeofabricDelineator, LumpedWatershedDelineator # type: ignore
-from utils.geospatial_utils.discretization_utils import DomainDiscretizer # type: ignore
-
-# Model specific utilities
-from utils.models_utils.mizuroute_utils import MizuRoutePreProcessor, MizuRouteRunner # type: ignore
-from utils.models_utils.summa_utils import SUMMAPostprocessor, SummaRunner, SummaPreProcessor_spatial # type: ignore
-from utils.models_utils.fuse_utils import FUSEPreProcessor, FUSERunner, FuseDecisionAnalyzer, FUSEPostprocessor # type: ignore
-from utils.models_utils.gr_utils import GRPreProcessor, GRRunner, GRPostprocessor # type: ignore
-from utils.models_utils.flash_utils import FLASH, FLASHPostProcessor # type: ignore
-from utils.models_utils.hype_utils import HYPEPreProcessor, HYPERunner, HYPEPostProcessor # type: ignore
-from utils.models_utils.mesh_utils import MESHPreProcessor, MESHRunner, MESHPostProcessor # type: ignore
-
-# Evaluation utilities
-from utils.evaluation_util.evaluation_utils import SensitivityAnalyzer, DecisionAnalyzer, Benchmarker # type: ignore
-from utils.optimization_utils.ostrich_util import OstrichOptimizer # type: ignore
-
-# Reporting utilities
-from utils.report_utils.reporting_utils import VisualizationReporter # type: ignore
-from utils.report_utils.result_vizualisation_utils import BenchmarkVizualiser, TimeseriesVisualizer # type: ignore
+# Import CONFLUENCE components
+from utils.project.project_manager import ProjectManager
+from utils.project.workflow_orchestrator import WorkflowOrchestrator
+from utils.project.logging_manager import LoggingManager
+from utils.data.data_manager import DataManager
+from utils.geospatial.domain_manager import DomainManager
+from utils.models.model_manager import ModelManager
+from utils.evaluation.analysis_manager import AnalysisManager
+from utils.optimization.optimization_manager import OptimizationManager
+from utils.cli.cli_argument_manager import CLIArgumentManager
 
 class CONFLUENCE:
-
     """
-    CONFLUENCE: Community Optimization and Numerical Framework for Large-domain Understanding of 
-    Environmental Networks and Computational Exploration
-
-    This class serves as the main interface for the CONFLUENCE hydrological modeling platform. 
-    It integrates various components for data management, model setup, optimization, 
-    uncertainty analysis, forecasting, visualization, and workflow management.
-
-    The platform is designed to facilitate comprehensive hydrological modeling and analysis
-    across various scales and regions, supporting multiple models and analysis techniques.
-
-    Attributes:
-        config (Dict[str, Any]): Configuration settings for the CONFLUENCE system
-        logger (logging.Logger): Logger for the CONFLUENCE system
-        data_manager (DataAcquisitionProcessor): Handles data acquisition and processing
-        model_manager (ModelSetupInitializer): Manages model setup and initialization
-        optimizer (OptimizationCalibrator): Handles model optimization and calibration
-        uncertainty_analyzer (UncertaintyQuantifier): Performs uncertainty analysis
-        forecaster (ForecastingEngine): Generates hydrological forecasts
-        visualizer (VisualizationReporter): Creates visualizations and reports
-        workflow_manager (WorkflowManager): Manages modeling workflows
-
+    Enhanced CONFLUENCE main class with comprehensive CLI support.
+    
+    This class serves as the central coordinator for all CONFLUENCE operations,
+    now with enhanced CLI capabilities including individual step execution,
+    pour point setup, SLURM job submission, and comprehensive workflow management.
     """
-
-    def __init__(self, config):
+    
+    def __init__(self, config_path: Path, config_overrides: Dict[str, Any] = None, debug_mode: bool = False):
         """
-        Initialize the CONFLUENCE system.
-
+        Initialize the CONFLUENCE system with configuration and CLI options.
+        
         Args:
-            config (Config): Configuration object containing optimization settings for the CONFLUENCE system
+            config_path: Path to the configuration file
+            config_overrides: Dictionary of configuration overrides from CLI
+            debug_mode: Whether to enable debug mode
         """
-        self.config_manager = ConfigManager(config)
-        self.config = self.config_manager.config
-        self.data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
-        self.domain_name = self.config.get('DOMAIN_NAME')
-        self.project_dir = self.data_dir / f"domain_{self.domain_name}"
-        self.evaluation_dir = self.project_dir / 'evaluation'
-        self.evaluation_dir.mkdir(parents=True, exist_ok=True)
-
-        self.setup_logging()
-       # Log configuration file using the original config path
-        log_dir = self.project_dir / f"_workLog_{self.domain_name}"
-        self.config_log_file = log_configuration(config, log_dir, self.domain_name)
-
-        self.project_initialisation = ProjectInitialisation(self.config, self.logger)
-        self.reporter = VisualizationReporter(self.config, self.logger)
-        self.variable_handler = VariableHandler(self.config, self.logger, 'ERA5', 'SUMMA')
-
-    def setup_logging(self):
-        log_dir = self.project_dir / f"_workLog_{self.config.get('DOMAIN_NAME')}"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = log_dir / f'confluence_general_{self.domain_name}_{current_time}.log'
-        self.logger = setup_logger('confluence_general', log_file)        
-
-    @get_function_logger
-    def run_workflow(self):
-        self.logger.info("Starting CONFLUENCE workflow")
+        self.config_path = config_path
+        self.debug_mode = debug_mode
+        self.config_overrides = config_overrides or {}
         
-        # Check if we should force run all steps
-        force_run = self.config.get('FORCE_RUN_ALL_STEPS', False)
+        # Load and merge configuration
+        self.config = self._load_and_merge_config()
         
-        # Define the workflow steps and their output checks
-        workflow_steps = [
-            # Initiate project
-            (self.setup_project, (self.project_dir / 'catchment').exists),
-            
-            # Geospatial domain definition
-            (self.create_pourPoint, lambda: (self.project_dir / "shapefiles" / "pour_point" / f"{self.domain_name}_pourPoint.shp").exists()),
-            (self.acquire_attributes, lambda: (self.project_dir / "attributes" / "elevation" / "dem" / f"domain_{self.domain_name}_elv.tif").exists()),
-            (self.define_domain, lambda: (self.project_dir / "shapefiles" / "river_basins" / f"{self.domain_name}_riverBasins_{self.config.get('DOMAIN_DEFINITION_METHOD')}.shp").exists()),
-            (self.plot_domain, lambda: (self.project_dir / "plots" / "domain" / 'domain_map.png').exists()),
-            (self.discretize_domain, lambda: (self.project_dir / "shapefiles" / "catchment" / f"{self.domain_name}_HRUs_{self.config.get('DOMAIN_DISCRETIZATION')}.shp").exists()),
-            (self.plot_discretised_domain, lambda: (self.project_dir / "plots" / "discretization" / f"domain_discretization_{self.config['DOMAIN_DISCRETIZATION']}.png").exists()),
-            
-            # Model agnostic data pre- processing
-            (self.process_observed_data, lambda: (self.project_dir / "observations" / "streamflow" / "preprocessed" / f"{self.config['DOMAIN_NAME']}_streamflow_processed.csv").exists()),
-            (self.acquire_forcings, lambda: (self.project_dir / "forcing" / "raw_data").exists()),
-            (self.model_agnostic_pre_processing, lambda: (self.project_dir / "forcing" / "basin_averaged_data").exists()),
-
-            # Modesl specific processing
-            (self.model_specific_pre_processing, lambda: (self.project_dir / "forcing" / f"{self.config['HYDROLOGICAL_MODEL'].split(',')[0]}_input").exists()),
-            (self.run_models, lambda: (self.project_dir / "simulations" / f"{self.config.get('EXPERIMENT_ID')}" / f"{self.config.get('HYDROLOGICAL_MODEL').split(',')[0]}").exists()),
-            (self.visualise_model_output, lambda: (self.project_dir / "plots" / "results" / "streamflow_comparison.png1").exists()),
-            (self.run_postprocessing, lambda: (self.project_dir / "results" / "postprocessed.csv").exists()),
-
-            # Result analysis and optimisation
-            (self.run_benchmarking, lambda: (self.project_dir / "evaluation" / "benchmark_scores.csv").exists()),
-            (self.calibrate_model, lambda: (self.project_dir / "optimisation" / f"{self.config.get('EXPERIMENT_ID')}_parallel_iteration_results.csv").exists()),
-            (self.run_decision_analysis, lambda: (self.project_dir / "optimisation " / f"{self.config.get('EXPERIMENT_ID')}_model_decisions_comparison.csv").exists()),  
-            (self.run_sensitivity_analysis, lambda: (self.project_dir / "plots" / "sensitivity_analysis" / "all_sensitivity_results.csv").exists()),
-        ]
+        # Initialize logging
+        self.logging_manager = LoggingManager(self.config, debug_mode=debug_mode)
+        self.logger = self.logging_manager.logger
         
-        for step_func, check_func in workflow_steps:
-            step_name = step_func.__name__
-            if force_run or not check_func():
-                self.logger.info(f"Running step: {step_name}")
-                try:
-                    step_func()
-                except Exception as e:
-                    self.logger.error(f"Error during {step_name}: {str(e)}")
-                    raise
-            else:
-                self.logger.info(f"Skipping step {step_name} as output already exists")
-
-        self.logger.info("CONFLUENCE workflow completed")
-
-    @get_function_logger
-    def setup_project(self):
-        self.logger.info(f"Setting up project for domain: {self.domain_name}")
+        # Initialize managers
+        self.managers = self._initialize_managers()
         
-        project_dir = self.project_initialisation.setup_project()
+        # Initialize workflow orchestrator
+        self.workflow_orchestrator = WorkflowOrchestrator(
+            self.managers, self.config, self.logger
+        )
         
-        self.logger.info(f"Project directory created at: {project_dir}")
-        self.logger.info(f"shapefiles directories created")
-        
-        return project_dir
-
-    @get_function_logger
-    def create_pourPoint(self):
-        if self.config.get('POUR_POINT_COORDS', 'default').lower() == 'default':
-            self.logger.info("Using user-provided pour point shapefile")
-            return None
-        
-        output_file = self.project_initialisation.create_pourPoint()
-        
-        if output_file:
-            self.logger.info(f"Pour point shapefile created successfully: {output_file}")
-        else:
-            self.logger.error("Failed to create pour point shapefile")
-        
-        return output_file
-
-    @get_function_logger
-    def acquire_attributes(self):
-        # Create attribute directories
-        dem_dir = self.project_dir / 'attributes' / 'elevation' / 'dem'
-        soilclass_dir = self.project_dir / 'attributes' / 'soilclass'
-        landclass_dir = self.project_dir / 'attributes' / 'landclass'
-
-        for dir in [dem_dir, soilclass_dir, landclass_dir]: dir.mkdir(parents = True, exist_ok = True)
-
-        # Initialize the gistool runner
-        gr = gistoolRunner(self.config, self.logger)
-
-        # Get lat and lon lims
-        bbox = self.config['BOUNDING_BOX_COORDS'].split('/')
-        latlims = f"{bbox[2]},{bbox[0]}"
-        lonlims = f"{bbox[1]},{bbox[3]}"
-
-        # Create the gistool command for elevation 
-        gistool_command_elevation = gr.create_gistool_command(dataset = 'MERIT-Hydro', output_dir = dem_dir, lat_lims = latlims, lon_lims = lonlims, variables = 'elv')
-        gr.execute_gistool_command(gistool_command_elevation)
-
-        #Acquire landcover data, first we define which years we should acquire the data for
-        start_year = 2001
-        end_year = 2020
-
-        #Select which MODIS dataset to use
-        modis_var = "MCD12Q1.061"
-
-        # Create the gistool command for landcover
-        gistool_command_landcover = gr.create_gistool_command(dataset = 'MODIS', output_dir = landclass_dir, lat_lims = latlims, lon_lims = lonlims, variables = modis_var, start_date=f"{start_year}-01-01", end_date=f"{end_year}-01-01")
-        gr.execute_gistool_command(gistool_command_landcover)
-
-        land_name = self.config['LAND_CLASS_NAME']
-        if land_name == 'default':
-            land_name = f"domain_{self.config['DOMAIN_NAME']}_land_classes.tif"
-
-        # if we selected a range of years, we need to calculate the mode of the landcover
-        if start_year != end_year:
-            input_dir = landclass_dir / modis_var
-            output_file = landclass_dir / land_name
+        self.logger.info(f"CONFLUENCE initialized with config: {config_path}")
+        if self.config_overrides:
+            self.logger.info(f"Configuration overrides applied: {list(self.config_overrides.keys())}")
     
-            self.calculate_landcover_mode(input_dir, output_file, start_year, end_year)
-
-        # Create the gistool command for soil classes
-        gistool_command_soilclass = gr.create_gistool_command(dataset = 'soil_class', output_dir = soilclass_dir, lat_lims = latlims, lon_lims = lonlims, variables = 'soil_classes')
-        gr.execute_gistool_command(gistool_command_soilclass)
-
-
-    @get_function_logger
-    def define_domain(self):
-        domain_method = self.config.get('DOMAIN_DEFINITION_METHOD')
+    def _load_and_merge_config(self) -> Dict[str, Any]:
+        """Load configuration file and apply CLI overrides."""
+        with open(self.config_path, 'r') as f:
+            config = yaml.safe_load(f)
         
-        if domain_method == 'subset':
-            self.subset_geofabric(work_log_dir=self.data_dir / f"domain_{self.domain_name}" / f"shapefiles/_workLog")
-        elif domain_method == 'lumped':
-            self.delineate_lumped_watershed(work_log_dir=self.data_dir / f"domain_{self.domain_name}" / f"shapefiles/_workLog")
-        elif domain_method == 'delineate':
-            self.delineate_geofabric(work_log_dir=self.data_dir / f"domain_{self.domain_name}" / f"shapefiles/_workLog")
-        else:
-            self.logger.error(f"Unknown domain definition method: {domain_method}")
-
-    @get_function_logger
-    def plot_domain(self):
-        self.logger.info("Creating domain visualization...")
-        domain_plot = self.reporter.plot_domain()
-        if domain_plot:
-            self.logger.info(f"Domain visualization created: {domain_plot}")
-        else:
-            self.logger.warning("Could not create domain visualization")
-
-    @get_function_logger
-    def discretize_domain(self):
-        domain_method = self.config.get('DOMAIN_DEFINITION_METHOD')
-        domain_discretizer = DomainDiscretizer(self.config, self.logger)
-        hru_shapefile = domain_discretizer.discretize_domain()
-
-        if isinstance(hru_shapefile, pd.Series) or isinstance(hru_shapefile, pd.DataFrame):
-            if not hru_shapefile.empty:
-                self.logger.info(f"Domain discretized successfully. HRU shapefile(s):")
-                for index, shapefile in hru_shapefile.items():
-                    self.logger.info(f"  {index}: {shapefile}")
-            else:
-                self.logger.error("Domain discretization failed. No shapefiles were created.")
-        elif hru_shapefile:
-            self.logger.info(f"Domain discretized successfully. HRU shapefile: {hru_shapefile}")
-        else:
-            self.logger.error("Domain discretization failed.")
-
-        self.logger.info(f"Domain to be defined using method {domain_method}")
-
-    @get_function_logger
-    def plot_discretised_domain(self):
-        discretization_method = self.config.get('DOMAIN_DISCRETIZATION')
-        self.logger.info("Creating discretization visualization...")
-        discretization_plot = self.reporter.plot_discretized_domain(discretization_method)
-        if discretization_plot:
-            self.logger.info(f"Discretization visualization created: {discretization_plot}")
-        else:
-            self.logger.warning("Could not create discretization visualization")
-
-    @get_function_logger
-    def acquire_forcings(self):
-        # Initialize datatoolRunner class
-        dr = datatoolRunner(self.config, self.logger)
-
-        # Data directory
-        raw_data_dir = self.project_dir / 'forcing' / 'raw_data'
-
-        # Make sure the directory exists
-        raw_data_dir.mkdir(parents = True, exist_ok = True)
-
-        # Get lat and lon lims
-        bbox = self.config['BOUNDING_BOX_COORDS'].split('/')
-        latlims = f"{bbox[2]},{bbox[0]}"
-        lonlims = f"{bbox[1]},{bbox[3]}"
-
-        # Create the gistool command
-        variables = self.config['FORCING_VARIABLES']
-        if variables == 'default':
-            variables = self.variable_handler.get_dataset_variables(dataset = self.config['FORCING_DATASET'])
-        datatool_command = dr.create_datatool_command(dataset = self.config['FORCING_DATASET'], output_dir = raw_data_dir, lat_lims = latlims, lon_lims = lonlims, variables = variables, start_date = self.config['EXPERIMENT_TIME_START'], end_date = self.config['EXPERIMENT_TIME_END'])
-        dr.execute_datatool_command(datatool_command)
-
-    @get_function_logger
-    def model_agnostic_pre_processing(self):
-        # Data directoris
-        raw_data_dir = self.project_dir / 'forcing' / 'raw_data'
-        basin_averaged_data = self.project_dir / 'forcing' / 'basin_averaged_data'
-        catchment_intersection_dir = self.project_dir / 'shapefiles' / 'catchment_intersection'
-
-        # Make sure the new directories exists
-        basin_averaged_data.mkdir(parents = True, exist_ok = True)
-        catchment_intersection_dir.mkdir(parents = True, exist_ok = True)
-
-         # Initialize geospatialStatistics class
-        gs = geospatialStatistics(self.config, self.logger)
-
-        # Run resampling
-        gs.run_statistics()
+        # Apply overrides
+        if self.config_overrides:
+            config.update(self.config_overrides)
         
-        # Initialize forcingReampler class
-        fr = forcingResampler(self.config, self.logger)
-
-        # Run resampling
-        fr.run_resampling()
-
-        # Prepare run the MAF Orchestrator
-        if 'MESH' in self.config.get('HYDROLOGICAL_MODEL').split(',') or 'HYPE' in self.config.get('HYDROLOGICAL_MODEL').split(','):
-            dap = DataAcquisitionProcessor(self.config, self.logger)
-            dap.run_data_acquisition()
-       
-    @get_function_logger
-    def process_observed_data(self):
-        self.logger.info("Processing observed data")
-        observed_data_processor = ObservedDataProcessor(self.config, self.logger)
-
+        return config
+    
+    def _initialize_managers(self) -> Dict[str, Any]:
+        """Initialize all manager components."""
         try:
-            observed_data_processor.process_streamflow_data()
-            self.logger.info("Observed data processing completed successfully")
+            return {
+                'project': ProjectManager(self.config, self.logger),
+                'domain': DomainManager(self.config, self.logger),
+                'data': DataManager(self.config, self.logger),
+                'model': ModelManager(self.config, self.logger),
+                'analysis': AnalysisManager(self.config, self.logger),
+                'optimization': OptimizationManager(self.config, self.logger),
+            }
         except Exception as e:
-            self.logger.error(f"Error during observed data processing: {str(e)}")
-            raise
-
-    @get_function_logger
-    def model_specific_pre_processing(self):
-
-        for model in self.config.get('HYDROLOGICAL_MODEL').split(','):
-
-            # Data directoris
-            model_input_dir = self.project_dir / "forcing" / f"{model}_input"
-
-            # Make sure the new directories exists
-            model_input_dir.mkdir(parents = True, exist_ok = True)
-
-            if model == 'SUMMA':
-                ssp = SummaPreProcessor_spatial(self.config, self.logger)
-                ssp.run_preprocessing()
-
-                mp = MizuRoutePreProcessor(self.config,self.logger)
-                mp.run_preprocessing()
-
-            elif model == 'GR':
-                gpp = GRPreProcessor(self.config, self.logger)
-                gpp.run_preprocessing()
-
-            elif model == 'FUSE':
-                fpp = FUSEPreProcessor(self.config, self.logger)
-                fpp.run_preprocessing()
-
-            elif model == 'HYPE':
-                hpp = HYPEPreProcessor(self.config, self.logger)
-                hpp.run_preprocessing()
-
-            elif model == 'MESH':
-                mpp = MESHPreProcessor(self.config, self.logger)
-                mpp.run_preprocessing() 
-
-
-    @get_function_logger
-    def run_models(self):
-        self.logger.info("Starting model runs")
-        
-        for model in self.config.get('HYDROLOGICAL_MODEL').split(','):
-            if model == 'SUMMA':
-                summa_runner = SummaRunner(self.config, self.logger)
-                mizuroute_runner = MizuRouteRunner(self.config, self.logger)
-
-                try:
-                    summa_runner.run_summa()
-                    if self.config.get('DOMAIN_DEFINITION_METHOD') != 'lumped':
-                        mizuroute_runner.run_mizuroute()
-                    self.logger.info("SUMMA/MIZUROUTE model runs completed successfully")
-                except Exception as e:
-                    self.logger.error(f"Error during SUMMA/MIZUROUTE model runs: {str(e)}")
-
-            elif model == 'FLASH':
-                try:
-                    flash_model = FLASH(self.config, self.logger)
-                    flash_model.run_flash()
-                    self.logger.info("FLASH model run completed successfully")
-                except Exception as e:
-                    self.logger.error(f"Error during FLASH model run: {str(e)}")
-
-            elif model == 'FUSE':
-                try:
-                    fr = FUSERunner(self.config, self.logger)
-                    fr.run_fuse()
-                except Exception as e:
-                    self.logger.error(f"Error during FUSE model run: {str(e)}")
-
-            elif model == 'GR':
-                try:
-                    gr = GRRunner(self.config, self.logger)
-                    gr.run_gr()
-                except Exception as e:
-                    self.logger.error(f"Error during GR model run: {str(e)}")
-            
-            elif model == 'HYPE':
-                try:
-                    hr = HYPERunner(self.config, self.logger)
-                    hr.run_hype()
-                except Exception as e:
-                    self.logger.error(f"Error during HYPE model run: {str(e)}")   
-
-            elif model == 'MESH':
-                mr = MESHRunner(self.config, self.logger)
-                mr.run_MESH()   
-
-            else:
-                self.logger.error(f"Unknown hydrological model: {self.config.get('HYDROLOGICAL_MODEL')}")
-
-        self.logger.info("Model runs completed")
-
-    @get_function_logger
-    def visualise_model_output(self):
-        
-        # Plot streamflow comparison
-        self.logger.info('Starting model output visualisation')
-        for model in self.config.get('HYDROLOGICAL_MODEL').split(','):
-            visualizer = VisualizationReporter(self.config, self.logger)
-
-            if model == 'SUMMA':
-                visualizer.plot_summa_outputs(self.config['EXPERIMENT_ID'])
-                if self.config.get('DOMAIN_DEFINITION_METHOD') == 'lumped':
-                    plot_file = visualizer.plot_lumped_streamflow_simulations_vs_observations(model_outputs, obs_files)
-                else:
-                    visualizer.update_sim_reach_id() # Find and update the sim reach id based on the project pour point
-                    model_outputs = [
-                        (f"{model}", str(self.project_dir / "simulations" / self.config['EXPERIMENT_ID'] / "mizuRoute" / f"{self.config['EXPERIMENT_ID']}*.nc"))
-                    ]
-                    obs_files = [
-                        ('Observed', str(self.project_dir / "observations" / "streamflow" / "preprocessed" / f"{self.config.get('DOMAIN_NAME')}_streamflow_processed.csv"))
-                    ]
-                    plot_file = visualizer.plot_streamflow_simulations_vs_observations(model_outputs, obs_files)
-
-            elif model == 'FUSE':
-                model_outputs = [
-                    ("FUSE", str(self.project_dir / "simulations" / self.config['EXPERIMENT_ID'] / "FUSE" / f"{self.config['DOMAIN_NAME']}_{self.config['EXPERIMENT_ID']}_runs_best.nc"))
-                ]
-                obs_files = [
-                    ('Observed', str(self.project_dir / "observations" / "streamflow" / "preprocessed" / f"{self.config.get('DOMAIN_NAME')}_streamflow_processed.csv"))
-                ]
-                plot_file = visualizer.plot_fuse_streamflow_simulations_vs_observations(model_outputs, obs_files)
-
-            elif model == 'GR':
-                pass
-
-            elif model == 'FLASH':
-                pass
-
-    @get_function_logger  
-    def run_benchmarking(self):
-        # Preprocess data for benchmarking
-        preprocessor = BenchmarkPreprocessor(self.config, self.logger)
-        benchmark_data = preprocessor.preprocess_benchmark_data(f"{self.config['CALIBRATION_PERIOD'].split(',')[0]}", f"{self.config['EVALUATION_PERIOD'].split(',')[1]}")
-
-        # Run benchmarking
-        benchmarker = Benchmarker(self.config, self.logger)
-        benchmark_results = benchmarker.run_benchmarking()
-
-        bv = BenchmarkVizualiser(self.config, self.logger)
-        bv.visualize_benchmarks(benchmark_results)
-
-    @get_function_logger    
-    def run_postprocessing(self):
-        for model in self.config.get('HYDROLOGICAL_MODEL').split(','):
-            if model == 'FUSE':
-                fpp = FUSEPostprocessor(self.config, self.logger)
-                results_file = fpp.extract_streamflow()
-            elif model == 'GR':
-                gpp = GRPostprocessor(self.config, self.logger)
-                results_file = gpp.extract_streamflow()
-            elif model == 'SUMMA':
-                spp = SUMMAPostprocessor(self.config, self.logger)
-                results_file = spp.extract_streamflow()
-            elif model == 'FLASH':
-                fpp = FLASHPostProcessor(self.config, self.logger)
-                results_file = fpp.extract_streamflow()
-            elif model == 'HYPE':
-                hpp = HYPEPostProcessor(self.config, self.logger)
-                results_file = hpp.extract_results()
-            elif model == 'MESH':
-                mpp = MESHPostProcessor(self.config, self.logger)
-                results_file = mpp.extract_streamflow() 
-            else:
-                pass
-
-        tv = TimeseriesVisualizer(self.config, self.logger)
-        metrics_df = tv.create_visualizations()
-            
-
-    @get_function_logger
-    def calibrate_model(self):
-        # Calibrate the model using specified method and objectives
+            if hasattr(self, 'logger'):
+                self.logger.error(f"Failed to initialize managers: {str(e)}")
+            raise RuntimeError(f"Manager initialization failed: {str(e)}")
+    
+    def run_workflow(self) -> None:
+        """Execute the complete CONFLUENCE workflow."""
         try:
-            for model in self.config.get('HYDROLOGICAL_MODEL').split(','):
-                if model == 'SUMMA':
-                    if self.config.get('OPTMIZATION_ALOGORITHM') == 'OSTRICH':
-                        self.run_ostrich_optimization()
+            start_time = datetime.now()
+            self.logger.info("Starting complete CONFLUENCE workflow execution")
+            
+            # Execute the full workflow
+            self.workflow_orchestrator.run_workflow()
+            
+            # Create run summary
+            end_time = datetime.now()
+            status = self.workflow_orchestrator.get_workflow_status()
+            self.logging_manager.create_run_summary(start_time, end_time, status)
+            
+            self.logger.info("Complete CONFLUENCE workflow execution completed")
+            
+        except Exception as e:
+            self.logger.error(f"Workflow execution failed: {str(e)}")
+            raise RuntimeError(f"Workflow execution error: {str(e)}")
+        
+    def run_individual_steps(self, step_names: List[str]) -> None:
+        """
+        Execute specific workflow steps.
+        
+        Args:
+            step_names: List of step names to execute
+        """
+        try:
+            start_time = datetime.now()
+            self.logger.info(f"Starting individual step execution: {', '.join(step_names)}")
+            
+            # Get the complete workflow definition
+            workflow_steps = self.workflow_orchestrator.define_workflow_steps()
+            
+            # Create a mapping from function names to workflow steps
+            step_name_to_function = {}
+            
+            for step_item in workflow_steps:
+                try:
+                    # Handle variable tuple lengths safely
+                    if isinstance(step_item, (tuple, list)) and len(step_item) >= 2:
+                        step_func = step_item[0]
+                        check_func = step_item[1] 
+                        # Ignore any additional elements beyond the first 2
+                        
+                        if hasattr(step_func, '__name__'):
+                            function_name = step_func.__name__
+                            step_name_to_function[function_name] = (step_func, check_func)
+                            self.logger.debug(f"Mapped workflow function: {function_name}")
+                        else:
+                            self.logger.warning(f"Step function does not have __name__ attribute: {step_func}")
                     else:
-                        self.run_parallel_optimization()
-                else:
-                    pass
-        except Exception as e:
-            self.logger.error(f"Error during model calibration: {str(e)}")
-            return None
-
-    @get_function_logger  
-    def run_sensitivity_analysis(self):
-        self.logger.info("Starting sensitivity analysis")
-        try:
-
-            for model in self.config.get('HYDROLOGICAL_MODEL').split(','):
-                if model == 'SUMMA':
-                    sensitivity_analyzer = SensitivityAnalyzer(self.config, self.logger)
-                    results_file = self.project_dir / "optimisation" / f"{self.config.get('EXPERIMENT_ID')}_parallel_iteration_results.csv"
-                    
-                    if not results_file.exists():
-                        self.logger.error(f"Calibration results file not found: {results_file}")
-                        return
-                    
-                    if self.config.get('RUN_SENSITIVITY_ANALYSIS', True) == True:
-                        sensitivity_results = sensitivity_analyzer.run_sensitivity_analysis(results_file)
-
-                    sensitivity_results = sensitivity_analyzer.run_sensitivity_analysis(results_file)
-                    self.logger.info("Sensitivity analysis completed")
-                    return sensitivity_results
-                else:
-                    pass
- 
-        except Exception as e:
-            self.logger.error(f"Error during sensitivity analysis: {str(e)}")
-            return None
-                    
-    @get_function_logger  
-    def run_decision_analysis(self):
-        self.logger.info("Starting decision analysis")
-
-        for model in self.config.get('HYDROLOGICAL_MODEL').split(','):
-            if model == 'SUMMA':
-                decision_analyzer = DecisionAnalyzer(self.config, self.logger)
-                
-                results_file, best_combinations = decision_analyzer.run_full_analysis()
-                
-                self.logger.info("Decision analysis completed")
-                self.logger.info(f"Results saved to: {results_file}")
-                self.logger.info("Best combinations for each metric:")
-                for metric, data in best_combinations.items():
-                    self.logger.info(f"  {metric}: score = {data['score']:.3f}")
-
-            elif model == 'FUSE':
-                FUSE_decision_analyser = FuseDecisionAnalyzer(self.config, self.logger)
-                FUSE_decision_analyser.run_decision_analysis()
+                        self.logger.warning(f"Unexpected step format: {step_item} (type: {type(step_item)}, length: {len(step_item) if hasattr(step_item, '__len__') else 'unknown'})")
+                        
+                except Exception as e:
+                    self.logger.error(f"Error processing workflow step {step_item}: {str(e)}")
+                    continue
             
-            else:
-                pass
-
+            # Create mapping from CLI step names to actual function names
+            cli_to_function_map = {
+                'setup_project': 'setup_project',
+                'create_pour_point': 'create_pour_point',
+                'acquire_attributes': 'acquire_attributes',
+                'define_domain': 'define_domain',
+                'discretize_domain': 'discretize_domain',
+                'setup_model': 'preprocess_models',  # Maps to actual function name
+                'run_model': 'run_models',           # Fixed: maps to plural function name
+                'calibrate_model': 'calibrate_model', # Direct mapping
+                'run_emulation': 'run_emulation',
+                'run_benchmarking': 'run_benchmarking',
+                'run_decision_analysis': 'run_decision_analysis',
+                'run_sensitivity_analysis': 'run_sensitivity_analysis',
+                'postprocess_results': 'postprocess_results',
+                # Additional mappings for data processing steps
+                'process_observed_data': 'process_observed_data',
+                'acquire_forcings': 'acquire_forcings',
+                'model_agnostic_preprocessing': 'run_model_agnostic_preprocessing',
+                'model_specific_preprocessing': 'preprocess_models',
+            }
+            
+            self.logger.info(f"Available workflow functions: {list(step_name_to_function.keys())}")
+            
+            # Execute requested steps
+            for step_name in step_names:
+                if step_name in cli_to_function_map:
+                    function_name = cli_to_function_map[step_name]
+                    
+                    if function_name in step_name_to_function:
+                        step_function, check_function = step_name_to_function[function_name]
+                        
+                        self.logger.info(f"Executing step: {step_name} -> {function_name}")
+                        
+                        # FORCE RUN: Skip completion checks for individual steps
+                        # When someone explicitly requests a step, they want it to run
+                        self.logger.info(f"Individual step mode: forcing execution of {step_name} (skipping completion check)")
+                        
+                        # Execute the step
+                        try:
+                            step_function()
+                            self.logger.info(f"Step {step_name} completed successfully")
+                        except Exception as e:
+                            self.logger.error(f"Step {step_name} failed: {str(e)}")
+                            if self.config.get('STOP_ON_ERROR', True):
+                                raise
+                    else:
+                        self.logger.warning(f"Function {function_name} not found in workflow for step {step_name}")
+                        self.logger.info(f"Available functions: {list(step_name_to_function.keys())}")
+                        
+                        # Try to find close matches
+                        possible_matches = [name for name in step_name_to_function.keys() 
+                                        if step_name.replace('_', '') in name.replace('_', '') or
+                                            name.replace('_', '') in step_name.replace('_', '')]
+                        if possible_matches:
+                            self.logger.info(f"Possible matches: {possible_matches}")
+                else:
+                    self.logger.warning(f"Unknown step: {step_name}")
+                    self.logger.info(f"Available steps: {', '.join(cli_to_function_map.keys())}")
+            
+            end_time = datetime.now()
+            self.logger.info(f"Individual step execution completed in {end_time - start_time}")
+            
+        except Exception as e:
+            self.logger.error(f"Individual step execution failed: {str(e)}")
+            import traceback
+            self.logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise RuntimeError(f"Step execution error: {str(e)}")
     
-    @get_function_logger
-    def subset_geofabric(self):
-        self.logger.info("Starting geofabric subsetting process")
-
-        # Create GeofabricSubsetter instance
-        subsetter = GeofabricSubsetter(self.config, self.logger)
+    def setup_pour_point_workflow(self, coordinates: str, domain_def_method: str) -> None:
+        """
+        Set up and run a workflow for a specific pour point.
         
+        Args:
+            coordinates: Pour point coordinates in "lat/lon" format
+            domain_def_method: Domain definition method to use
+        """
         try:
-            subset_basins, subset_rivers = subsetter.subset_geofabric()
-            self.logger.info("Geofabric subsetting completed successfully")
-            return subset_basins, subset_rivers
+            self.logger.info(f"Setting up pour point workflow for {coordinates}")
+            self.logger.info(f"Using domain definition method: {domain_def_method}")
+            
+            # The configuration has already been updated with pour point coordinates
+            # Run the key steps for pour point setup
+            essential_steps = [
+                'setup_project',
+                'create_pour_point',
+                'define_domain',
+                'discretize_domain'
+            ]
+            
+            self.logger.info("Running essential steps for pour point setup")
+            self.run_individual_steps(essential_steps)
+            
+            self.logger.info("Pour point workflow setup completed")
+            self.logger.info("You can now run additional steps like --acquire_attributes, --setup_model, etc.")
+            
         except Exception as e:
-            self.logger.error(f"Error during geofabric subsetting: {str(e)}")
-            return None
+            self.logger.error(f"Pour point workflow setup failed: {str(e)}")
+            raise RuntimeError(f"Pour point setup error: {str(e)}")
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get the current status of the CONFLUENCE system."""
+        return {
+            'config_valid': bool(self.config),
+            'managers_initialized': all(self.managers.values()),
+            'workflow_status': self.workflow_orchestrator.get_workflow_status(),
+            'domain': self.config.get('DOMAIN_NAME'),
+            'experiment': self.config.get('EXPERIMENT_ID'),
+            'config_path': str(self.config_path),
+            'debug_mode': self.debug_mode
+        }
 
-    @get_function_logger
-    def delineate_lumped_watershed(self):
-        self.logger.info("Starting geofabric lumped delineation")
+
+def execute_confluence_plan(plan: Dict[str, Any], config_path: Path) -> None:
+    """
+    Execute CONFLUENCE based on the CLI execution plan including SLURM job submission.
+    
+    Args:
+        plan: Execution plan from CLI argument manager
+        config_path: Path to configuration file
+    """
+    mode = plan['mode']
+    config_overrides = plan.get('config_overrides', {})
+    settings = plan.get('settings', {})
+    
+    cli_manager = CLIArgumentManager()
+    
+    # Handle SLURM job submission mode FIRST
+    if mode == 'slurm_job':
+        print("SLURM job submission mode detected")
+        
+        # For SLURM jobs, we might need minimal CONFLUENCE instance for config validation
+        confluence_instance = None
+        if not settings.get('dry_run', False):
+            try:
+                # Initialize minimal CONFLUENCE instance for config access
+                confluence_instance = CONFLUENCE(
+                    config_path=config_path,
+                    config_overrides=config_overrides,
+                    debug_mode=settings.get('debug', False)
+                )
+                print(f"Loaded configuration from: {config_path}")
+                
+                # Update execution plan with config file path
+                plan['config_file'] = str(config_path)
+                
+            except Exception as e:
+                print(f"Warning: Could not initialize CONFLUENCE instance: {e}")
+                print("Continuing with SLURM job submission anyway...")
+                # Still set config file path for the job
+                plan['config_file'] = str(config_path)
+        else:
+            plan['config_file'] = str(config_path)
+        
+        # Submit SLURM job
+        success = cli_manager.handle_slurm_job_submission(plan, confluence_instance)
+        sys.exit(0 if success else 1)
+    
+    # Handle binary management operations
+    elif mode == 'binary_management':
+        binary_ops = plan.get('binary_operations', {})
+        
+        # For binary operations, we may or may not need a CONFLUENCE instance
+        confluence_instance = None
         try:
-            delineator = LumpedWatershedDelineator(self.config, self.logger)
-            self.logger.info('Geofabric delineation completed successfully')
-            return delineator.delineate_lumped_watershed()
+            confluence_instance = CONFLUENCE(
+                config_path=config_path,
+                config_overrides=config_overrides,
+                debug_mode=settings.get('debug', False)
+            )
         except Exception as e:
-            self.logger.error(f"Error during geofabric delineation: {str(e)}")
-            return None
+            print(f"Could not initialize CONFLUENCE instance: {str(e)}")
+            print("   Proceeding with binary operations without CONFLUENCE instance...")
+        
+        if binary_ops.get('validate_binaries', False):
+            cli_manager.validate_binaries(confluence_instance)
+        
+        if binary_ops.get('get_executables') is not None:
+            specific_tools = binary_ops.get('get_executables')
+            force_install = binary_ops.get('force_install', False)
+            dry_run = settings.get('dry_run', False)
+            
+            # If empty list, install all tools
+            if isinstance(specific_tools, list) and len(specific_tools) == 0:
+                specific_tools = None
+            
+            cli_manager.get_executables(
+                specific_tools=specific_tools,
+                confluence_instance=confluence_instance,
+                force=force_install,
+                dry_run=dry_run
+            )
+        
+        print("Binary management completed successfully")
+        return
 
-    @get_function_logger
-    def delineate_geofabric(self):
-        self.logger.info("Starting geofabric delineation")
+    # Handle management operations
+    elif mode == 'management':
+        ops = plan['management_operations']
+        
+        # Operations that don't need CONFLUENCE instance
+        if ops['list_templates']:
+            cli_manager.list_templates()
+        
+        if ops['update_config']:
+            cli_manager.update_config(ops['update_config'])
+        
+        if ops['validate_environment']:
+            cli_manager.validate_environment()
+        
+        # Operations that need CONFLUENCE instance
+        confluence = None
+        if ops['workflow_status'] or ops['resume_from'] or ops['clean']:
+            try:
+                confluence = CONFLUENCE(
+                    config_path=config_path,
+                    config_overrides=config_overrides,
+                    debug_mode=settings.get('debug', False)
+                )
+            except Exception as e:
+                print(f"Could not initialize CONFLUENCE: {str(e)}")
+                if ops['workflow_status'] or ops['resume_from']:
+                    print("Cannot perform workflow operations without valid configuration")
+                    return
+        
+        if ops['workflow_status']:
+            status = cli_manager.get_detailed_workflow_status(confluence)
+            cli_manager.print_detailed_workflow_status(status)
+        
+        if ops['resume_from']:
+            steps = cli_manager.resume_workflow_from_step(ops['resume_from'], confluence)
+            if steps:
+                confirm = input(f"\nExecute {len(steps)} steps? (y/N): ").strip().lower()
+                if confirm in ['y', 'yes']:
+                    confluence.run_individual_steps(steps)
+                else:
+                    print("Workflow resume cancelled")
+        
+        if ops['clean']:
+            cli_manager.clean_workflow_files(
+                clean_level=ops['clean_level'],
+                confluence_instance=confluence,
+                dry_run=settings.get('dry_run', False)
+            )
+        
+        return
+    
+    # Handle status-only operations
+    elif mode == 'status_only':
         try:
-            delineator = GeofabricDelineator(self.config, self.logger)
-            self.logger.info('Geofabric delineation completed successfully')
-            return delineator.delineate_geofabric()
-        except Exception as e:
-            self.logger.error(f"Error during geofabric delineation: {str(e)}")
-            return None
-
-    def run_parallel_optimization(self):        
-        config_path = Path(self.config.get('CONFLUENCE_CODE_DIR')) / '0_config_files' / 'config_active.yaml'
-
-        if shutil.which("srun"):
-            run_command = "srun"
-        elif shutil.which("mpirun"):
-            run_command = "mpirun"
-
-        cmd = [
-            run_command,
-            '-n', str(self.config.get('MPI_PROCESSES')),
-            'python',
-            str(Path(__file__).parent / 'utils' / 'optimization_utils' / 'parallel_parameter_estimation.py'), 
-            str(config_path)
-        ]
-
-        try:
-            subprocess.run(cmd, check=True)
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"Error running parallel optimization: {e}")
-
-    def run_ostrich_optimization(self):
-        optimizer = OstrichOptimizer(self.config, self.logger)
-        optimizer.run_optimization()
-
-    def calculate_landcover_mode(self, input_dir, output_file, start_year, end_year):
-        # List all the geotiff files for the years we're interested in
-        geotiff_files = [input_dir / f"domain_{self.config['DOMAIN_NAME']}_{year}.tif" for year in range(start_year, end_year + 1)]
-        
-        # Read the first file to get metadata
-        with rasterio.open(geotiff_files[0]) as src:
-            meta = src.meta
-            shape = src.shape
-        
-        # Initialize an array to store all the data
-        all_data = np.zeros((len(geotiff_files), *shape), dtype=np.int16)
-        
-        # Read all the geotiffs into the array
-        for i, file in enumerate(geotiff_files):
-            with rasterio.open(file) as src:
-                all_data[i] = src.read(1)
-        
-        # Calculate the mode along the time axis
-        mode_data, _ = stats.mode(all_data, axis=0)
-        mode_data = mode_data.astype(np.int16).squeeze()
-        
-        # Update metadata for output
-        meta.update(count=1, dtype='int16')
-        
-        # Write the result
-        with rasterio.open(output_file, 'w', **meta) as dst:
-            dst.write(mode_data, 1)
-        
-        print(f"Mode calculation complete. Result saved to {output_file}")
-
-
-def main():
-    parser = argparse.ArgumentParser(description='Run CONFLUENCE workflow')
-    parser.add_argument('--config', type=str, 
-                       help='Path to configuration file. If not provided, uses default config_active.yaml')
-    args = parser.parse_args()
-
-    if args.config:
-        config_path = Path(args.config)
-        if not config_path.exists():
-            print(f"Error: Configuration file not found: {config_path}")
-            sys.exit(1)
-    else:
-        config_path = Path(__file__).parent / '0_config_files' / 'config_active.yaml'
-        if not config_path.exists():
-            print(f"Error: Default configuration file not found: {config_path}")
-            sys.exit(1)
-
-    try:
-        confluence = CONFLUENCE(config_path)
+            confluence = CONFLUENCE(
+                config_path=config_path,
+                config_overrides=config_overrides,
+                debug_mode=settings.get('debug', False)
+            )
+            cli_manager.print_status_information(confluence, plan['status_operations'])
+        except:
+            print("Could not initialize CONFLUENCE for status check")
+            cli_manager.print_status_information(None, plan['status_operations'])
+        return
+    
+    # Initialize CONFLUENCE for workflow operations
+    confluence = CONFLUENCE(
+        config_path=config_path,
+        config_overrides=config_overrides,
+        debug_mode=settings.get('debug', False)
+    )
+    
+    # Handle dry run
+    if settings.get('dry_run'):
+        print_dry_run_plan(plan, confluence)
+        return
+    
+    # Execute based on mode
+    if mode == 'pour_point_setup':
+        pour_point_info = plan['pour_point']
+        confluence.setup_pour_point_workflow(
+            pour_point_info['coordinates'],
+            pour_point_info['domain_definition_method']
+        )
+    elif mode == 'individual_steps':
+        confluence.run_individual_steps(plan['steps'])
+    elif mode == 'workflow':
         confluence.run_workflow()
+    else:
+        raise ValueError(f"Unknown execution mode: {mode}")
+
+
+def print_dry_run_plan(plan: Dict[str, Any], confluence) -> None:
+    """Print what would be executed in a dry run."""
+    print("\nDry Run - Execution Plan:")
+    print("=" * 40)
+    print(f"Mode: {plan['mode']}")
+    
+    if plan['mode'] == 'pour_point_setup':
+        pour_point = plan['pour_point']
+        print(f"Pour Point: {pour_point['coordinates']}")
+        print(f"Domain Definition: {pour_point['domain_definition_method']}")
+        print("Steps that would be executed:")
+        for step in ['setup_project', 'create_pour_point', 'define_domain', 'discretize_domain']:
+            print(f"  - {step}")
+    
+    elif plan['mode'] == 'individual_steps':
+        print("Individual steps that would be executed:")
+        for step in plan['steps']:
+            print(f"  - {step}")
+    
+    elif plan['mode'] == 'workflow':
+        print("Complete workflow would be executed")
+    
+    elif plan['mode'] == 'slurm_job':
+        print("SLURM job that would be submitted:")
+        slurm_options = plan.get('slurm_options', {})
+        print(f"  Job name: {slurm_options.get('job_name', 'auto-generated')}")
+        print(f"  Time limit: {slurm_options.get('job_time', '48:00:00')}")
+        print(f"  Resources: {slurm_options.get('job_ntasks', 1)} tasks, {slurm_options.get('job_memory', '50G')} memory")
+        if slurm_options.get('job_account'):
+            print(f"  Account: {slurm_options['job_account']}")
+        
+        job_mode = plan.get('job_mode', 'workflow')
+        if job_mode == 'individual_steps':
+            print("  Job would execute steps:")
+            for step in plan.get('job_steps', []):
+                print(f"    - {step}")
+        elif job_mode == 'pour_point_setup':
+            print("  Job would execute pour point setup")
+        else:
+            print("  Job would execute full workflow")
+    
+    if plan.get('config_overrides'):
+        print("\nConfiguration overrides:")
+        for key, value in plan['config_overrides'].items():
+            print(f"  {key}: {value}")
+    
+    print("\nSettings:")
+    for key, value in plan['settings'].items():
+        print(f"  {key}: {value}")
+    
+    print("\nTo execute this plan, remove the --dry_run flag")
+
+
+def main() -> None:
+    """
+    Enhanced main entry point for CONFLUENCE with comprehensive CLI support including SLURM jobs.
+    """
+    try:
+        # Initialize CLI argument manager
+        cli_manager = CLIArgumentManager()
+        
+        # Parse arguments
+        args = cli_manager.parse_arguments()
+        
+        # Validate arguments
+        is_valid, errors = cli_manager.validate_arguments(args)
+        if not is_valid:
+            print("Argument validation errors:")
+            for error in errors:
+                print(f"   {error}")
+            sys.exit(1)
+        
+        # Get execution plan
+        plan = cli_manager.get_execution_plan(args)
+        
+        # Handle pour point setup FIRST (before config loading)
+        if plan['mode'] == 'pour_point_setup':
+            pour_point_info = plan['pour_point']
+            
+            # Create config file using CLI manager
+            setup_result = cli_manager.setup_pour_point_workflow(
+                coordinates=pour_point_info['coordinates'],
+                domain_def_method=pour_point_info['domain_definition_method'],
+                domain_name=pour_point_info['domain_name'],
+                bounding_box_coords=pour_point_info.get('bounding_box_coords'),
+                confluence_code_dir=None  # Let it auto-detect
+            )
+            
+            # Use the newly created config file
+            config_path = Path(setup_result['config_file'])
+            
+        # Handle SLURM job submission for pour point setup
+        elif plan['mode'] == 'slurm_job' and plan.get('job_mode') == 'pour_point_setup':
+            pour_point_info = plan['pour_point']
+            
+            # Create config file using CLI manager (same as above)
+            setup_result = cli_manager.setup_pour_point_workflow(
+                coordinates=pour_point_info['coordinates'],
+                domain_def_method=pour_point_info['domain_definition_method'],
+                domain_name=pour_point_info['domain_name'],
+                bounding_box_coords=pour_point_info.get('bounding_box_coords'),
+                confluence_code_dir=None
+            )
+            
+            # Use the newly created config file for the SLURM job
+            config_path = Path(setup_result['config_file'])
+            
+        else:
+            # Use the specified config file for other modes
+            config_path = Path(args.config)
+        
+        # Display startup message
+        if not plan.get('settings', {}).get('dry_run') and plan['mode'] not in ['status_only', 'slurm_job']:
+            debug_message = " (DEBUG MODE)" if args.debug else ""
+            print(f"Starting CONFLUENCE with configuration: {config_path}{debug_message}")
+            if plan['mode'] != 'workflow':
+                print(f"   Execution mode: {plan['mode']}")
+        elif plan['mode'] == 'slurm_job' and not plan.get('settings', {}).get('dry_run'):
+            print(f"Preparing SLURM job with configuration: {config_path}")
+        
+        # Execute the plan
+        execute_confluence_plan(plan, config_path)
+        
+        # Success message
+        if plan['mode'] not in ['status_only', 'slurm_job'] and not plan.get('settings', {}).get('dry_run'):
+            print("CONFLUENCE completed successfully")
+        
+        sys.exit(0)
+        
+    except KeyboardInterrupt:
+        print("\nWorkflow interrupted by user")
+        sys.exit(130)
+    
     except Exception as e:
         print(f"Error running CONFLUENCE: {str(e)}")
-        sys.exit(1)
+        if hasattr(args, 'debug') and args.debug:
+            import traceback
+            traceback.print_exc()
+        sys.exit(2)
 
 if __name__ == "__main__":
     main()

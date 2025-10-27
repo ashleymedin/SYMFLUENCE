@@ -1,78 +1,208 @@
 # CONFLUENCE
-Community Optimization and Numerical Framework for Large-domain Understanding of Environmental Networks and Computational Exploration
 
-## Overview
+<p align="center">
+  <img src="https://github.com/DarriEy/CONFLUENCE/blob/main/docs/source/_static/Conf.jpg" alt="CONFLUENCE Logo" width="600">
+</p>
 
-CONFLUENCE is an advanced hydrological modeling platform designed to facilitate comprehensive modeling and analysis across various scales and regions. It integrates multiple components for data management, model setup, optimization, uncertainty analysis, forecasting, visualization, and workflow management.
+<p align="center">
+  <a href="https://github.com/DarriEy/CONFLUENCE/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
+  </a>
+  <a href="https://github.com/DarriEy/CONFLUENCE/issues">
+    <img src="https://img.shields.io/github/issues/DarriEy/CONFLUENCE.svg" alt="Issues">
+  </a>
+  <a href="https://github.com/DarriEy/CONFLUENCE/commits/main">
+    <img src="https://img.shields.io/github/last-commit/DarriEy/CONFLUENCE.svg" alt="Last Commit">
+  </a>
+</p>
 
-NOTE: CONFLUENCE is currently in development
+<h3 align="center">Community Optimization Nexus for Leveraging Understanding of<br>Environmental Networks in Computational Exploration</h3>
 
-## Features
+---
 
-- Data preprocessing and acquisition 
-- Hydrological model setup and initialization
-- Model optimization and calibration
-- Result visualization and reporting
-- Workflow management for complex modeling tasks
+## 🌊 Overview
 
-## Installation
-1. Clone the repository:
+CONFLUENCE is a computational environmental modeling platform that streamlines the entire hydrological modeling workflow—from domain conceptualization to model evaluation. It provides an integrated framework for multi-model comparison, parameter optimization, and automated workflow management across various spatial scales.
 
-```    
-git clone https://github.com/your-repo/CONFLUENCE.git   
-``` 
+## Quick Start
 
-2. Install the required dependencies:
+### Installation
 
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/DarriEy/CONFLUENCE.git
+   cd CONFLUENCE
+   ```
+
+2. **Run the automated installer:**
+   ```bash
+   ./confluence --install
+   ```
+
+   This will:
+   - Create a Python virtual environment
+   - Install all required dependencies
+   - Download and install external modeling tools
+   - Validate the installation
+
+### Basic Usage
+
+CONFLUENCE provides a convenient shell wrapper for easy execution:
+
+```bash
+# Show available options
+./confluence --help
+
+# Run complete workflow with default configuration  
+./confluence
+
+# Run specific workflow steps
+./confluence --calibrate_model --run_benchmarking
+
+# Set up a new domain from pour point coordinates
+./confluence --pour_point 51.1722/-115.5717 --domain_def delineate
+
+# Check workflow status
+./confluence --status
+
+# Run with custom configuration
+./confluence --config /path/to/your/config.yaml
+```
+
+### Your First CONFLUENCE Project
+
+1. **Create a new project configuration:**
+   ```bash
+   cp 0_config_files/config_template.yaml my_project_config.yaml
+   # Edit configuration with your project details
+   ```
+
+2. **Set up the project:**
+   ```bash
+   ./confluence --config my_project_config.yaml --setup_project
+   ```
+
+3. **Run the workflow:**
+   ```bash
+   ./confluence --config my_project_config.yaml
+   ```
+
+
+## Example Workflows
+
+Explore the `examples/` directory for comprehensive tutorials:
+
+Each example includes step-by-step instructions and sample datasets.
+
+## Advanced Usage
+
+### Command Line Interface
+
+The `confluence` wrapper provides CLI options:
+
+```bash
+# Individual workflow steps
+./confluence --setup_project --define_domain --calibrate_model
+
+# Debug mode with detailed logging
+./confluence --debug --force_rerun
+
+# Dry run to preview workflow steps
+./confluence --dry_run
+
+# Pour point-based domain setup
+./confluence --pour_point "lat/lon" --domain_def delineate --domain_name "MyWatershed"
+```
+
+### Python API
+
+For python users and integration with other tools:
+
+```python
+from pathlib import Path
+from CONFLUENCE import CONFLUENCE
+
+# Initialize CONFLUENCE
+config_path = Path('my_config.yaml')
+confluence = CONFLUENCE(config_path)
+
+# Run specific workflow components
+confluence.run_individual_steps(['setup_project', 'calibrate_model'])
 
 ```
-cd CONFLUENCE 
 
-pip install -r requirements.txt
+## 🔧 Configuration
+
+CONFLUENCE uses YAML configuration files to define:
+- Domain boundaries and discretization settings
+- Model selection and parameters
+- Optimization and calibration targets
+- Output and visualization preferences
+
+See `0_config_files/config_template.yaml` for a complete configuration template with detailed comments.
+
+## Project Structure
+
+```
+CONFLUENCE/
+├── CONFLUENCE.py           # Main entry point
+├── confluence              # Shell wrapper script  
+├── utils/                  # Core framework modules
+│   ├── project/           # Project management
+│   ├── geospatial/        # Domain processing
+│   ├── models/            # Model interfaces
+│   ├── optimization/      # Calibration algorithms
+│   └── evaluation/        # Analysis tools
+├── 0_config_files/        # Configuration templates
+├── examples/              # Example workflows
+├── docs/                  # Documentation
+└── installs/              # External tools (auto-generated)
 ```
 
-3. Clone and compile/install the desired/required binaries
+## 🤝 Contributing
 
-- SUMMA (https://github.com/CH-Earth/summa.git)
-- mizuRoute (https://github.com/ESCOMP/mizuRoute.git)
-- TauDEM (https://github.com/dtarb/TauDEM.git)
-- Ostrich (http://www.civil.uwaterloo.ca/envmodelling/Ostrich.html)
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details on:
+- Code style and standards
+- Testing requirements  
+- Pull request process
+- Issue reporting
 
-## Configuration
-- Copy `config_template.yaml` to `config_active.yaml` or any other name
-- Modify the copy according to your needs
-- All config files except `config_template.yaml` are ignored by git
+## 📄 License
 
-## Usage
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-1. Set up your project configuration in `config_active.yaml`
-2. Run the main CONFLUENCE script:
 
-python CONFLUENCE.py
+## 🆘 Support
 
-or
+- **Documentation**: [https://confluence.readthedocs.io](https://confluence.readthedocs.io)
+- **Issues**: [GitHub Issues](https://github.com/DarriEy/CONFLUENCE/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/DarriEy/CONFLUENCE/discussions)
 
-3. Run the scripts in /jupyter notebooks for a stepwise introduction to CONFLUENCE
+## 🙏 Acknowledgments
 
-For more detailed usage instructions, please refer to the documentation.
+CONFLUENCE builds upon decades of advances in hydrological modeling and computational frameworks. We acknowledge the contributions of the broader hydrological modeling community and the developers of the integrated modeling tools.
 
-## Contributing
+---
 
-We welcome contributions to CONFLUENCE! Please follow these steps to contribute:
+## Citation
 
-1. Fork the repository
-2. Create a new branch for your feature
-3. Commit your changes
-4. Push to your fork
-5. Submit a pull request
+If you use CONFLUENCE in your research, please cite:
 
-Please make sure to update tests as appropriate and adhere to the project's coding standards.
+```bibtex
+@article{eythorsson2025,
+  title={Toward Automated Scientific Discovery in Hydrology: The Opportunities and Dangers of AI Augmented Research Frameworks},
+  author={Eythorsson, Darri and Clark, Martyn},
+  journal={Hydrological Processes},
+  volume={39},
+  number={1},
+  pages={e70065},
+  year={2025},
+  doi={10.1002/hyp.70065}
+}
+```
 
-## License
-This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
-
-## Contact
-Darri Eythorsson, University of Calgary
-
-darri.eythorsson@ucalgary.ca
-
+<p align="center">
+  Developed at the University of Calgary<br>
+  <a href="https://github.com/DarriEy/CONFLUENCE/issues">Report Bug</a> ·
+  <a href="https://github.com/DarriEy/CONFLUENCE/issues">Request Feature</a>
+</p>

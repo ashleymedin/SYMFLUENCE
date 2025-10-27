@@ -9,6 +9,7 @@ dask>=2025.3.0
 # Machine learning and data science libraries
 torch>=2.4.1
 scikit-learn>=1.5.2
+pyswarms
 
 # Geospatial libraries
 geopandas>=0.9.0
@@ -52,6 +53,8 @@ pyyaml>=6.0.2
 
 # Web APIs (if used for data acquisition)
 requests>=2.25.0
+cdsapi
+hs_restclient
 
 # Testing
 pytest>=6.2.0
