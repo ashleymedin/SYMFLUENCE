@@ -7,7 +7,6 @@ import itertools
 from typing import List, Tuple
 import xarray as xr # type: ignore
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
 from utils.evaluation.calculate_sim_stats import get_KGE, get_KGEp, get_NSE, get_MAE, get_RMSE # type: ignore
 from utils.models.summa_utils import SummaRunner # type: ignore
 from utils.models.mizuroute_utils import MizuRouteRunner # type: ignore
@@ -17,7 +16,7 @@ class DecisionAnalyzer:
     def __init__(self, config, logger):
         self.config = config
         self.logger = logger
-        self.data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+        self.data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
         self.domain_name = self.config.get('DOMAIN_NAME')
         self.project_dir = self.data_dir / f"domain_{self.domain_name}"
         self.output_folder = self.project_dir / "plots" / "decision_analysis"
@@ -184,4 +183,3 @@ class DecisionAnalyzer:
         self.plot_decision_impacts(results_file)
         best_combinations = self.analyze_results(results_file)
         return results_file, best_combinations
-    

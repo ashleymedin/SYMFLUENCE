@@ -7,7 +7,7 @@ NextGen (ngen) Worker Functions
 Worker functions for ngen model calibration that can be called from 
 the main iterative optimizer or used in parallel processing.
 
-Author: CONFLUENCE Development Team
+Author: SYMFLUENCE Development Team
 Date: 2025
 """
 
@@ -17,8 +17,10 @@ from pathlib import Path
 import sys
 from typing import Dict, Any, List, Tuple, Optional
 
-# Add parent directory to path to import ngen_utils
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+# Add SYMFLUENCE root directory to path
+# File is at: SYMFLUENCE/utils/optimization/ngen_worker_functions.py
+# We need:  SYMFLUENCE/ (so we can import utils.model_utils.ngen_utils)
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 
 def _apply_ngen_parameters_worker(config: Dict[str, Any], params: Dict[str, float]) -> bool:
@@ -37,7 +39,7 @@ def _apply_ngen_parameters_worker(config: Dict[str, Any], params: Dict[str, floa
         
         domain_name = config.get('DOMAIN_NAME')
         experiment_id = config.get('EXPERIMENT_ID')
-        data_dir = Path(config.get('CONFLUENCE_DATA_DIR'))
+        data_dir = Path(config.get('SYMFLUENCE_DATA_DIR'))
         
         ngen_setup_dir = data_dir / f"domain_{domain_name}" / 'settings' / 'ngen'
         
@@ -83,37 +85,66 @@ def _apply_ngen_parameters_worker(config: Dict[str, Any], params: Dict[str, floa
 def _run_ngen_worker(config: Dict[str, Any]) -> bool:
     """
     Worker function to execute ngen model.
+    Supports both serial and parallel modes.
     
     Args:
-        config: Configuration dictionary
+        config: Configuration dictionary. In parallel mode, includes:
+                - '_proc_ngen_dir': Process-specific ngen directory
+                - '_proc_settings_dir': Process-specific settings directory
+                - '_proc_id': Process ID
         
     Returns:
         bool: True if successful, False otherwise
     """
+    import logging
+    import traceback
+    
+    # Get the main symfluence logger if available
+    logger = logging.getLogger('symfluence')
+    
     try:
+        # Check if this is a parallel process
+        if '_proc_ngen_dir' in config:
+            # Parallel mode - use process-specific directories
+            proc_id = config.get('_proc_id', 0)
+            logger.debug(f"Running ngen in parallel mode (proc {proc_id})")
+            
+            # Create a modified config for this process
+            # The NgenRunner will use these paths if they're set
+            parallel_config = config.copy()
+            parallel_config['_ngen_output_dir'] = config['_proc_ngen_dir']
+            parallel_config['_ngen_settings_dir'] = config['_proc_settings_dir']
+        else:
+            # Serial mode - use standard configuration
+            logger.debug("Running ngen in serial mode")
+            parallel_config = config
+            proc_id = 0
+        
         # Import NgenRunner from ngen_utils
-        from utils.model_utils.ngen_utils import NgenRunner
+        from utils.models.ngen_utils import NgenRunner
         
-        domain_name = config.get('DOMAIN_NAME')
-        experiment_id = config.get('EXPERIMENT_ID')
+        domain_name = parallel_config.get('DOMAIN_NAME')
+        experiment_id = parallel_config.get('EXPERIMENT_ID')
         
-        # Create a minimal logger for the worker
-        import logging
-        logger = logging.getLogger(f'ngen_worker_{experiment_id}')
-        logger.setLevel(logging.WARNING)  # Only show warnings/errors to reduce output
-        
-        # Initialize runner
-        runner = NgenRunner(config, logger)
+        # Initialize runner with modified config
+        runner = NgenRunner(parallel_config, logger)
         
         # Run ngen
         success = runner.run_model(experiment_id)
         
         return success
         
+    except FileNotFoundError as e:
+        logger.error(f"Required ngen input file not found (proc {proc_id if '_proc_ngen_dir' in config else 0}): {str(e)}")
+        logger.error("Make sure ngen preprocessing has been run to generate required files:")
+        logger.error("  - catchment geopackage")
+        logger.error("  - nexus geojson")
+        logger.error("  - realization config json")
+        return False
+        
     except Exception as e:
-        print(f"Error running ngen: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Error running ngen (proc {proc_id if '_proc_ngen_dir' in config else 0}): {str(e)}")
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
         return False
 
 
@@ -134,7 +165,7 @@ def _calculate_ngen_metrics_worker(config: Dict[str, Any], metric: str = 'KGE') 
         
         domain_name = config.get('DOMAIN_NAME')
         experiment_id = config.get('EXPERIMENT_ID')
-        data_dir = Path(config.get('CONFLUENCE_DATA_DIR'))
+        data_dir = Path(config.get('SYMFLUENCE_DATA_DIR'))
         project_dir = data_dir / f"domain_{domain_name}"
         
         # Create minimal logger
@@ -228,7 +259,7 @@ def _extract_ngen_streamflow_worker(config: Dict[str, Any], experiment_id: str) 
         Path to extracted streamflow file, or None if failed
     """
     try:
-        from utils.model_utils.ngen_utils import NgenPostprocessor
+        from utils.models.ngen_utils import NgenPostprocessor
         import logging
         
         # Create minimal logger

@@ -1,34 +1,35 @@
-### ==================================== CONFLUENCE template configuration file ============================================================
+### ==================================== SYMFLUENCE template configuration file ============================================================
 #
-# This configuration file contains all settings required to run the CONFLUENCE workflow, from conceptualisation to evaluation.
+# This configuration file contains all settings required to run the SYMFLUENCE workflow, from conceptualisation to evaluation.
 # The configuration settings are organized based on modules and can be populated as the user moves through the individual components
 # of the hydrological modelling exercise. This configuration file is comprised of the following sections:
 # 
-# 1. Global settings: Underlying configuration of each CONFLUENCE initation which are used throughout the workflow, e.g. root path etc. 
+# 1. Global settings: Underlying configuration of each SYMFLUENCE initation which are used throughout the workflow, e.g. root path etc. 
 # 2. Geospatial settings: Configurations required to define the geospatial domain of the project and prepare geospatial input files
 # 3. Model Agnostic settings: Configurations required for data pre-processing that is common to all models
 # 4. Model Specific settings: Configurations required for data preprocessing that is specific depending on model selection
 # 5. Evaluation settings: Configurations required to evaluate the model output
-# 6. Optimisation settings: Configurations required for calibrating the hydrological model setup, including sensitivity and decision analysis
+# 6. Optimization settings: Configurations required for calibrating the hydrological model setup, including sensitivity and decision analysis
 # 7. Data and path settings: Configurations for data characteristics and path specifications. Note: if deviating from default paths, an absolute path must be defined
 #
 ### ============================================= 1. Global settings: =======================================================================
 
-CONFLUENCE_DATA_DIR: /path/to/CONFLUENCE_data/                 # Directory with the confluence data directories, including the external installations
-CONFLUENCE_CODE_DIR: /path/to/CONFLUENCE                       # Directory with the confluence code repository
+SYMFLUENCE_DATA_DIR: /Users/darrieythorsson/compHydro/code/SYMFLUENCE_data
+SYMFLUENCE_CODE_DIR: /Users/darrieythorsson/compHydro/code/SYMFLUENCE
 
 # Experiment settings
 DOMAIN_NAME: Bow_at_Banff                                      # Name of modeled domain
-EXPERIMENT_ID: run_1                                           # Name of experiment
-EXPERIMENT_TIME_START: 1980-01-02 01:00                        # Start time of experiment e.g. '2010-01-01 00:00'
-EXPERIMENT_TIME_END: 2023-12-30 23:00                          # End time of experiment e.g. '2010-12-31 23:00'
-CALIBRATION_PERIOD: 1982-01-01, 1990-12-30                     # start_date, end_date in format YYYY-MM-DD
-EVALUATION_PERIOD:  2012-01-01, 2023-12-30                     # start_date, end_date in format YYYY-MM-DD
-SPINUP_PERIOD: 1980-01-02, 1981-12-31                          # start_date, end_date in format YYYY-MM-DD
+EXPERIMENT_ID: run_1                                            # Name of experiment
+EXPERIMENT_TIME_START: '2004-01-01 01:00'                       # Start time of experiment e.g. '2010-01-01 00:00'
+EXPERIMENT_TIME_END: '2004-01-31 23:00'                         # End time of experiment e.g. '2010-12-31 23:00'
+CALIBRATION_PERIOD: 2004-01-05, 2004-01-19                     # start_date, end_date in format YYYY-MM-DD
+EVALUATION_PERIOD:  2004-01-20, 2004-01-30                     # start_date, end_date in format YYYY-MM-DD
+SPINUP_PERIOD: 2004-01-01, 2004-01-04                          # start_date, end_date in format YYYY-MM-DD
 
 # Computatational settings
 MPI_PROCESSES: 1                                               # Number of parallel processes allowed, based on your system's capabilities
 FORCE_RUN_ALL_STEPS: False                                     # Run all steps in the workflow and overwrite existing files
+USE_LOCAL_SCRATCH: false                                        # Use SLURM local scratch for optimization (true/false). Set to true on HPC systems to improve I/O performance in highly parallel calibrations.
 
 # Logging settings
 LOG_LEVEL: INFO                                                # Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL
@@ -37,9 +38,18 @@ LOG_FORMAT: detailed                                           # Log format: sim
 
 ### ============================================= 2. Geospatial settings: =================================================================
 
-# Domain representation settings
-DOMAIN_DEFINITION_METHOD: delineate                            # Define domain representation method, current options: subset, delineate, lumped
-GEOFABRIC_TYPE: TDX                                            # Source geofabric to subset from, current options: Merit, TDX, NWS
+POUR_POINT_COORDS: 51.1722/-115.5717                           # Pour point coordinates lat/lon, if default use user provided shapefile. 
+BOUNDING_BOX_COORDS: 51.76/-116.55/50.95/-115.5                # Bounding box of the domain: lat_max/lon_min/lat_min/lon_max. 
+
+# Domain definition settings (GRU level)
+DOMAIN_DEFINITION_METHOD: lumped                               # Define domain representation method, options: subset, delineate (delineates distributed river network), lumped
+ROUTING_DELINEATION: lumped                                    # Spatial discretisation of river network for routing
+GEOFABRIC_TYPE: na                                             # Source geofabric if subsetting, options: Merit, TDX, NWS
+
+## Delineation settings
+DELINEATION_METHOD: slope_area                                 # Method for stream identification, options: stream_threshold, curvature, slope_area, multi_scale 
+CURVATURE_THRESHOLD: 0.0                                       # Profile curvature threshold for curvature method
+MIN_SOURCE_THRESHOLD: 100                                      # Minimum contributing area for stream sources in curvature method
 STREAM_THRESHOLD: 5000                                         # Threshold flow accumulation for stream vectorisation
 SLOPE_AREA_THRESHOLD: 100.0                                    # Combined slope-area threshold
 SLOPE_AREA_EXPONENT: 2.0                                       # Exponent for slope (m in S^m * A^n)
@@ -87,10 +97,8 @@ EM_PRCP: prcp                                                  # EM-EARTH precip
 
 ### ============================================= 4. Model Specific settings: =============================================================
 
-# SUMMA settings
-SETTINGS_SUMMA_CONNECT_HRUS: yes                               # Attribute setting: "no" or "yes". If no; all HRUs modeled as independent columns 
-SETTINGS_SUMMA_TRIALPARAM_N: 0                                 # Number of trial parameter specifications. Specify 0 if none are wanted (they can still be included in this file but won't be read).
-SETTINGS_SUMMA_TRIALPARAM_1: maxstep,900                       # Name of trial parameter and value to assign. Value assumed to be float.
+HYDROLOGICAL_MODEL: SUMMA                                      # Hydrological model, options: SUMMA, FUSE, GR, FLASH, NGEN 
+ROUTING_MODEL: mizuRoute                                       # Routing model, options: mizuRoute
 
 ### 4.1 Model Specific settings: SUMMA 
 SUMMA_EXE: summa_sundials.exe                                  # Name of SUMMA executable
@@ -148,9 +156,9 @@ DEPTH_SHAPE_FACTOR_BOUNDS: [0.1, 3.0]                          # Bounds for shap
 ###  4.2 Model Specific settings: FUSE 
 FUSE_INSTALL_PATH: default                                     # FUSE installation path, if default, self.code_dir / installs / fuse / bin
 FUSE_EXE: fuse.exe                                             # Name of FUSE executable
-FUSE_ROUTING_INTEGRATION: mizuRoute                            # Routing method for distributed FUSE
+FUSE_ROUTING_INTEGRATION: default                              # Routing method for distributed FUSE
 SETTINGS_FUSE_PATH: default                                    # Path to FUSE run settings, if default self.data_dir / settings / FUSE
-SETTINGS_FUSE_FILEMANAGER: fm_catch.txt                        # Name of FUSE file manager
+SETTINGS_FUSE_FILEMANAGER: default                             # Name of FUSE file manager
 FUSE_SPATIAL_MODE: distributed                                 # Spatial discretisation of FUSE, options: lumped or semi-distributed
 EXPERIMENT_OUTPUT_FUSE: default                                # Directory for FUSE experiment output
 
@@ -188,7 +196,16 @@ FLASH_L2_REGULARIZATION: 1e-6                                  # L2 regularizati
 FLASH_USE_ATTENTION: True                                      # Use attention
 FLASH_USE_SNOW: False                                          # Use snow data
 
-###  4.5 Model Specific settings: MizuRoute 
+###  4.5 Model Specific settings: NextGen 
+NGEN_INSTALL_PATH: default
+NGEN_EXE: ngen
+NGEN_MODULES_TO_CALIBRATE: CFE                                 # Options: CFE, NOAH, PET (or combinations like "CFE,PET")
+NGEN_CFE_PARAMS_TO_CALIBRATE: smcmax,satdk,bb,slop,Cgw,expon,max_gw_storage,K_nash,K_lf
+NGEN_NOAH_PARAMS_TO_CALIBRATE: rain_snow_thresh,ZREF,noah_refdk,noah_refkdt,noah_czil,noah_z0,noah_frzk,noah_salp
+NGEN_PET_PARAMS_TO_CALIBRATE: pet_albedo,pet_z0_mom,pet_z0_heat,pet_veg_h,pet_d0
+NGEN_ACTIVE_CATCHMENT_ID: cat-1
+
+###  4.6 Model Specific settings: MizuRoute 
 SETTINGS_MIZU_WITHIN_BASIN: 0                                  # '0' (no) or '1' (IRF routing). Flag to enable within-basin routing by mizuRoute. Should be set to 0 if SUMMA is run with "subRouting" decision "timeDlay".
 SETTINGS_MIZU_ROUTING_DT: 86400                                # Duration of the routing time step [s].
 SETTINGS_MIZU_ROUTING_UNITS: mm/d                              # Units of the variable to be routed.
@@ -197,22 +214,8 @@ SETTINGS_MIZU_OUTPUT_FREQ: single                              # Frequency with 
 SETTINGS_MIZU_OUTPUT_VARS: 1                                   # Routing output. '0' for both KWT and IRF; '1' IRF only; '2' KWT only.
 SETTINGS_MIZU_MAKE_OUTLET: n/a                                 # Segment ID or IDs that should be set as network outlet. Specify multiple IDs separated by commas: X,Y,Z. Specify no IDs as: n/a. Note that this can also be done in the network shapefile.
 SETTINGS_MIZU_NEEDS_REMAP: no                                  # 'no' if routing basins map 1:1 onto model GRUs. 'yes' if river segments span multiple GRUs or if multiple segments are inside a single GRU.
+MIZU_FROM_MODEL: default
 
-###  4.5 Model Specific settings: NextGen 
-NGEN_INSTALL_PATH: '/path/to/ngen/build'
-NGEN_EXE: ngen
-NGEN_BMI_MODULES:
-   CFE:
-     bmi_type: 'bmi_c'
-     library_file: './extern/cfe/cmake_build/libcfebmi.so'
-     init_config: './ngen_data/bmi_configs/cfe_config.json'
-     main_output_variable: 'Q_OUT'
-
-NGEN_MODULES_TO_CALIBRATE: CFE,NOAH,PET                        # Options: CFE, NOAH, PET (or combinations like "CFE,PET")
-NGEN_CFE_PARAMS_TO_CALIBRATE: smcmax,satdk,bb,slop
-NGEN_NOAH_PARAMS_TO_CALIBRATE: rain_snow_thresh,ZREF,noah_refdk,noah_refkdt,noah_czil,noah_z0,noah_frzk,noah_salp
-NGEN_PET_PARAMS_TO_CALIBRATE: pet_albedo,pet_z0_mom,pet_z0_heat,pet_veg_h,pet_d0
-NGEN_ACTIVE_CATCHMENT_ID: cat-1
 
 # Mizuroute Paths and filenames
 SETTINGS_MIZU_PATH: default                                    # Directory containing mizuroute settings. If "default" self.data_dir / settings / mizuRoute
@@ -239,12 +242,12 @@ STATION_ID: 05BB001                                            # Station ID from
 # SNOTEL data settings
 DOWNLOAD_SNOTEL: false                                         # Download SNOTEL data, options: 'true' or 'false'
 SNOTEL_STATION:                                                # SNOTEL station ID (numeric)
-SNOTEL_PATH: '/path/to/data/geospatial-data/SNOTEL'            # Path to directory containing SNOTEL data files
+SNOTEL_PATH: /path/to/data/geospatial-data/SNOTEL              # Path to directory containing SNOTEL data files
 
 # FLUXNET data settings
 DOWNLOAD_FLUXNET: false                                        # Download FLUXNET data, options: 'true' or 'false'
 FLUXNET_STATION:                                               # FLUXNET station ID (numeric)
-FLUXNET_PATH: '/path/to/data/data/geospatial-data/fluxnet'     # Path to directory containing FLUXNET data files
+FLUXNET_PATH: /path/to/data/data/geospatial-data/fluxnet       # Path to directory containing FLUXNET data files
 
 # USGS GW data settings
 DOWNLOAD_USGS_GW: false                                        # Download USGS groundwater data, options: 'true' or 'false'
@@ -283,14 +286,14 @@ ATTRIBUTES_OUTPUT_DIR: default                                 # Output director
 ### ============================================= 6. Optimisation settings: ===============================================================
 
 OPTIMISATION_METHODS: [iteration]                              # Methods to optimise the model performance, options: 'emulation', 'iteration'
-CALIBRATION_TIMESTEP: hourly                                   # Timestep to use for calibration, options: 'native', 'hourly', 'daily'
+OPTIMISATION_TARGET: streamflow                                # Options: streamflow (default), swe, snow_depth, sca, et, latent_heat, soil_moisture, groundwater
+CALIBRATION_TIMESTEP: daily                                   # Timestep to use for calibration, options: 'native', 'hourly', 'daily'
 
 # Iterative optimisation settings
 ITERATIVE_OPTIMIZATION_ALGORITHM: DE                           # Options DDS, DE, PSO, NSGA-II, ADAM or SCE-UA
-NUMBER_OF_ITERATIONS: 100                                      # Number of iterations for calibration 
-POPULATION_SIZE: 30                                            # Population size for genetic algorithms
+NUMBER_OF_ITERATIONS: 10                                       # Number of iterations for calibration 
+POPULATION_SIZE: 10                                            # Population size for genetic algorithms
 OPTIMIZATION_METRIC: KGE                                       # Options: Root mean square error : "RMSE", Nash-Suthcliffe efficiency: "NSE", Kling-Gupta Efficiency: "KGE", KGE projected: "KGEp", Mean absolute error: "MAE"
-TARGET_METRIC: KGE                                             # Ensure consistency
 
   # -- DE specific settings
 DE_SCALING_FACTOR: 0.5                                         # F parameter (mutation strength)
@@ -388,7 +391,7 @@ EMULATION_PARALLEL_ENSEMBLE: false                             # Run ensemble si
 EMULATION_MAX_PARALLEL_JOBS: 100                               # Maximum number of parallel jobs when running ensemble
 EMULATION_SKIP_MIZUROUTE: false                                # Skip running mizuRoute (for troubleshooting)
 EMULATION_USE_ATTRIBUTES: false                                # Use attributes to train parameter emulator
-EMULATION_MAX_ITERATIONS: 3                                   # Iterative refinement
+EMULATION_MAX_ITERATIONS: 3                                    # Iterative refinement
 
 ### ============================================= 7. Data and Path Settings: =====================================================================
 
@@ -438,7 +441,7 @@ HYPE_INSTALL_PATH: default                                     # HYPE installati
 
 # GR Paths
 SETTINGS_GR_PATH: default                                      # Path to GR run settings, if default self.project_dir / settings / GR
-SETTINGS_GR_CONTROL: default                                   # Path to GR control file
+SETTINGS_GR_CONTROL: default                                    # Path to GR control file
 GR_INSTALL_PATH: default                                       # Path to GR installation, if default uses self.data_dir / installs / GR
 
 # FUSE paths
@@ -503,14 +506,9 @@ DATATOOL_PATH: default                                         # Path to datatoo
 GISTOOL_PATH: default                                          # Path to gistool executable
 EASYMORE_CLIENT: easymore cli                                  # Name of easymore client
 DATATOOL_DATASET_ROOT: /path/to/meteorological-data/           # Path to datatool datasets root directory
-DATATOOL_CACHE: /path/to/cache/dir                             # Cache directory used in datatool
 GISTOOL_DATASET_ROOT: /path/to/geospatial-data/                # Path to gistool datasets root directory
-GISTOOL_LIB_PATH: /path/to/r-env/                              # Path to gistool libraries
 TOOL_CACHE: /path/to/cache/dir                                 # Path to gistool cache directory
 EASYMORE_CACHE: /path/to/cache/dir                             # Path to easymore cache directory
 EASYMORE_JOB_CONF: /path/to/esmr/job_config                    # Path to easymore job config
 CLUSTER_JSON: /path/to/cluster.json                            # Path to cluster json config
-
-
-
-
+GISTOOL_LIB_PATH: /path/to/r-env/                              # Path to gistool libraries

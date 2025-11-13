@@ -1,208 +1,134 @@
-# CONFLUENCE
+# SYMFLUENCE
+**SYnergistic Modelling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration**
 
-<p align="center">
-  <img src="https://github.com/DarriEy/CONFLUENCE/blob/main/docs/source/_static/Conf.jpg" alt="CONFLUENCE Logo" width="600">
-</p>
-
-<p align="center">
-  <a href="https://github.com/DarriEy/CONFLUENCE/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
-  </a>
-  <a href="https://github.com/DarriEy/CONFLUENCE/issues">
-    <img src="https://img.shields.io/github/issues/DarriEy/CONFLUENCE.svg" alt="Issues">
-  </a>
-  <a href="https://github.com/DarriEy/CONFLUENCE/commits/main">
-    <img src="https://img.shields.io/github/last-commit/DarriEy/CONFLUENCE.svg" alt="Last Commit">
-  </a>
-</p>
-
-<h3 align="center">Community Optimization Nexus for Leveraging Understanding of<br>Environmental Networks in Computational Exploration</h3>
+[![PyPI version](https://badge.fury.io/py/symfluence.svg)](https://badge.fury.io/py/symfluence)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Documentation](https://img.shields.io/badge/docs-symfluence.org-brightgreen)](https://symfluence.readthedocs.io)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/DarriEy/SYMFLUENCE/ci.yml?branch=main)](https://github.com/DarriEy/SYMFLUENCE/actions)  
 
 ---
 
-## 🌊 Overview
+## Overview
+**SYMFLUENCE** is a computational environmental modeling platform that streamlines the hydrological modeling workflow—from domain setup to evaluation. It provides an integrated framework for multi-model comparison, parameter optimization, and automated workflow management across spatial scales.
 
-CONFLUENCE is a computational environmental modeling platform that streamlines the entire hydrological modeling workflow—from domain conceptualization to model evaluation. It provides an integrated framework for multi-model comparison, parameter optimization, and automated workflow management across various spatial scales.
+---
+
+## Quick Links
+
+- **Install:** `pip install symfluence`
+- **Documentation:** [symfluence.readthedocs.io](https://symfluence.readthedocs.io)
+- **Website:** [symfluence.org](https://symfluence.org)
+- **Discussions:** [GitHub Discussions](https://github.com/DarriEy/SYMFLUENCE/discussions)
+- **Issues:** [GitHub Issues](https://github.com/DarriEy/SYMFLUENCE/issues)
+
+---
+
+## Installation
+Environment setup varies by system.  
+Use the built-in installer whenever possible:
+
+```bash
+./symfluence --install
+```
+
+This creates a clean Python 3.11 virtual environment, installs dependencies, and registers local binaries.  
+For detailed instructions (ARC, FIR, Anvil, macOS), see [INSTALL.md](INSTALL.md).
+
+---
 
 ## Quick Start
 
-### Installation
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/DarriEy/CONFLUENCE.git
-   cd CONFLUENCE
-   ```
-
-2. **Run the automated installer:**
-   ```bash
-   ./confluence --install
-   ```
-
-   This will:
-   - Create a Python virtual environment
-   - Install all required dependencies
-   - Download and install external modeling tools
-   - Validate the installation
-
-### Basic Usage
-
-CONFLUENCE provides a convenient shell wrapper for easy execution:
-
+### Basic CLI Usage
 ```bash
-# Show available options
-./confluence --help
+# Show options
+./symfluence --help
 
-# Run complete workflow with default configuration  
-./confluence
+# Run default workflow
+./symfluence
 
-# Run specific workflow steps
-./confluence --calibrate_model --run_benchmarking
+# Run specific steps
+./symfluence --setup_project --calibrate_model
 
-# Set up a new domain from pour point coordinates
-./confluence --pour_point 51.1722/-115.5717 --domain_def delineate
+# Define domain from pour point
+./symfluence --pour_point 51.1722/-115.5717 --domain_def delineate
 
-# Check workflow status
-./confluence --status
-
-# Run with custom configuration
-./confluence --config /path/to/your/config.yaml
+# Preview workflow
+./symfluence --dry_run
 ```
 
-### Your First CONFLUENCE Project
-
-1. **Create a new project configuration:**
-   ```bash
-   cp 0_config_files/config_template.yaml my_project_config.yaml
-   # Edit configuration with your project details
-   ```
-
-2. **Set up the project:**
-   ```bash
-   ./confluence --config my_project_config.yaml --setup_project
-   ```
-
-3. **Run the workflow:**
-   ```bash
-   ./confluence --config my_project_config.yaml
-   ```
-
-
-## Example Workflows
-
-Explore the `examples/` directory for comprehensive tutorials:
-
-Each example includes step-by-step instructions and sample datasets.
-
-## Advanced Usage
-
-### Command Line Interface
-
-The `confluence` wrapper provides CLI options:
-
+### First Project
 ```bash
-# Individual workflow steps
-./confluence --setup_project --define_domain --calibrate_model
-
-# Debug mode with detailed logging
-./confluence --debug --force_rerun
-
-# Dry run to preview workflow steps
-./confluence --dry_run
-
-# Pour point-based domain setup
-./confluence --pour_point "lat/lon" --domain_def delineate --domain_name "MyWatershed"
+cp 0_config_files/config_template.yaml my_project.yaml
+./symfluence --config my_project.yaml --setup_project
+./symfluence --config my_project.yaml
 ```
+---
 
-### Python API
-
-For python users and integration with other tools:
+## Python API
+For programmatic control or integration:
 
 ```python
 from pathlib import Path
-from CONFLUENCE import CONFLUENCE
+from symfluence import SYMFLUENCE
 
-# Initialize CONFLUENCE
-config_path = Path('my_config.yaml')
-confluence = CONFLUENCE(config_path)
-
-# Run specific workflow components
-confluence.run_individual_steps(['setup_project', 'calibrate_model'])
-
+cfg = Path('my_config.yaml')
+symfluence = SYMFLUENCE(cfg)
+symfluence.run_individual_steps(['setup_project', 'calibrate_model'])
 ```
-
-## 🔧 Configuration
-
-CONFLUENCE uses YAML configuration files to define:
-- Domain boundaries and discretization settings
-- Model selection and parameters
-- Optimization and calibration targets
-- Output and visualization preferences
-
-See `0_config_files/config_template.yaml` for a complete configuration template with detailed comments.
-
-## Project Structure
-
-```
-CONFLUENCE/
-├── CONFLUENCE.py           # Main entry point
-├── confluence              # Shell wrapper script  
-├── utils/                  # Core framework modules
-│   ├── project/           # Project management
-│   ├── geospatial/        # Domain processing
-│   ├── models/            # Model interfaces
-│   ├── optimization/      # Calibration algorithms
-│   └── evaluation/        # Analysis tools
-├── 0_config_files/        # Configuration templates
-├── examples/              # Example workflows
-├── docs/                  # Documentation
-└── installs/              # External tools (auto-generated)
-```
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details on:
-- Code style and standards
-- Testing requirements  
-- Pull request process
-- Issue reporting
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-
-## 🆘 Support
-
-- **Documentation**: [https://confluence.readthedocs.io](https://confluence.readthedocs.io)
-- **Issues**: [GitHub Issues](https://github.com/DarriEy/CONFLUENCE/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/DarriEy/CONFLUENCE/discussions)
-
-## 🙏 Acknowledgments
-
-CONFLUENCE builds upon decades of advances in hydrological modeling and computational frameworks. We acknowledge the contributions of the broader hydrological modeling community and the developers of the integrated modeling tools.
 
 ---
 
-## Citation
+## Configuration
+YAML configuration files define:
+- Domain boundaries and discretization
+- Model selection and parameters
+- Optimization targets
+- Output and visualization options
 
-If you use CONFLUENCE in your research, please cite:
+See [`0_config_files/config_template.yaml`](0_config_files/config_template.yaml) for a full example.
 
-```bibtex
-@article{eythorsson2025,
-  title={Toward Automated Scientific Discovery in Hydrology: The Opportunities and Dangers of AI Augmented Research Frameworks},
-  author={Eythorsson, Darri and Clark, Martyn},
-  journal={Hydrological Processes},
-  volume={39},
-  number={1},
-  pages={e70065},
-  year={2025},
-  doi={10.1002/hyp.70065}
-}
+---
+
+## Project Structure
+```
+SYMFLUENCE/
+├── SYMFLUENCE.py         # Main entry point
+├── symfluence            # Shell wrapper
+├── utils/                # Core framework modules
+│   ├── project/
+│   ├── geospatial/
+│   ├── models/
+│   ├── optimization/
+│   └── evaluation/
+├── 0_config_files/       # Configuration templates
+├── examples/             # Example workflows
+├── docs/                 # Documentation
+└── installs/             # Auto-generated tool installs
 ```
 
-<p align="center">
-  Developed at the University of Calgary<br>
-  <a href="https://github.com/DarriEy/CONFLUENCE/issues">Report Bug</a> ·
-  <a href="https://github.com/DarriEy/CONFLUENCE/issues">Request Feature</a>
-</p>
+---
+
+## Branching Strategy  
+- **main**: Stable releases only — every commit is a published version.  
+- **develop**: Ongoing integration — merges from feature branches and then tested before release.  
+- Feature branches: `feature/<description>`, PR to `develop`.
+
+---
+
+## Contributing
+See [CONTRIBUTING.md](CONTRIBUTING.md) for:
+- Code standards and testing
+- Branching and pull request process
+- Issue reporting
+
+---
+
+## License
+Licensed under the GPL-3.0 License.  
+See [LICENSE](LICENSE) for details.
+
+---
+
+Happy modelling!  
+The SYMFLUENCE Team  

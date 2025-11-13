@@ -3,6 +3,7 @@ import sys
 import pandas as pd # type: ignore
 import netCDF4 as nc4 # type: ignore
 import geopandas as gpd # type: ignore
+import numpy as np # type: ignore
 from pathlib import Path
 from shutil import copyfile
 from datetime import datetime
@@ -17,8 +18,9 @@ class MizuRoutePreProcessor:
     def __init__(self, config: Dict[str, Any], logger: Any):
         self.config = config
         self.logger = logger
-        self.project_dir = Path(self.config.get('CONFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}"
+        self.project_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}"
         self.mizuroute_setup_dir = self.project_dir / "settings" / "mizuRoute"
+
 
     def run_preprocessing(self):
         self.logger.debug("Starting mizuRoute spatial preprocessing")
@@ -29,8 +31,10 @@ class MizuRoutePreProcessor:
             self.remap_summa_catchments_to_routing()
 
         # NEW: choose control writer based on source model
-        if self.config.get('MIZU_FROM_MODEL') == 'FUSE' or self.config.get('FUSE_ROUTING_INTEGRATION', 'mizuRoute') == 'mizuRoute':
+        if self.config.get('MIZU_FROM_MODEL') == 'FUSE' or self.config.get('FUSE_ROUTING_INTEGRATION') == 'mizuRoute':
             self.create_fuse_control_file()
+        elif self.config.get('MIZU_FROM_MODEL') == 'GR' or self.config.get('GR_ROUTING_INTEGRATION') == 'mizuRoute':
+            self.create_gr_control_file()
         else:
             self.create_control_file()
 
@@ -39,7 +43,7 @@ class MizuRoutePreProcessor:
 
     def copy_base_settings(self):
         self.logger.info("Copying mizuRoute base settings")
-        base_settings_path = Path(self.config.get('CONFLUENCE_CODE_DIR')) / '0_base_settings' / 'mizuRoute'
+        base_settings_path = Path(self.config.get('SYMFLUENCE_CODE_DIR')) / '0_base_settings' / 'mizuRoute'
         self.mizuroute_setup_dir.mkdir(parents=True, exist_ok=True)
 
         for file in os.listdir(base_settings_path):
@@ -103,6 +107,59 @@ class MizuRoutePreProcessor:
         self.logger.info(f"Area-weighted remapping file created with {n_hrus} HRUs")
         self.logger.info(f"Weight range: {weights.min():.4f} to {weights.max():.4f}")
         self.logger.info(f"Weight sum: {weights.sum():.4f}")
+
+
+
+    def create_gr_control_file(self):
+        """Create mizuRoute control file specifically for GR4J input"""
+        self.logger.debug("Creating mizuRoute control file for GR4J")
+        
+        control_name = self.config.get('SETTINGS_MIZU_CONTROL_FILE', 'mizuRoute_control_GR.txt')
+        
+        with open(self.mizuroute_setup_dir / control_name, 'w') as cf:
+            self._write_control_file_header(cf)
+            self._write_gr_control_file_directories(cf)
+            self._write_control_file_parameters(cf)
+            self._write_control_file_simulation_controls(cf)
+            self._write_control_file_topology(cf)
+            self._write_gr_control_file_runoff(cf)
+            self._write_control_file_remapping(cf)
+            self._write_control_file_miscellaneous(cf)
+
+    def _write_gr_control_file_directories(self, cf):
+        """Write GR-specific directory paths for mizuRoute control"""
+        experiment_output_gr = self.config.get('EXPERIMENT_OUTPUT_GR', 'default')
+        experiment_output_mizuroute = self.config.get('EXPERIMENT_OUTPUT_MIZUROUTE')
+
+        if experiment_output_gr == 'default':
+            experiment_output_gr = self.project_dir / f"simulations/{self.config['EXPERIMENT_ID']}" / 'GR'
+        else:
+            experiment_output_gr = Path(experiment_output_gr)
+
+        if experiment_output_mizuroute == 'default':
+            experiment_output_mizuroute = self.project_dir / f"simulations/{self.config['EXPERIMENT_ID']}" / 'mizuRoute'
+        else:
+            experiment_output_mizuroute = Path(experiment_output_mizuroute)
+
+        cf.write("!\n! --- DEFINE DIRECTORIES \n")
+        cf.write(f"<ancil_dir>             {self.mizuroute_setup_dir}/    ! Folder that contains ancillary data (river network, remapping netCDF) \n")
+        cf.write(f"<input_dir>             {experiment_output_gr}/    ! Folder that contains runoff data from GR4J \n")
+        cf.write(f"<output_dir>            {experiment_output_mizuroute}/    ! Folder that will contain mizuRoute simulations \n")
+
+    def _write_gr_control_file_runoff(self, cf):
+        """Write GR-specific runoff file settings"""
+        cf.write("!\n! --- DEFINE RUNOFF FILE \n")
+        cf.write(f"<fname_qsim>            {self.config.get('EXPERIMENT_ID')}_timestep.nc    ! netCDF name for GR4J runoff \n")
+        cf.write(f"<vname_qsim>            {self.config.get('SETTINGS_MIZU_ROUTING_VAR', 'q_routed')}    ! Variable name for GR4J runoff \n")
+        cf.write(f"<units_qsim>            {self.config.get('SETTINGS_MIZU_ROUTING_UNITS', 'mm/d')}    ! Units of input runoff \n")
+        cf.write(f"<dt_qsim>               {self.config.get('SETTINGS_MIZU_ROUTING_DT', '86400')}    ! Time interval of input runoff in seconds \n")
+        cf.write("<dname_time>            time    ! Dimension name for time \n")
+        cf.write("<vname_time>            time    ! Variable name for time \n")
+        cf.write("<dname_hruid>           gru     ! Dimension name for HM_HRU ID \n")
+        cf.write("<vname_hruid>           gruId   ! Variable name for HM_HRU ID \n")
+        cf.write("<calendar>              standard    ! Calendar of the nc file \n")
+
+
 
     def _check_if_headwater_basin(self, shp_river):
         """
@@ -257,19 +314,76 @@ class MizuRoutePreProcessor:
             self.logger.info(f"Weight range: {self.subcatchment_weights.min():.4f} to {self.subcatchment_weights.max():.4f}")
             
         else:
-            # Original logic for non-lumped cases
-            closest_segment_id = self._find_closest_segment_to_pour_point(shp_river)
+            # Check if we have SUMMA attributes file with multiple HRUs per GRU
+            attributes_path = self.project_dir / 'settings' / 'SUMMA' / 'attributes.nc'
             
-            if len(shp_basin) == 1:  # For lumped case
-                shp_basin.loc[0, self.config.get('RIVER_BASIN_SHP_HRU_TO_SEG')] = closest_segment_id
-                self.logger.info(f"Set single HRU to drain to closest segment: {closest_segment_id}")
-            
-            num_seg = len(shp_river)
-            num_hru = len(shp_basin)
-            
-            hru_ids = shp_basin[self.config.get('RIVER_BASIN_SHP_RM_GRUID')].values.astype(int)
-            hru_to_seg_ids = shp_basin[self.config.get('RIVER_BASIN_SHP_HRU_TO_SEG')].values.astype(int)
-            hru_areas = shp_basin[self.config.get('RIVER_BASIN_SHP_AREA')].values.astype(float)
+            if attributes_path.exists():
+                with nc4.Dataset(attributes_path, 'r') as attrs:
+                    n_hrus = len(attrs.dimensions['hru'])
+                    n_grus = len(attrs.dimensions['gru'])
+                    
+                    if n_hrus > n_grus:
+                        # Multiple HRUs per GRU - SUMMA will output GRU-level runoff
+                        # mizuRoute should route at GRU level
+                        self.logger.info(f"Distributed SUMMA with {n_hrus} HRUs across {n_grus} GRUs")
+                        self.logger.info("Creating GRU-level topology for mizuRoute (SUMMA outputs averageRoutedRunoff at GRU level)")
+                        
+                        # Read GRU information from SUMMA attributes file
+                        gru_ids = attrs.variables['gruId'][:].astype(int)
+                        
+                        # For distributed SUMMA, GRU IDs should match segment IDs
+                        hru_ids = gru_ids  # mizuRoute will read GRU-level data
+                        hru_to_seg_ids = gru_ids  # Each GRU drains to segment with same ID
+                        
+                        # Calculate GRU areas by summing HRU areas within each GRU
+                        hru2gru = attrs.variables['hru2gruId'][:].astype(int)
+                        hru_areas_all = attrs.variables['HRUarea'][:].astype(float)
+                        
+                        # Sum areas for each GRU
+                        gru_areas = np.zeros(n_grus)
+                        for i, gru_id in enumerate(gru_ids):
+                            gru_mask = hru2gru == gru_id
+                            gru_areas[i] = hru_areas_all[gru_mask].sum()
+                        
+                        hru_areas = gru_areas
+                        
+                        num_seg = len(shp_river)
+                        num_hru = n_grus  # mizuRoute sees GRUs as HRUs
+                        
+                        # Store flag for control file generation
+                        self.summa_uses_gru_runoff = True
+                        
+                        self.logger.info(f"Created topology with {num_hru} GRUs for mizuRoute routing")
+                    else:
+                        # Lumped modeling: use original logic
+                        self.summa_uses_gru_runoff = False
+                        closest_segment_id = self._find_closest_segment_to_pour_point(shp_river)
+                        
+                        if len(shp_basin) == 1:
+                            shp_basin.loc[0, self.config.get('RIVER_BASIN_SHP_HRU_TO_SEG')] = closest_segment_id
+                            self.logger.info(f"Set single HRU to drain to closest segment: {closest_segment_id}")
+                        
+                        num_seg = len(shp_river)
+                        num_hru = len(shp_basin)
+                        
+                        hru_ids = shp_basin[self.config.get('RIVER_BASIN_SHP_RM_GRUID')].values.astype(int)
+                        hru_to_seg_ids = shp_basin[self.config.get('RIVER_BASIN_SHP_HRU_TO_SEG')].values.astype(int)
+                        hru_areas = shp_basin[self.config.get('RIVER_BASIN_SHP_AREA')].values.astype(float)
+            else:
+                # No attributes file: use original logic
+                self.summa_uses_gru_runoff = False
+                closest_segment_id = self._find_closest_segment_to_pour_point(shp_river)
+                
+                if len(shp_basin) == 1:
+                    shp_basin.loc[0, self.config.get('RIVER_BASIN_SHP_HRU_TO_SEG')] = closest_segment_id
+                    self.logger.info(f"Set single HRU to drain to closest segment: {closest_segment_id}")
+                
+                num_seg = len(shp_river)
+                num_hru = len(shp_basin)
+                
+                hru_ids = shp_basin[self.config.get('RIVER_BASIN_SHP_RM_GRUID')].values.astype(int)
+                hru_to_seg_ids = shp_basin[self.config.get('RIVER_BASIN_SHP_HRU_TO_SEG')].values.astype(int)
+                hru_areas = shp_basin[self.config.get('RIVER_BASIN_SHP_AREA')].values.astype(float)
         
         # Ensure minimum segment length - now safe from None values
         length_col = self.config.get('RIVER_NETWORK_SHP_LENGTH')
@@ -360,7 +474,9 @@ class MizuRoutePreProcessor:
             pour_point_geom = shp_pour_point.geometry.iloc[0]
             
             # Calculate distances from pour point to all river segments
-            distances = shp_river.geometry.distance(pour_point_geom)
+            shp_river_proj = shp_river.to_crs(shp_river.estimate_utm_crs())
+            pour_point_proj = gpd.GeoSeries([pour_point_geom], crs=shp_pour_point.crs).to_crs(shp_river_proj.crs)
+            distances = shp_river_proj.geometry.distance(pour_point_proj.iloc[0])
             
             # Find closest segment
             closest_idx = distances.idxmin()
@@ -505,6 +621,30 @@ class MizuRoutePreProcessor:
         
         self.logger.debug(f"mizuRoute control file created at {self.mizuroute_setup_dir / control_name}")
 
+    def _write_control_file_runoff(self, cf):
+        """Write SUMMA-specific runoff file settings"""
+        # Check if we should use GRU-level or HRU-level data
+        uses_gru = getattr(self, 'summa_uses_gru_runoff', False)
+        
+        cf.write("!\n! --- DEFINE RUNOFF FILE \n")
+        cf.write(f"<fname_qsim>            {self.config.get('EXPERIMENT_ID')}_timestep.nc    ! netCDF name for SUMMA runoff \n")
+        cf.write(f"<vname_qsim>            {self.config.get('SETTINGS_MIZU_ROUTING_VAR', 'averageRoutedRunoff')}    ! Variable name for SUMMA runoff \n")
+        cf.write(f"<units_qsim>            {self.config.get('SETTINGS_MIZU_ROUTING_UNITS', 'm/s')}    ! Units of input runoff \n")
+        cf.write(f"<dt_qsim>               {self.config.get('SETTINGS_MIZU_ROUTING_DT', '3600')}    ! Time interval of input runoff in seconds \n")
+        cf.write("<dname_time>            time    ! Dimension name for time \n")
+        cf.write("<vname_time>            time    ! Variable name for time \n")
+        
+        if uses_gru:
+            # Distributed SUMMA outputs GRU-level runoff
+            cf.write("<dname_hruid>           gru     ! Dimension name for HM_HRU ID (GRU level for distributed SUMMA) \n")
+            cf.write("<vname_hruid>           gruId   ! Variable name for HM_HRU ID (GRU level for distributed SUMMA) \n")
+        else:
+            # Standard HRU-level runoff
+            cf.write("<dname_hruid>           hru     ! Dimension name for HM_HRU ID \n")
+            cf.write("<vname_hruid>           hruId   ! Variable name for HM_HRU ID \n")
+            
+        cf.write("<calendar>              standard    ! Calendar of the nc file \n")
+
     def _set_topology_attributes(self, ncid):
         now = datetime.now()
         ncid.setncattr('Author', "Created by SUMMA workflow scripts")
@@ -555,7 +695,7 @@ class MizuRoutePreProcessor:
     def _write_fuse_control_file_runoff(self, cf):
         """Write FUSE-specific runoff file settings"""
         cf.write("!\n! --- DEFINE RUNOFF FILE \n")
-        cf.write(f"<fname_qsim>            {self.config.get('DOMAIN_NAME')}_{self.config.get('EXPERIMENT_ID')}_runs_def.nc    ! netCDF name for FUSE runoff \n")
+        cf.write(f"<fname_qsim>            {self.config.get('EXPERIMENT_ID')}_timestep.nc    ! netCDF name for FUSE runoff \n")
         cf.write(f"<vname_qsim>            {self.config.get('SETTINGS_MIZU_ROUTING_VAR')}    ! Variable name for FUSE runoff \n")
         cf.write(f"<units_qsim>            {self.config.get('SETTINGS_MIZU_ROUTING_UNITS')}    ! Units of input runoff \n")
         cf.write(f"<dt_qsim>               {self.config.get('SETTINGS_MIZU_ROUTING_DT')}    ! Time interval of input runoff in seconds \n")
@@ -733,7 +873,7 @@ class MizuRouteRunner:
     def __init__(self, config: Dict[str, Any], logger: Any):
         self.config = config
         self.logger = logger
-        self.root_path = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+        self.root_path = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
         self.domain_name = self.config.get('DOMAIN_NAME')
         self.project_dir = self.root_path / f"domain_{self.domain_name}"
 

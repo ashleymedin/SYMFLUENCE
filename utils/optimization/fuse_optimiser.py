@@ -5,7 +5,7 @@
 FUSE Optimizer
 
 Handles FUSE model calibration using various optimization algorithms.
-Integrates with the existing CONFLUENCE optimization framework.
+Integrates with the existing SYMFLUENCE optimization framework.
 """
 
 import numpy as np
@@ -48,13 +48,13 @@ class FUSEOptimizer:
         
         # FUSE execution settings
         self.fuse_exe_path = self._get_fuse_executable_path()
-        data_dir = Path(config.get('CONFLUENCE_DATA_DIR'))
+        data_dir = Path(config.get('SYMFLUENCE_DATA_DIR'))
         project_dir = data_dir / f"domain_{self.domain_name}"
         self.fuse_sim_dir = project_dir / 'simulations' / self.experiment_id / 'FUSE'
         self.fuse_setup_dir = project_dir / 'settings' / 'FUSE'
         
         # Results tracking
-        self.results_dir = Path(config.get('CONFLUENCE_DATA_DIR')) / f"domain_{self.domain_name}" / "optimisation"
+        self.results_dir = Path(config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{self.domain_name}" / "optimisation"
         self.results_dir.mkdir(parents=True, exist_ok=True)
         
         # Initialize results storage
@@ -66,7 +66,7 @@ class FUSEOptimizer:
         """Get path to FUSE executable"""
         fuse_install = self.config.get('FUSE_INSTALL_PATH', 'default')
         if fuse_install == 'default':
-            data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+            data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
             return data_dir / 'installs' / 'fuse' / 'bin' / 'fuse.exe'
         return Path(fuse_install) / 'fuse.exe'
     
@@ -75,7 +75,7 @@ class FUSEOptimizer:
         optimization_target = self.config.get('OPTIMISATION_TARGET', 'streamflow')
         
         # Get project directory for calibration target
-        data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+        data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
         project_dir = data_dir / f"domain_{self.domain_name}"
         
         if optimization_target in ['swe', 'sca', 'snow_depth']:
@@ -528,7 +528,7 @@ class FUSEOptimizer:
             optimizer = optim.Adam([x], lr=initial_lr)
             scheduler = optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, mode='min' if self.optimization_metric.upper() in ['RMSE', 'MAE'] else 'max',
-                factor=0.7, patience=3, min_lr=lr * 0.1, verbose=False
+                factor=0.7, patience=3, min_lr=lr * 0.1
             )
             self.logger.info(f"Using Adam with initial LR: {initial_lr:.6f}")
             
@@ -836,7 +836,7 @@ class FUSEOptimizer:
         """
         try:
             # Calculate metrics using calibration target
-            data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+            data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
             project_dir = data_dir / f"domain_{self.domain_name}"
             fuse_sim_dir = project_dir / 'simulations' / self.experiment_id / 'FUSE'
             
@@ -869,7 +869,7 @@ class FUSEOptimizer:
             
             output_file = sorted(output_files)[-1]  # Most recent
             
-            with xr.open_dataset(output_file) as ds:
+            with xr.open_dataset(output_file, decode_timedelta=True) as ds:
                 # Check if jacobian data exists
                 if 'numjacobian' not in ds.data_vars:
                     self.logger.debug("numjacobian not found in FUSE output - using finite differences")
@@ -952,7 +952,7 @@ class FUSEOptimizer:
                 return self._get_worst_loss(), torch.zeros_like(x)
             
             # Calculate metrics first
-            data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+            data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
             project_dir = data_dir / f"domain_{self.domain_name}"
             fuse_sim_dir = project_dir / 'simulations' / self.experiment_id / 'FUSE'
             
@@ -1000,7 +1000,7 @@ class FUSEOptimizer:
                 self.logger.warning("Failed to run baseline evaluation for finite differences")
                 return torch.zeros_like(x)
             
-            data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+            data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
             project_dir = data_dir / f"domain_{self.domain_name}"
             fuse_sim_dir = project_dir / 'simulations' / self.experiment_id / 'FUSE'
             
@@ -1149,7 +1149,7 @@ class FUSEOptimizer:
                 return self._get_worst_loss(), torch.zeros_like(x)
             
             # Calculate all metrics
-            data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+            data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
             project_dir = data_dir / f"domain_{self.domain_name}"
             fuse_sim_dir = project_dir / 'simulations' / self.experiment_id / 'FUSE'
             
@@ -1287,7 +1287,7 @@ class FUSEOptimizer:
                 return [-1.0] * self.num_objectives
             
             # Calculate metrics using calibration target
-            data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+            data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
             project_dir = data_dir / f"domain_{self.domain_name}"
             fuse_sim_dir = project_dir / 'simulations' / self.experiment_id / 'FUSE'
             
@@ -2079,7 +2079,7 @@ class FUSEOptimizer:
             self.logger.debug(f"fuse run: {success}")
 
             # Calculate metrics using calibration target
-            data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+            data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
             project_dir = data_dir / f"domain_{self.domain_name}"
             fuse_sim_dir = project_dir / 'simulations' / self.experiment_id / 'FUSE'
             

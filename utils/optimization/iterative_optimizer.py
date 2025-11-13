@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-CONFLUENCE Optimizer
+SYMFLUENCE Optimizer
 
-This module provides parameter optimization for CONFLUENCE hydrological models using with support for multiple calibration targets (streamflow, snow, etc.),
+This module provides parameter optimization for SYMFLUENCE hydrological models using with support for multiple calibration targets (streamflow, snow, etc.),
 parallel processing, and parameter management.
 
 Features:
@@ -94,7 +94,7 @@ from fuse_worker_functions import (
 
 
 from ngen_optimiser import NgenOptimizer
-
+from utils.optimization.local_scratch_manager import LocalScratchManager
 
 # ============= PARAMETER MANAGEMENT =============
 
@@ -196,13 +196,13 @@ class ParameterManager:
         
         # Parse local parameter bounds
         if self.local_params:
-            local_param_file = Path(self.config.get('CONFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}" / 'settings' / 'SUMMA' / 'localParamInfo.txt'
+            local_param_file = Path(self.config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}" / 'settings' / 'SUMMA' / 'localParamInfo.txt'
             local_bounds = self._parse_param_info_file(local_param_file, self.local_params)
             bounds.update(local_bounds)
         
         # Parse basin parameter bounds
         if self.basin_params:
-            basin_param_file = Path(self.config.get('CONFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}" / 'settings' / 'SUMMA' / 'basinParamInfo.txt'
+            basin_param_file = Path(self.config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}" / 'settings' / 'SUMMA' / 'basinParamInfo.txt'
             basin_bounds = self._parse_param_info_file(basin_param_file, self.basin_params)
             bounds.update(basin_bounds)
         
@@ -283,7 +283,7 @@ class ParameterManager:
     
     def _load_existing_optimized_parameters(self) -> Optional[Dict[str, np.ndarray]]:
         """Load existing optimized parameters from default settings"""
-        trial_params_path = self.config.get('CONFLUENCE_DATA_DIR')
+        trial_params_path = self.config.get('SYMFLUENCE_DATA_DIR')
         if trial_params_path == 'default':
             return None
         
@@ -627,7 +627,7 @@ class ModelExecutor:
             # Get SUMMA executable
             summa_path = self.config.get('SUMMA_INSTALL_PATH')
             if summa_path == 'default':
-                summa_path = Path(self.config.get('CONFLUENCE_DATA_DIR')) / 'installs' / 'summa' / 'bin'
+                summa_path = Path(self.config.get('SYMFLUENCE_DATA_DIR')) / 'installs' / 'summa' / 'bin'
             else:
                 summa_path = Path(summa_path)
             
@@ -672,12 +672,38 @@ class ModelExecutor:
             # Get mizuRoute executable
             mizu_path = self.config.get('INSTALL_PATH_MIZUROUTE')
             if mizu_path == 'default':
-                mizu_path = Path(self.config.get('CONFLUENCE_DATA_DIR')) / 'installs' / 'mizuRoute' / 'route' / 'bin'
+                mizu_path = Path(self.config.get('SYMFLUENCE_DATA_DIR')) / 'installs' / 'mizuRoute' / 'route' / 'bin'
             else:
                 mizu_path = Path(mizu_path)
             
             mizu_exe = mizu_path / self.config.get('EXE_NAME_MIZUROUTE', 'mizuroute.exe')
             control_file = settings_dir / self.config.get('SETTINGS_MIZU_CONTROL_FILE', 'mizuroute.control')
+
+            # 1) Find SUMMA timestep file actually produced for this run
+            timestep_files = sorted((output_dir.parent / "SUMMA").glob("*_timestep.nc"))
+            if not timestep_files:
+                self.logger.error(f"No SUMMA timestep files found in {(output_dir.parent / 'SUMMA')}")
+                return False
+            summa_timestep = timestep_files[0].name  # e.g., run_de_opt_run_1_timestep.nc
+
+            # 2) Rewrite mizuroute.control paths/names to match this run
+            text = control_file.read_text()
+
+            def repl(line, key, val):
+                # assumes lines like: key = 'value'
+                if line.strip().startswith(key):
+                    return f"{key} = '{val}'\n"
+                return line
+
+            lines = []
+            for line in text.splitlines(True):
+                line = repl(line, "input_dir",  str((output_dir.parent / "SUMMA")))
+                line = repl(line, "output_dir", str(output_dir))
+                line = repl(line, "fname_qsim", summa_timestep)
+                # optional: update case_name to strip suffix after last '_' if desired
+                lines.append(line)
+
+            control_file.write_text("".join(lines))
             
             if not mizu_exe.exists():
                 self.logger.error(f"mizuRoute executable not found: {mizu_exe}")
@@ -1029,7 +1055,7 @@ class ResultsManager:
 
 class BaseOptimizer(ABC):
     """
-    Abstract base class for CONFLUENCE optimizers.
+    Abstract base class for SYMFLUENCE optimizers.
     
     Contains common functionality shared between different optimization algorithms
     like DDS and DE. Handles setup, parameter management, model execution, and
@@ -1042,14 +1068,45 @@ class BaseOptimizer(ABC):
         self.logger = logger
         
         # Setup basic paths
-        self.data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+        self.data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
         self.domain_name = self.config.get('DOMAIN_NAME')
         self.project_dir = self.data_dir / f"domain_{self.domain_name}"
         self.experiment_id = self.config.get('EXPERIMENT_ID')
         
         # Algorithm-specific directory setup
         self.algorithm_name = self.get_algorithm_name().lower()
+        
+        self.use_parallel = config.get('MPI_PROCESSES', 1) > 1
+        self.num_processes = max(1, config.get('MPI_PROCESSES', 1))
+        
+        # Get MPI rank
+        mpi_rank = None
+        if self.use_parallel:
+            mpi_rank = os.environ.get('PMI_RANK', 0)  # SLURM
+            if not mpi_rank:
+                mpi_rank = os.environ.get('OMPI_COMM_WORLD_RANK', 0)  # OpenMPI
+            mpi_rank = int(mpi_rank) if mpi_rank else 0
+
+        # Initialize scratch manager
+        self.scratch_manager = LocalScratchManager(
+            config, logger, self.project_dir, self.get_algorithm_name(), mpi_rank
+        )
+
+        if self.scratch_manager.use_scratch:
+            # Add staggered setup to avoid memory pressure
+            if mpi_rank and mpi_rank > 0:
+                import time
+                delay = mpi_rank * 2  # 2 seconds per rank
+                self.logger.info(f"Rank {mpi_rank}: Waiting {delay}s before scratch setup...")
+                time.sleep(delay)
+            
+            if self.scratch_manager.setup_scratch_space():
+                self.data_dir = self.scratch_manager.get_effective_data_dir()
+                self.project_dir = self.scratch_manager.get_effective_project_dir()
+
+        # Continue with rest of initialization...
         self.optimization_dir = self.project_dir / "simulations" / f"run_{self.algorithm_name}"
+        self.logger.info(f"optimization_dir set to: {self.optimization_dir}")  # AND THIS
         self.summa_sim_dir = self.optimization_dir / "SUMMA"
         self.mizuroute_sim_dir = self.optimization_dir / "mizuRoute"
         self.optimization_settings_dir = self.optimization_dir / "settings" / "SUMMA"
@@ -1081,8 +1138,6 @@ class BaseOptimizer(ABC):
             self.logger.info(f"Random seed set to: {self.random_seed}")
 
         # Parallel processing setup
-        self.use_parallel = config.get('MPI_PROCESSES', 1) > 1
-        self.num_processes = max(1, config.get('MPI_PROCESSES', 1))
         self.parallel_dirs = []
         self._consecutive_parallel_failures = 0
         
@@ -1261,8 +1316,8 @@ class BaseOptimizer(ABC):
                     ilayer_var[:, h] = default_heights
                 
                 # Add attributes
-                ds.setncattr('title', 'Minimal coldState file created by CONFLUENCE optimization')
-                ds.setncattr('created_by', 'CONFLUENCE BaseOptimizer._create_minimal_coldstate()')
+                ds.setncattr('title', 'Minimal coldState file created by SYMFLUENCE optimization')
+                ds.setncattr('created_by', 'SYMFLUENCE BaseOptimizer._create_minimal_coldstate()')
                 
             self.logger.info(f"Created minimal coldState.nc with {num_hrus} HRUs")
             return True
@@ -1327,9 +1382,9 @@ class BaseOptimizer(ABC):
                 updated_lines.append(f"simStartTime         '{sim_start}'\n")
             elif 'simEndTime' in line:
                 updated_lines.append(f"simEndTime           '{sim_end}'\n")
-            elif 'outFilePrefix' in line:
-                prefix = f'run_{self.algorithm_name}_final' if not use_calibration_period else f'run_{self.algorithm_name}_opt'
-                updated_lines.append(f"outFilePrefix        '{prefix}_{self.experiment_id}'\n")
+            #elif 'outFilePrefix' in line:
+                #prefix = f'run_{self.algorithm_name}_final' if not use_calibration_period else f'run_{self.algorithm_name}_opt'
+                #updated_lines.append(f"outFilePrefix        '{prefix}_{self.experiment_id}'\n")
             elif 'outputPath' in line:
                 output_path = str(self.summa_sim_dir).replace('\\', '/')
                 updated_lines.append(f"outputPath           '{output_path}/'\n")
@@ -1382,18 +1437,27 @@ class BaseOptimizer(ABC):
         optimization_target = self.config.get('OPTIMISATION_TARGET', 'streamflow')
         calibration_variable = self.config.get('CALIBRATION_VARIABLE', 'streamflow').lower()
         
+        # Check for ET/latent heat calibration FIRST (before streamflow)
+        if optimization_target in ['et', 'latent_heat']:
+            return ETTarget(self.config, self.project_dir, self.logger)
+        
         # Check for snow-related calibration
-        if (optimization_target in ['swe', 'sca', 'snow_depth'] or 
+        elif (optimization_target in ['swe', 'sca', 'snow_depth'] or 
             'swe' in calibration_variable or 'snow' in calibration_variable):
             return SnowTarget(self.config, self.project_dir, self.logger)
-        elif optimization_target == 'streamflow' or 'flow' in calibration_variable:
-            return StreamflowTarget(self.config, self.project_dir, self.logger)
+        
+        # Check for groundwater calibration
         elif optimization_target in ['gw_depth', 'gw_grace']:
             return GroundwaterTarget(self.config, self.project_dir, self.logger)
-        elif optimization_target in ['et', 'latent_heat']:
-            return ETTarget(self.config, self.project_dir, self.logger)
+        
+        # Check for soil moisture calibration
         elif optimization_target in ['sm_point', 'sm_smap', 'sm_esa']:
             return SoilMoistureTarget(self.config, self.project_dir, self.logger)
+        
+        # Check for streamflow calibration (should be near the end as it's most common)
+        elif optimization_target == 'streamflow' or 'flow' in calibration_variable:
+            return StreamflowTarget(self.config, self.project_dir, self.logger)
+        
         else:
             # Default fallback - try to infer from calibration variable
             if 'streamflow' in calibration_variable or 'flow' in calibration_variable:
@@ -1405,6 +1469,13 @@ class BaseOptimizer(ABC):
         """Setup parallel processing directories and files"""
         self.logger.info(f"Setting up parallel processing with {self.num_processes} processes")
         
+        # DEBUG: Check if source files exist
+        self.logger.info(f"optimization_settings_dir: {self.optimization_settings_dir}")
+        self.logger.info(f"optimization_settings_dir exists: {self.optimization_settings_dir.exists()}")
+        if self.optimization_settings_dir.exists():
+            files = list(self.optimization_settings_dir.glob("*"))
+            self.logger.info(f"Files in optimization_settings_dir: {[f.name for f in files]}")
+        
         for proc_id in range(self.num_processes):
             # Create process-specific directories
             proc_base_dir = self.optimization_dir / f"parallel_proc_{proc_id:02d}"
@@ -1415,7 +1486,7 @@ class BaseOptimizer(ABC):
             
             # Create directories
             for directory in [proc_base_dir, proc_summa_dir, proc_mizuroute_dir,
-                             proc_summa_settings_dir, proc_mizu_settings_dir]:
+                            proc_summa_settings_dir, proc_mizu_settings_dir]:
                 directory.mkdir(parents=True, exist_ok=True)
             
             # Create log directories
@@ -1425,9 +1496,14 @@ class BaseOptimizer(ABC):
             # Copy settings files
             self._copy_settings_to_process_dir(proc_summa_settings_dir, proc_mizu_settings_dir)
             
+            # ADD THIS: Verify critical files were copied
+            fm_file = proc_summa_settings_dir / 'fileManager.txt'
+            if not fm_file.exists():
+                raise FileNotFoundError(f"Failed to copy fileManager.txt to {proc_summa_settings_dir}")
+            
             # Update file managers for this process
             self._update_process_file_managers(proc_id, proc_summa_dir, proc_mizuroute_dir,
-                                             proc_summa_settings_dir, proc_mizu_settings_dir)
+                                            proc_summa_settings_dir, proc_mizu_settings_dir)
             
             # Store directory info
             self.parallel_dirs.append({
@@ -1438,6 +1514,14 @@ class BaseOptimizer(ABC):
                 'summa_settings_dir': proc_summa_settings_dir,
                 'mizuroute_settings_dir': proc_mizu_settings_dir
             })
+        
+        # ADD THIS: Final verification that all parallel dirs are ready
+        self.logger.info("Verifying all parallel directories are set up...")
+        for proc_id, proc_dirs in enumerate(self.parallel_dirs):
+            fm_path = proc_dirs['summa_settings_dir'] / 'fileManager.txt'
+            if not fm_path.exists():
+                raise FileNotFoundError(f"Parallel proc {proc_id} missing fileManager.txt at {fm_path}")
+        self.logger.info(f"All {len(self.parallel_dirs)} parallel directories verified and ready")
     
     def _copy_settings_to_process_dir(self, proc_summa_settings_dir: Path, proc_mizu_settings_dir: Path) -> None:
         """Copy settings files to process-specific directory"""
@@ -2188,7 +2272,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Add CONFLUENCE path
+# Add SYMFLUENCE path
 sys.path.append(r"{Path(__file__).parent}")
 
 # Import the worker function
@@ -2883,12 +2967,13 @@ if __name__ == "__main__":
         """Get SUMMA executable path"""
         summa_path = self.config.get('SUMMA_INSTALL_PATH')
         if summa_path == 'default':
-            summa_path = Path(self.config.get('CONFLUENCE_DATA_DIR')) / 'installs' / 'summa' / 'bin'
+            summa_path = Path(self.config.get('SYMFLUENCE_DATA_DIR')) / 'installs' / 'summa' / 'bin'
         else:
             summa_path = Path(summa_path)
         
         return summa_path / self.config.get('SUMMA_EXE')
         
+
     def run_optimization(self) -> Dict[str, Any]:
         """
         Main optimization method with enhanced final reporting
@@ -2896,7 +2981,7 @@ if __name__ == "__main__":
         algorithm_name = self.get_algorithm_name()
         
         self.logger.info("=" * 60)
-        self.logger.info(f"Starting {algorithm_name} optimization for {self.config.get('CALIBRATION_VARIABLE', 'streamflow')} calibration")
+        self.logger.info(f"Starting {algorithm_name} optimization for {self.config.get('OPTIMISATION_TARGET', 'streamflow')} calibration")
         self.logger.info(f"Target metric: {self.target_metric}")
         self.logger.info(f"Max iterations: {self.max_iterations}")
         
@@ -2953,6 +3038,12 @@ if __name__ == "__main__":
             # Enhanced final summary logging
             self._log_final_optimization_summary(algorithm_name, best_score, final_result, duration)
             
+            # ========== NEW: Stage results back if using scratch ==========
+            if self.scratch_manager.use_scratch:
+                self.logger.info("Staging results from scratch to permanent storage...")
+                self.scratch_manager.stage_results_back()
+            # ==============================================================
+            
             return {
                 'best_parameters': best_params,
                 'best_score': best_score,
@@ -2967,14 +3058,25 @@ if __name__ == "__main__":
             
         except Exception as e:
             self.logger.error(f"{algorithm_name} optimization failed: {str(e)}")
+            
+            # ========== NEW: Try to stage partial results even on failure ==========
+            if self.scratch_manager.use_scratch:
+                try:
+                    self.logger.info("Attempting to stage partial results...")
+                    self.scratch_manager.stage_results_back()
+                except Exception as stage_error:
+                    self.logger.error(f"Failed to stage partial results: {stage_error}")
+            # =======================================================================
+            
             raise
         finally:
             self._cleanup_parallel_processing()
 
 
+
 class DDSOptimizer(BaseOptimizer):
     """
-    Dynamically Dimensioned Search (DDS) Optimizer for CONFLUENCE
+    Dynamically Dimensioned Search (DDS) Optimizer for SYMFLUENCE
     
     Implements the DDS algorithm with support for multi-start parallel execution.
     """
@@ -3371,7 +3473,7 @@ class DDSOptimizer(BaseOptimizer):
 
 class DEOptimizer(BaseOptimizer):
     """
-    Differential Evolution (DE) Optimizer for CONFLUENCE
+    Differential Evolution (DE) Optimizer for SYMFLUENCE
     
     Implements the DE algorithm with population-based optimization.
     """
@@ -3607,7 +3709,7 @@ class DEOptimizer(BaseOptimizer):
 
 class PSOOptimizer(BaseOptimizer):
     """
-    Particle Swarm Optimization (PSO) Optimizer for CONFLUENCE
+    Particle Swarm Optimization (PSO) Optimizer for SYMFLUENCE
     
     Implements the PSO algorithm with swarm-based optimization where particles
     move through parameter space guided by their personal best and global best.
@@ -3904,7 +4006,7 @@ class PSOOptimizer(BaseOptimizer):
 
 class NSGA2Optimizer(BaseOptimizer):
     """
-    Non-dominated Sorting Genetic Algorithm II (NSGA-II) for CONFLUENCE
+    Non-dominated Sorting Genetic Algorithm II (NSGA-II) for SYMFLUENCE
     
     Implements the NSGA-II multi-objective optimization algorithm. Uses both
     NSE and KGE as objectives for streamflow calibration, producing a Pareto
@@ -6020,7 +6122,7 @@ class PopulationDDSOptimizer(BaseOptimizer):
 
 class SCEUAOptimizer(BaseOptimizer):
     """
-    Shuffled Complex Evolution - University of Arizona (SCE-UA) Optimizer for CONFLUENCE
+    Shuffled Complex Evolution - University of Arizona (SCE-UA) Optimizer for SYMFLUENCE
     
     Implements the SCE-UA algorithm (Duan et al. 1992, 1993). Uses complexes of points that evolve and shuffle
     to explore the parameter space efficiently.

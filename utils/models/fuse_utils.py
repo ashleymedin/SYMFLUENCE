@@ -39,7 +39,7 @@ class FUSEPreProcessor:
     def __init__(self, config: Dict[str, Any], logger: Any):
         self.config = config
         self.logger = logger
-        self.data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+        self.data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
         self.domain_name = self.config.get('DOMAIN_NAME')
         self.project_dir = self.data_dir / f"domain_{self.domain_name}"
         self.fuse_setup_dir = self.project_dir / "settings" / "FUSE"
@@ -94,7 +94,7 @@ class FUSEPreProcessor:
         """
         self.logger.info("Copying FUSE base settings")
         
-        base_settings_path = Path(self.config.get('CONFLUENCE_CODE_DIR')) / '0_base_settings' / 'FUSE'
+        base_settings_path = Path(self.config.get('SYMFLUENCE_CODE_DIR')) / '0_base_settings' / 'FUSE'
         settings_path = self._get_default_path('SETTINGS_FUSE_PATH', 'settings/FUSE')
         
         try:
@@ -509,7 +509,7 @@ class FUSEPreProcessor:
             
             variable_handler = VariableHandler(config=self.config, logger=self.logger, 
                                             dataset=self.config['FORCING_DATASET'], model='FUSE')
-            ds = xr.open_mfdataset(forcing_files)
+            ds = xr.open_mfdataset(forcing_files, data_vars='all')
             ds = variable_handler.process_forcing_data(ds)
             
             # Spatial organization based on mode BEFORE resampling
@@ -1633,7 +1633,7 @@ class FUSERunner:
     def __init__(self, config: Dict[str, Any], logger: Any):
         self.config = config
         self.logger = logger
-        self.data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+        self.data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
         self.domain_name = self.config.get('DOMAIN_NAME')
         self.project_dir = self.data_dir / f"domain_{self.domain_name}"
         self.result_dir = self.project_dir / "simulations" / self.config.get('EXPERIMENT_ID') / "FUSE"
@@ -2771,7 +2771,16 @@ class FUSERunner:
             
             # Run FUSE with default parameters
             success = self._execute_fuse('run_def')
-            
+
+            try:
+                # Run FUSE and calibrate with sce
+                success = self._execute_fuse('calib_sce')
+
+                # Run FUSE with best parameters
+                success = self._execute_fuse('run_best')
+            except: 
+                self.logger.warning('FUSE internal calibration failed')
+
             if success:
                 # Ensure the expected output file exists
                 self._ensure_best_output_file()
@@ -2807,7 +2816,7 @@ class FuseDecisionAnalyzer:
     def __init__(self, config, logger):
         self.config = config
         self.logger = logger
-        self.data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+        self.data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
         self.domain_name = self.config.get('DOMAIN_NAME')
         self.project_dir = self.data_dir / f"domain_{self.domain_name}"
         self.output_folder = self.project_dir / "plots" / "FUSE_decision_analysis"
@@ -3026,7 +3035,7 @@ class FuseDecisionAnalyzer:
             self.observed_streamflow = dfObs['discharge_cms'].resample('d').mean()
 
         # Read simulations
-        dfSim = xr.open_dataset(sim_file_path)
+        dfSim = xr.open_dataset(sim_file_path, decode_timedelta=True)
         dfSim = dfSim['q_routed'].isel(
                                 param_set=0,
                                 latitude=0,
@@ -3209,7 +3218,7 @@ class FUSEPostprocessor:
     def __init__(self, config: Dict[str, Any], logger: Any):
         self.config = config
         self.logger = logger
-        self.data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+        self.data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
         self.domain_name = self.config.get('DOMAIN_NAME')
         self.project_dir = self.data_dir / f"domain_{self.domain_name}"
         self.results_dir = self.project_dir / "results"

@@ -7,7 +7,7 @@ NextGen (ngen) Calibration Targets
 Provides calibration target classes for ngen model outputs.
 Currently supports streamflow calibration with plans for snow, ET, etc.
 
-Author: CONFLUENCE Development Team
+Author: SYMFLUENCE Development Team
 Date: 2025
 """
 
@@ -21,7 +21,6 @@ import logging
 import sys
 
 # Import evaluation functions
-sys.path.append(str(Path(__file__).resolve().parent.parent))
 from utils.evaluation.calculate_sim_stats import get_KGE, get_KGEp, get_NSE, get_MAE, get_RMSE
 
 
@@ -44,14 +43,14 @@ class NgenCalibrationTarget:
         self.experiment_id = config.get('EXPERIMENT_ID')
         
         # Get observation data
-        self._load_observations()
+        self.obs_data = self._load_observations()
         
         # Get catchment area for unit conversion
         self.catchment_area_km2 = self._get_catchment_area()
     
     def _load_observations(self):
         """Load observation data (to be implemented by subclasses)"""
-        pass
+        return None
     
     def _get_catchment_area(self) -> float:
         """
@@ -72,14 +71,10 @@ class NgenCalibrationTarget:
             self.logger.info("Using catchment area from config: %.3f km²", float(cfg_area))
             return float(cfg_area)
 
-        domain = (self.config.get("domain_name")
-                or self.config.get("domain")
-                or self.config.get("ngen", {}).get("domain")
-                or "")
+        # project_dir is already the domain directory, use it directly
+        domain_dir = self.project_dir
         if "paths" in self.config and "domain_dir" in self.config["paths"]:
             domain_dir = Path(self.config["paths"]["domain_dir"])
-        else:
-            domain_dir = self.project_dir / f"domain_{domain}"
 
         # explicit shapefile path in config?
         shp_cfg = (self.config.get("shapefiles", {}) or {}).get("catchment")
@@ -134,8 +129,13 @@ class NgenCalibrationTarget:
         return area_km2
 
     
-    def calculate_metrics(self, experiment_id: str = None) -> Dict[str, float]:
-        """Calculate performance metrics (to be implemented by subclasses)"""
+    def calculate_metrics(self, experiment_id: str = None, output_dir: Optional[Path] = None) -> Dict[str, float]:
+        """Calculate performance metrics (to be implemented by subclasses)
+        
+        Args:
+            experiment_id: Experiment identifier
+            output_dir: Optional output directory (for parallel mode)
+        """
         raise NotImplementedError("Subclasses must implement calculate_metrics()")
 
 
@@ -157,31 +157,31 @@ class NgenStreamflowTarget(NgenCalibrationTarget):
         self.station_id = config.get('STATION_ID', None)
         self.calibration_period = self._parse_calibration_period()
             
-    def _load_observations(self) -> pd.Series:
+    def _load_observations(self) -> pd.DataFrame:
         """
-        Load observed streamflow and return a UTC-indexed Series in m³/s aligned to the model window.
+        Load observed streamflow and return a DataFrame with datetime and streamflow_cms columns.
         Priority:
         1) config['observations']['streamflow']['path']
         2) domain_{domain}/observations/streamflow/*_streamflow_obs.csv
         3) any .csv under observations/streamflow/
         The loader tries common column names and units (cfs/cms).
+        
+        Returns:
+            DataFrame with columns ['datetime', 'streamflow_cms']
         """
         import re
         from pathlib import Path
 
         # ---- resolve domain + base dirs ----
-        domain = (self.config.get("domain_name")
-                or self.config.get("domain")
-                or self.config.get("ngen", {}).get("domain")
-                or "")
+        # project_dir is already the full domain directory (e.g., domain_USA_01073000_headwater)
+        # so we should use it directly
         domain_dir = None
         # Allow explicit project/domain override
         if "paths" in self.config and "domain_dir" in self.config["paths"]:
             domain_dir = Path(self.config["paths"]["domain_dir"])
         else:
-            # default convention used in the logs you shared
-            # /.../CONFLUENCE_data/domain_<domain>
-            domain_dir = self.project_dir / f"domain_{domain}"
+            # Use project_dir directly - it's already the domain directory
+            domain_dir = self.project_dir
 
         obs_override = (
             self.config.get("observations", {})
@@ -271,7 +271,11 @@ class NgenStreamflowTarget(NgenCalibrationTarget):
         if dt_min:
             s = s.resample(f"{int(dt_min)}min").mean().interpolate(limit=2)
 
-        return s
+        # Convert Series to DataFrame with proper columns for merging
+        obs_df = s.reset_index()
+        obs_df.columns = ['datetime', 'streamflow_cms']
+        
+        return obs_df
 
     
     def _parse_calibration_period(self) -> Tuple[Optional[pd.Timestamp], Optional[pd.Timestamp]]:
@@ -284,28 +288,35 @@ class NgenStreamflowTarget(NgenCalibrationTarget):
         
         return start_date, end_date
     
-    def _load_simulated_streamflow(self, experiment_id: str) -> Optional[pd.DataFrame]:
+    def _load_simulated_streamflow(self, experiment_id: str, output_dir: Optional[Path] = None) -> Optional[pd.DataFrame]:
         """
         Load simulated streamflow from ngen nexus outputs.
         
         Args:
             experiment_id: Experiment identifier
+            output_dir: Optional output directory (for parallel mode). If provided,
+                       uses this directory instead of the default path.
             
         Returns:
             DataFrame with simulated streamflow or None
         """
-        # Look for nexus output files
-        output_dir = self.project_dir / 'simulations' / experiment_id / 'ngen'
+        # Use provided output_dir (parallel mode) or default path (serial mode)
+        if output_dir is not None:
+            # Parallel mode - use provided directory
+            sim_dir = output_dir
+        else:
+            # Serial mode - use standard path
+            sim_dir = self.project_dir / 'simulations' / experiment_id / 'ngen'
         
-        if not output_dir.exists():
-            self.logger.error(f"Simulation output directory not found: {output_dir}")
+        if not sim_dir.exists():
+            self.logger.error(f"Simulation output directory not found: {sim_dir}")
             return None
         
         # Find nexus output files
-        nexus_files = list(output_dir.glob('nex-*_output.csv'))
+        nexus_files = list(sim_dir.glob('nex-*_output.csv'))
         
         if not nexus_files:
-            self.logger.error(f"No nexus output files found in {output_dir}")
+            self.logger.error(f"No nexus output files found in {sim_dir}")
             return None
         
         # Read all nexus outputs and combine
@@ -313,33 +324,19 @@ class NgenStreamflowTarget(NgenCalibrationTarget):
         
         for nexus_file in nexus_files:
             try:
-                df = pd.read_csv(nexus_file)
+                # Read CSV - ngen output has no header, format is: index, datetime, flow
+                df = pd.read_csv(nexus_file, header=None, names=['index', 'datetime', 'flow'])
                 
-                # Find flow column
-                flow_col = None
-                for col_name in ['flow', 'Flow', 'Q_OUT', 'streamflow', 'discharge']:
-                    if col_name in df.columns:
-                        flow_col = col_name
-                        break
-                
-                if flow_col is None:
+                # Check if we got data
+                if df.empty:
+                    self.logger.warning(f"Empty file: {nexus_file}")
                     continue
                 
-                # Find time column
-                time_col = None
-                for col_name in ['Time', 'time', 'datetime', 'date']:
-                    if col_name in df.columns:
-                        time_col = col_name
-                        break
-                
-                if time_col is None:
-                    continue
-                
-                # Extract data
+                # Extract data - convert datetime to UTC to match observations
                 nexus_id = nexus_file.stem.replace('_output', '')
                 streamflow_df = pd.DataFrame({
-                    'datetime': pd.to_datetime(df[time_col]) if 'Time' in df.columns else pd.to_datetime(df[time_col]),
-                    'streamflow_cms': df[flow_col],
+                    'datetime': pd.to_datetime(df['datetime'], utc=True),
+                    'streamflow_cms': df['flow'],
                     'nexus_id': nexus_id
                 })
                 
@@ -360,12 +357,14 @@ class NgenStreamflowTarget(NgenCalibrationTarget):
         
         return combined
     
-    def calculate_metrics(self, experiment_id: str = None) -> Dict[str, float]:
+    def calculate_metrics(self, experiment_id: str = None, output_dir: Optional[Path] = None) -> Dict[str, float]:
         """
         Calculate streamflow performance metrics.
         
         Args:
             experiment_id: Experiment identifier
+            output_dir: Optional output directory (for parallel mode). If provided,
+                       uses this directory to find ngen outputs instead of default path.
             
         Returns:
             Dictionary of performance metrics
@@ -377,8 +376,8 @@ class NgenStreamflowTarget(NgenCalibrationTarget):
             self.logger.error("No observed data available for metric calculation")
             return {'KGE': -999.0, 'NSE': -999.0, 'MAE': 999.0, 'RMSE': 999.0}
         
-        # Load simulated data
-        sim_data = self._load_simulated_streamflow(experiment_id)
+        # Load simulated data with optional output_dir for parallel mode
+        sim_data = self._load_simulated_streamflow(experiment_id, output_dir=output_dir)
         
         if sim_data is None:
             self.logger.error("No simulated data available for metric calculation")

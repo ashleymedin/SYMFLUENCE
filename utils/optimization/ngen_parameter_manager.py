@@ -7,7 +7,7 @@ NextGen (ngen) Parameter Manager
 Handles ngen parameter bounds, normalization, denormalization, and 
 configuration file updates for model calibration.
 
-Author: CONFLUENCE Development Team
+Author: SYMFLUENCE Development Team
 Date: 2025
 """
 
@@ -47,7 +47,7 @@ class NgenParameterManager:
         self.param_bounds = self._get_default_ngen_bounds()
         
         # Path to ngen configuration files
-        self.data_dir = Path(config.get('CONFLUENCE_DATA_DIR'))
+        self.data_dir = Path(config.get('SYMFLUENCE_DATA_DIR'))
         self.project_dir = self.data_dir / f"domain_{self.domain_name}"
         self.ngen_sim_dir = self.project_dir / 'simulations' / self.experiment_id / 'ngen'
         self.ngen_setup_dir = self.project_dir / 'settings' / 'ngen'
@@ -110,7 +110,7 @@ class NgenParameterManager:
             params['PET'] = [p.strip() for p in pet_params_str.split(',') if p.strip()]
         
         return params
-    
+
     def _get_default_ngen_bounds(self) -> Dict[str, Dict[str, float]]:
         """
         Get default parameter bounds for ngen modules.
@@ -121,38 +121,53 @@ class NgenParameterManager:
         bounds = {}
         
         # CFE (Conceptual Functional Equivalent) parameters
-        bounds['maxsmc'] = {'min': 0.2, 'max': 0.7}      # Maximum soil moisture content (fraction)
-        bounds['wltsmc'] = {'min': 0.01, 'max': 0.3}     # Wilting point soil moisture (fraction)
-        bounds['satdk'] = {'min': 1e-7, 'max': 1e-4}     # Saturated hydraulic conductivity (m/s)
-        bounds['satpsi'] = {'min': 0.01, 'max': 1.0}     # Saturated soil potential (m)
-        bounds['bb'] = {'min': 2.0, 'max': 14.0}         # Pore size distribution index (-)
-        bounds['mult'] = {'min': 500.0, 'max': 5000.0}   # Multiplier parameter (mm)
-        bounds['slop'] = {'min': 0.0, 'max': 1.0}        # TOPMODEL slope parameter (-)
-        bounds['smcmax'] = {'min': 0.3, 'max': 0.6}      # Maximum soil moisture (m3/m3)
-        bounds['alpha_fc'] = {'min': 0.25, 'max': 0.95}  # Field capacity coefficient (-)
-        bounds['expon'] = {'min': 1.0, 'max': 8.0}       # Exponent parameter (-)
-        bounds['Klf'] = {'min': 0.0, 'max': 1.0}         # Lateral flow coefficient (-)
-        bounds['Kn'] = {'min': 0.001, 'max': 0.5}        # Nash cascade coefficient (1/h)
+        bounds['maxsmc'] = {'min': 0.3, 'max': 0.6}       # Maximum soil moisture content (fraction)
+        bounds['wltsmc'] = {'min': 0.02, 'max': 0.15}     # Wilting point soil moisture (fraction)
+        bounds['satdk'] = {'min': 1e-6, 'max': 5e-5}      # Saturated hydraulic conductivity (m/s)
+        bounds['satpsi'] = {'min': 0.05, 'max': 0.5}      # Saturated soil potential (m)
+        bounds['bb'] = {'min': 3.0, 'max': 12.0}          # Pore size distribution index (-)
+        bounds['mult'] = {'min': 500.0, 'max': 2000.0}    # TIGHTENED: Multiplier parameter (mm)
+        bounds['slop'] = {'min': 0.01, 'max': 0.5}        # TOPMODEL slope parameter (-)
+        bounds['smcmax'] = {'min': 0.3, 'max': 0.55}      # Maximum soil moisture (m3/m3)
+        bounds['alpha_fc'] = {'min': 0.3, 'max': 0.8}     # Field capacity coefficient (-)
+        bounds['expon'] = {'min': 1.0, 'max': 6.0}        # TIGHTENED: Exponent parameter (-)
         
-        # NOAH-OWP parameters
-        bounds['refkdt'] = {'min': 0.5, 'max': 5.0}      # Surface runoff parameter (-)
-        bounds['slope'] = {'min': 0.1, 'max': 1.0}       # Slope (-)
-        bounds['smcmax'] = {'min': 0.3, 'max': 0.6}      # Max soil moisture (m3/m3) - duplicate with CFE
-        bounds['dksat'] = {'min': 1e-7, 'max': 1e-4}     # Saturated hydraulic conductivity (m/s)
-        bounds['psisat'] = {'min': 0.01, 'max': 1.0}     # Saturated soil potential (m)
-        bounds['bexp'] = {'min': 2.0, 'max': 14.0}       # Pore size distribution (-)
-        bounds['smcwlt'] = {'min': 0.01, 'max': 0.3}     # Wilting point (m3/m3)
-        bounds['smcref'] = {'min': 0.1, 'max': 0.5}      # Reference soil moisture (m3/m3)
+        bounds['K_lf'] = {'min': 0.01, 'max': 0.5}        # TIGHTENED: Lateral flow coefficient (1/h)
+        bounds['K_nash'] = {'min': 0.01, 'max': 0.4}      # Nash cascade coefficient (1/h)
+        bounds['Klf'] = {'min': 0.01, 'max': 0.5}         # Alias for K_lf
+        bounds['Kn'] = {'min': 0.01, 'max': 0.4}          # Alias for K_nash
         
-        # PET (Potential Evapotranspiration) parameters
-        bounds['wind_speed_measurement_height_m'] = {'min': 2.0, 'max': 10.0}  # Wind measurement height (m)
-        bounds['humidity_measurement_height_m'] = {'min': 2.0, 'max': 10.0}    # Humidity measurement height (m)
-        bounds['vegetation_height_m'] = {'min': 0.01, 'max': 2.0}              # Vegetation height (m)
-        bounds['zero_plane_displacement_height_m'] = {'min': 0.0, 'max': 1.5}  # Zero plane displacement (m)
-        bounds['momentum_transfer_roughness_length_m'] = {'min': 0.001, 'max': 0.5}  # Roughness length (m)
+        bounds['Cgw'] = {'min': 0.0001, 'max': 0.005}     # TIGHTENED: Groundwater coefficient (m/h)
+        bounds['max_gw_storage'] = {'min': 0.01, 'max': 0.3}  # TIGHTENED: Maximum groundwater storage (m)
+        bounds['refkdt'] = {'min': 0.5, 'max': 3.0}       # Reference surface runoff parameter (-)
+        
+        # NOAH-OWP parameters (unchanged)
+        bounds['slope'] = {'min': 0.1, 'max': 1.0}
+        bounds['dksat'] = {'min': 1e-7, 'max': 1e-4}
+        bounds['psisat'] = {'min': 0.01, 'max': 1.0}
+        bounds['bexp'] = {'min': 2.0, 'max': 14.0}
+        bounds['smcwlt'] = {'min': 0.01, 'max': 0.3}
+        bounds['smcref'] = {'min': 0.1, 'max': 0.5}
+        bounds['noah_refdk'] = {'min': 1e-7, 'max': 1e-3}
+        bounds['noah_refkdt'] = {'min': 0.5, 'max': 5.0}
+        bounds['noah_czil'] = {'min': 0.02, 'max': 0.2}
+        bounds['noah_z0'] = {'min': 0.001, 'max': 1.0}
+        bounds['noah_frzk'] = {'min': 0.0, 'max': 10.0}
+        bounds['noah_salp'] = {'min': -2.0, 'max': 2.0}
+        bounds['rain_snow_thresh'] = {'min': -2.0, 'max': 2.0}
+        bounds['ZREF'] = {'min': 2.0, 'max': 10.0}
+        
+        # PET parameters (unchanged)
+        bounds['wind_speed_measurement_height_m'] = {'min': 2.0, 'max': 10.0}
+        bounds['humidity_measurement_height_m'] = {'min': 2.0, 'max': 10.0}
+        bounds['pet_albedo'] = {'min': 0.05, 'max': 0.5}
+        bounds['pet_z0_mom'] = {'min': 0.001, 'max': 1.0}
+        bounds['pet_z0_heat'] = {'min': 0.0001, 'max': 0.1}
+        bounds['pet_veg_h'] = {'min': 0.1, 'max': 30.0}
+        bounds['pet_d0'] = {'min': 0.0, 'max': 20.0}
         
         return bounds
-    
+
     @property
     def all_param_names(self) -> List[str]:
         """Get list of all parameter names to calibrate across all modules"""
@@ -230,7 +245,39 @@ class NgenParameterManager:
             params[param_name] = float(value)
         
         return params
-    
+
+
+    # Validation function to help debug parameter updates
+    def validate_parameter_updates(self, param_dict: Dict[str, float], config_file_path: Path) -> bool:
+        """
+        Validate that parameters were actually written to config file.
+        Use this for debugging calibration issues.
+        
+        Args:
+            param_dict: Dictionary of parameters that should have been updated
+            config_file_path: Path to the CFE BMI config file
+            
+        Returns:
+            True if all parameters found in file, False otherwise
+        """
+        if not config_file_path.exists():
+            self.logger.error(f"Config file not found: {config_file_path}")
+            return False
+        
+        content = config_file_path.read_text()
+        all_found = True
+        
+        for param_name, expected_value in param_dict.items():
+            # Check if parameter appears in file
+            if param_name in content or param_name.replace('_', '.') in content:
+                self.logger.info(f"✓ Parameter {param_name} found in config")
+            else:
+                self.logger.error(f"✗ Parameter {param_name} NOT found in config")
+                all_found = False
+        
+        return all_found
+
+
     def validate_parameters(self, params: Dict[str, float]) -> bool:
         """
         Validate that parameters are within bounds.
@@ -291,10 +338,14 @@ class NgenParameterManager:
         except Exception as e:
             self.logger.error(f"Error updating ngen config files: {e}")
             return False
-            
+                
+
     def _update_cfe_config(self, params: Dict[str, float]) -> bool:
-        """Update CFE configuration: prefer JSON, fallback to BMI .txt.
-        Preserves units in [brackets] for BMI text files."""
+        """
+        Update CFE configuration: prefer JSON, fallback to BMI .txt.
+        Preserves units in [brackets] for BMI text files.
+        
+        """
         try:
             # --- Preferred path: JSON file ---
             if self.cfe_config.exists():
@@ -313,14 +364,11 @@ class NgenParameterManager:
                 return True
 
             # --- Fallback: BMI text file ---
-            # Choose the right file: prefer the one matching {{id}} if known
             candidates = []
             if getattr(self, "hydro_id", None):
-                # e.g., cat-1_bmi_config_cfe_pass.txt
                 pattern = f"{self.hydro_id}_bmi_config_cfe_*.txt"
                 candidates = list(self.cfe_txt_dir.glob(pattern))
 
-            # If we didn't find any by id, fall back to a single *.txt in CFE/
             if not candidates:
                 candidates = list(self.cfe_txt_dir.glob("*.txt"))
 
@@ -328,20 +376,37 @@ class NgenParameterManager:
                 self.logger.error(f"CFE config not found (no JSON, no BMI .txt in {self.cfe_txt_dir})")
                 return False
             if len(candidates) > 1:
-                # Ambiguity guard: don’t risk updating multiple files unexpectedly
                 self.logger.error(f"Multiple BMI .txt files in {self.cfe_txt_dir}; please set NGEN_ACTIVE_CATCHMENT_ID or prune files")
                 return False
 
             path = candidates[0]
             lines = path.read_text().splitlines()
 
-            # Map DE parameter names to BMI keys in the file
+            # FIXED: Complete parameter mapping including groundwater and routing params
             keymap = {
+                # Soil parameters
                 "bb": "soil_params.b",
                 "satdk": "soil_params.satdk",
                 "slop": "soil_params.slop",
                 "maxsmc": "soil_params.smcmax",
                 "smcmax": "soil_params.smcmax",
+                "wltsmc": "soil_params.wltsmc",
+                "satpsi": "soil_params.satpsi",
+                "expon": "soil_params.expon",
+                
+                # Groundwater parameters (CRITICAL - these were missing!)
+                "Cgw": "Cgw",
+                "max_gw_storage": "max_gw_storage",
+                
+                # Routing parameters (CRITICAL - these were missing!)
+                "K_nash": "K_nash",
+                "K_lf": "K_lf",
+                "Kn": "K_nash",      # Alias
+                "Klf": "K_lf",       # Alias
+                
+                # Other CFE parameters
+                "alpha_fc": "alpha_fc",
+                "refkdt": "refkdt",
             }
 
             # Helper: write numeric value preserving any trailing [units]
@@ -355,9 +420,7 @@ class NgenParameterManager:
                 m = num_units_re.match(original_rhs.strip())
                 if m:
                     tail = m.group('tail') or ''
-                    # Use compact but stable float formatting
                     return f"{new_val:.8g}{tail}"
-                # If parsing fails, just replace entirely with the new number
                 return f"{new_val:.8g}"
 
             updated = set()
@@ -367,6 +430,7 @@ class NgenParameterManager:
                 k, rhs = line.split("=", 1)
                 k = k.strip()
                 rhs_keep = rhs.rstrip("\n")
+                
                 # Match parameters by mapped BMI key
                 for p, bmi_k in keymap.items():
                     if p in params and k == bmi_k:
@@ -374,7 +438,7 @@ class NgenParameterManager:
                         lines[i] = f"{k}={new_rhs}"
                         updated.add(p)
 
-            # Warn about any requested params we couldn’t find in the BMI file
+            # Warn about any requested params we couldn't find in the BMI file
             for p in params:
                 if p not in updated and p in keymap:
                     self.logger.warning(f"CFE parameter {p} not found in BMI config {path.name}")
@@ -386,6 +450,7 @@ class NgenParameterManager:
         except Exception as e:
             self.logger.error(f"Error updating CFE config: {e}")
             return False
+
 
 
         
@@ -654,4 +719,3 @@ class NgenParameterManager:
         except Exception as e:
             self.logger.error(f"Error updating PET config: {e}")
             return False
-

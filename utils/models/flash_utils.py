@@ -18,7 +18,6 @@ from torch.utils.data import TensorDataset, DataLoader # type: ignore
 import geopandas as gpd # type: ignore
 from datetime import datetime
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
 from utils.evaluation.calculate_sim_stats import get_KGE, get_KGEp, get_NSE, get_MAE, get_RMSE, get_KGEnp # type: ignore
 
 class FLASH:
@@ -48,7 +47,7 @@ class FLASH:
         self.model = None
         self.scaler = StandardScaler()
         self.lookback = config.get('FLASH_LOOKBACK', 30)
-        self.project_dir = Path(self.config.get('CONFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}"
+        self.project_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}"
         self.logger.info(f"Initialized FLASH model with device: {self.device}")
 
 
@@ -572,7 +571,7 @@ class FLASHPostProcessor:
     def __init__(self, config: Dict[str, Any], logger: Any):
         self.config = config
         self.logger = logger
-        self.data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+        self.data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
         self.domain_name = self.config.get('DOMAIN_NAME')
         self.project_dir = self.data_dir / f"domain_{self.domain_name}"
         self.results_dir = self.project_dir / "results"

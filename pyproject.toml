@@ -1,117 +1,85 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
 
 [project]
-name = "confluence"
-version = "1.0.0"
-description = "Community Optimization and Numerical Framework for Large-domain Understanding of Environmental Networks and Computational Exploration"
+name = "symfluence"
+version = "0.5.0"         # <- static to avoid plugin issues
+description = "SYnergistic Modelling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration"
 readme = "README.md"
-authors = [
-    {name = "Darri Eythorsson", email = "darri.eythorsson@ucalgary.ca"}
-]
-license = {text = "GPL-3.0"}
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Science/Research", 
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9", 
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Topic :: Scientific/Engineering :: Hydrology",
-    "Topic :: Scientific/Engineering :: Atmospheric Science",
-]
-requires-python = ">=3.8"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [{ name = "SYMFLUENCE Team", email = "dev@symfluence.org" }]
 
-# Core dependencies - keeping it minimal for pip, full list in requirements.txt
+# Start with an empty list to unblock; we’ll fill runtime deps later.
 dependencies = [
-    # Essential core packages only
-    "numpy>=2.0.0",
-    "pandas>=1.2.0",
-    "scipy>=1.6.0", 
-    "xarray>=0.16.0",
-    "geopandas>=0.9.0",
-    "rasterio>=1.2.0",
-    "shapely>=1.7.0",
-    "netCDF4>=1.5.0",
-    "pyyaml>=6.0.0",
-    "psutil>=6.0.0",
-    "matplotlib>=3.3.0",
-    "tqdm>=4.60.0",
+  "numpy",
+  "pandas",
+  "scipy",
+  "xarray",
+  "pint_xarray",
+  "distributed",
+  "pyviscous",
+  "torch",
+  "scikit-learn",
+  "pyswarms",
+  "geopandas",
+  "rasterio",
+  "pyproj",
+  "shapely",
+  "fiona",
+  "easymore",
+  "rasterstats",
+  "pvlib",
+  "cdo",
+  "seaborn",
+  "plotly",
+  "findlibs",
+  "netCDF4",
+  "hydrobm",
+  "baseflow",
+  "matplotlib",
+  "SALib",
+  "psutil",
+  "alive-progress",
+  "tqdm",
+  "contextily",
+  "pyyaml",
+  "requests",
+  "cdsapi",
+  "hs_restclient",
+  "numexpr",
+  "cftime",
+  "pytest", 
+  "sphinx", 
+  "jupyterlab", 
+  "ipykernel"
 ]
-
-[project.optional-dependencies]
-# Full feature set from your requirements.txt
-full = [
-    "pint_xarray>=0.4",
-    "pyarrow",
-    "distributed", 
-    "torch>=2.4.1",
-    "scikit-learn>=1.5.2",
-    "pyswarms",
-    "pyproj>=3.0.0",
-    "fiona>=1.8.0",
-    "easymore",
-    "rasterstats>=0.19.0",
-    "pvlib>=0.11.1",
-    "cdo",
-    "seaborn",
-    "plotly", 
-    "r2py",
-    "pysheds>=0.4",
-    "hydrobm>=1.0.0",
-    "baseflow",
-    "SALib>=1.3.0",
-    "alive-progress>=3.1.5",
-    "contextily",
-    "mpi4py>=3.0.0",
-    "requests>=2.25.0",
-    "cdsapi",
-    "hs_restclient",
-]
-
-# Development tools
-dev = [
-    "pytest>=6.2.0",
-    "black>=22.0",
-    "flake8>=4.0",
-    "isort>=5.0",
-]
-
-# Documentation 
-docs = [
-    "sphinx>=3.5.0",
-    "sphinx-rtd-theme>=1.0.0",
-    "myst-parser>=0.18.0",
-]
-
-[project.urls]
-Homepage = "https://github.com/DarriEy/CONFLUENCE"
-Repository = "https://github.com/DarriEy/CONFLUENCE"
-"Bug Tracker" = "https://github.com/DarriEy/CONFLUENCE/issues"
 
 [project.scripts]
-confluence = "confluence.__main__:main"
+# thin wrapper that delegates to your existing CLI
+symfluence = "symfluence.cli:main"
 
-[tool.setuptools.packages.find]
-include = ["confluence*"]
-exclude = ["tests*", "docs*", "examples*"]
+[project.urls]
+Homepage = "https://symfluence.org"
+Source = "https://github.com/DarriEy/SYMFLUENCE"
+Issues = "https://github.com/DarriEy/SYMFLUENCE/issues"
+Documentation = "https://symfluence.org/"
 
-[tool.setuptools.package-data]
-confluence = [
-    "0_config_files/*.yaml",
-    "0_config_files/*.yml",
-    "0_base_settings/**/*",
+[tool.hatch.build.targets.wheel]
+# ship both the wrapper and your existing utils package (no moves)
+packages = ["src/symfluence", "utils"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/symfluence",
+  "utils",
+  "README.md",
+  "LICENSE",
+  "MANIFEST.in",
+  "requirements.txt",
+  "symfluence_version.py" 
 ]
 
-# Development tools configuration
-[tool.black]
-line-length = 88
-target-version = ['py38']
-
-[tool.isort]
-profile = "black"
-line_length = 88
+[tool.hatch.build.targets.wheel.force-include]
+"symfluence_version.py" = "symfluence_version.py"

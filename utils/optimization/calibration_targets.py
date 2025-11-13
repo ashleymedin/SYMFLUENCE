@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-CONFLUENCE Calibration Targets
+SYMFLUENCE Calibration Targets
 
 This module provides calibration targets for different hydrologic variables including:
 - Streamflow (routed and non-routed)
@@ -24,8 +24,6 @@ import logging
 from typing import Dict, Any, List, Tuple, Optional
 from abc import ABC, abstractmethod
 import re
-
-
 
 class CalibrationTarget(ABC):
     """Abstract base class for different calibration variables (streamflow, snow, etc.)"""
@@ -839,8 +837,7 @@ class StreamflowTarget(CalibrationTarget):
         """Extract streamflow from mizuRoute output using worker script approach"""
         with xr.open_dataset(sim_file) as ds:
             # Debug logging
-            self.logger.info(f"DEBUG: mizuRoute file variables: {list(ds.variables.keys())}")
-            self.logger.info(f"DEBUG: mizuRoute file dimensions: {dict(ds.dims)}")
+            self.logger.debug(f"DEBUG: mizuRoute file variables: {list(ds.variables.keys())}")
             
             # Find streamflow variable (same as worker script)
             streamflow_vars = ['IRFroutedRunoff', 'KWTroutedRunoff', 'averageRoutedRunoff']
@@ -848,7 +845,7 @@ class StreamflowTarget(CalibrationTarget):
             for var_name in streamflow_vars:
                 if var_name in ds.variables:
                     var = ds[var_name]
-                    self.logger.info(f"DEBUG: Using variable {var_name}, shape: {var.shape}")
+                    self.logger.debug(f"DEBUG: Using variable {var_name}, shape: {var.shape}")
                     
                     # Use the SAME approach as worker script - find segment with highest average runoff
                     if 'seg' in var.dims:
@@ -856,7 +853,7 @@ class StreamflowTarget(CalibrationTarget):
                         segment_means = var.mean(dim='time').values
                         outlet_seg_idx = np.argmax(segment_means)
                         
-                        self.logger.info(f"DEBUG: Found outlet at segment index {outlet_seg_idx} with mean runoff {segment_means[outlet_seg_idx]:.3f} m³/s")
+                        self.logger.debug(f"DEBUG: Found outlet at segment index {outlet_seg_idx} with mean runoff {segment_means[outlet_seg_idx]:.3f} m³/s")
                         
                         # Extract time series for outlet segment
                         result = var.isel(seg=outlet_seg_idx).to_pandas()
@@ -866,7 +863,7 @@ class StreamflowTarget(CalibrationTarget):
                         reach_means = var.mean(dim='time').values
                         outlet_reach_idx = np.argmax(reach_means)
                         
-                        self.logger.info(f"DEBUG: Found outlet at reach index {outlet_reach_idx} with mean runoff {reach_means[outlet_reach_idx]:.3f} m³/s")
+                        self.logger.debug(f"DEBUG: Found outlet at reach index {outlet_reach_idx} with mean runoff {reach_means[outlet_reach_idx]:.3f} m³/s")
                         
                         # Extract time series for outlet reach
                         result = var.isel(reachID=outlet_reach_idx).to_pandas()
@@ -876,9 +873,7 @@ class StreamflowTarget(CalibrationTarget):
                         continue
                     
                     # Debug the extracted data
-                    self.logger.info(f"DEBUG: Extracted {len(result)} timesteps")
-                    self.logger.info(f"DEBUG: Flow range: {result.min():.6f} to {result.max():.6f}")
-                    self.logger.info(f"DEBUG: Flow mean: {result.mean():.6f}")
+                    self.logger.debug(f"DEBUG: Extracted {len(result)} timesteps")
                     
                     return result
             

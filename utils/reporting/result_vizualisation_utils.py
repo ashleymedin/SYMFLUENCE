@@ -10,21 +10,20 @@ import plotly.graph_objects as go # type: ignore
 import matplotlib.gridspec as gridspec # type: ignore
 import matplotlib.dates as mdates # type: ignore
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
 from utils.evaluation.calculate_sim_stats import get_KGE, get_KGEp, get_NSE, get_MAE, get_RMSE # type: ignore
 
 class resultMapper:
     def __init__(self, config, logger):
         self.config = config
         self.logger = logger
-        self.project_dir = Path(self.config.get('CONFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}"
+        self.project_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}"
 
 class TimeseriesVisualizer:
     """Visualizes simulated and observed streamflow timeseries."""
     def __init__(self, config: Dict[str, Any], logger: Any):
         self.config = config
         self.logger = logger
-        self.data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+        self.data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
         self.domain_name = self.config.get('DOMAIN_NAME')
         self.project_dir = self.data_dir / f"domain_{self.domain_name}"
         self.plots_dir = self.project_dir / "plots" / "results"
@@ -390,7 +389,7 @@ class BenchmarkVizualiser:
     def __init__(self, config: Dict[str, Any], logger: Any):
         self.config = config
         self.logger = logger
-        self.project_dir = Path(self.config.get('CONFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}"
+        self.project_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}"
         
         # Define metrics and their properties
         self.metrics = {

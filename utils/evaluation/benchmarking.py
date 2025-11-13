@@ -11,7 +11,7 @@ class Benchmarker:
     def __init__(self, config: dict, logger):
         self.config = config
         self.logger = logger
-        self.project_dir = Path(self.config.get('CONFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}"
+        self.project_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}"
         self.evaluation_dir = self.project_dir / 'evaluation'
         self.evaluation_dir.mkdir(parents=True, exist_ok=True)
 
@@ -180,7 +180,7 @@ class BenchmarkPreprocessor:
     def __init__(self, config: dict, logger):
         self.config = config
         self.logger = logger
-        self.project_dir = Path(self.config.get('CONFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}"
+        self.project_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}"
 
     def preprocess_benchmark_data(self, start_date: str, end_date: str) -> pd.DataFrame:
         """
@@ -248,7 +248,7 @@ class BenchmarkPreprocessor:
         """Load and process forcing data, returning hourly dataframe."""
         forcing_path = self.project_dir / "forcing" / "basin_averaged_data"
         # Use open_mfdataset to load all netCDF files at once efficiently
-        combined_ds = xr.open_mfdataset(list(forcing_path.glob("*.nc")), combine='by_coords')
+        combined_ds = xr.open_mfdataset(list(forcing_path.glob("*.nc")), combine='by_coords', data_vars='all')
         
         # Average across HRUs
         averaged_ds = combined_ds.mean(dim='hru')

@@ -1,7 +1,7 @@
 """
 geofabric_utils.py
 
-This module provides utilities for geofabric delineation and processing in the CONFLUENCE system.
+This module provides utilities for geofabric delineation and processing in the SYMFLUENCE system.
 It includes classes for geofabric delineation, subsetting, and lumped watershed delineation.
 
 Classes:
@@ -37,7 +37,7 @@ class GeofabricDelineator:
     def __init__(self, config: Dict[str, Any], logger: Any):
         self.config = config
         self.logger = logger
-        self.data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+        self.data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
         self.domain_name = self.config.get('DOMAIN_NAME')
         self.project_dir = self.data_dir / f"domain_{self.domain_name}"
         self.mpi_processes = self.config.get('MPI_PROCESSES',1)
@@ -62,10 +62,6 @@ class GeofabricDelineator:
         
         # Check if drop analysis should be performed for threshold optimization
         self.use_drop_analysis = self.config.get('USE_DROP_ANALYSIS', False)
-        if self.use_drop_analysis:
-            self.logger.info("Drop analysis enabled for threshold optimization")
-        
-        self.logger.info(f"Using delineation method: {self.delineation_method}")
 
     def _get_dem_path(self) -> Path:
         dem_path = self.config.get('DEM_PATH')
@@ -75,7 +71,8 @@ class GeofabricDelineator:
 
         if dem_path == 'default':
             return self.project_dir / 'attributes' / 'elevation' / 'dem' / dem_name
-        return Path(dem_path)
+
+        return Path(dem_path / dem_name)
 
     def _set_taudem_path(self):
         taudem_dir = self.config['TAUDEM_DIR']
@@ -137,19 +134,26 @@ class GeofabricDelineator:
 
         for attempt in range(self.max_retries if retry else 1):
             try:
+                # Check if command already has MPI prefix to avoid double prefixing
+                has_mpi_prefix = any(cmd in command for cmd in ["mpirun", "srun"])
+                
                 if run_cmd and "module load" in command:
                     # For commands with module load, we need to handle them specially
                     parts = command.split(" && ")
                     if len(parts) == 2:
                         module_part = parts[0]
                         actual_cmd = parts[1]
-                        full_command = f"{module_part} && {run_cmd} -n {self.mpi_processes} {actual_cmd}"
+                        if not has_mpi_prefix:
+                            full_command = f"{module_part} && {run_cmd} -n {self.mpi_processes} {actual_cmd}"
+                        else:
+                            full_command = command
                     else:
                         full_command = command
-                elif run_cmd:
-                    # For regular commands, just add the run command prefix
+                elif run_cmd and not has_mpi_prefix:
+                    # For regular commands without MPI prefix, add the run command prefix
                     full_command = f"{run_cmd} -n {self.mpi_processes} {command}"
                 else:
+                    # Command already has MPI prefix or no run_cmd available
                     full_command = command
 
                 self.logger.debug(f"Running command: {full_command}")
@@ -390,9 +394,7 @@ class GeofabricDelineator:
             mpi_prefix = f"{mpi_cmd} -n {self.mpi_processes} "
         else:
             mpi_prefix = ""
-            
-        mpi_prefix = ""
-        
+                    
         # Common initial steps (same for all methods)
         common_steps = [
             f"{mpi_prefix}{self.taudem_dir}/pitremove -z {dem_path} -fel {self.interim_dir}/elv-fel.tif -v",
@@ -449,7 +451,7 @@ class GeofabricDelineator:
         steps = [
             f"{mpi_prefix}{self.taudem_dir}/gridnet -p {self.interim_dir}/elv-fdir.tif -plen {self.interim_dir}/elv-plen.tif -tlen {self.interim_dir}/elv-tlen.tif -gord {self.interim_dir}/elv-gord.tif",
             f"{mpi_prefix}{self.taudem_dir}/threshold -ssa {self.interim_dir}/elv-ad8.tif -src {self.interim_dir}/elv-src.tif -thresh {threshold}",
-            f"{mpi_prefix}{self.taudem_dir}/moveoutletstostrm -p {self.interim_dir}/elv-fdir.tif -src {self.interim_dir}/elv-src.tif -o {pour_point_path} -om {self.interim_dir}/gauges.shp -md {max_distance}",
+            f"{mpi_prefix}{self.taudem_dir}/moveoutletstostreams -p {self.interim_dir}/elv-fdir.tif -src {self.interim_dir}/elv-src.tif -o {pour_point_path} -om {self.interim_dir}/gauges.shp -md {max_distance}",
             f"{mpi_prefix}{self.taudem_dir}/streamnet -fel {self.interim_dir}/elv-fel.tif -p {self.interim_dir}/elv-fdir.tif -ad8 {self.interim_dir}/elv-ad8.tif -src {self.interim_dir}/elv-src.tif -ord {self.interim_dir}/elv-ord.tif -tree {self.interim_dir}/basin-tree.dat -coord {self.interim_dir}/basin-coord.dat -net {self.interim_dir}/basin-streams.shp -o {self.interim_dir}/gauges.shp -w {self.interim_dir}/elv-watersheds.tif"
         ]
         
@@ -494,7 +496,7 @@ class GeofabricDelineator:
             f"{mpi_prefix}{self.taudem_dir}/aread8 -p {self.interim_dir}/elv-fdir.tif -ad8 {self.interim_dir}/elv-ad8.tif -o {self.interim_dir}/elv-ss.tif -wg {self.interim_dir}/elv-src.tif -nc",
             
             # Step 5: Move outlets to the identified stream network
-            f"{mpi_prefix}{self.taudem_dir}/moveoutletstostrm -p {self.interim_dir}/elv-fdir.tif -src {self.interim_dir}/elv-src.tif -o {pour_point_path} -om {self.interim_dir}/gauges.shp -md {max_distance}",
+            f"{mpi_prefix}{self.taudem_dir}/moveoutletstostreams -p {self.interim_dir}/elv-fdir.tif -src {self.interim_dir}/elv-src.tif -o {pour_point_path} -om {self.interim_dir}/gauges.shp -md {max_distance}",
             
             # Step 6: Generate stream network and watersheds
             f"{mpi_prefix}{self.taudem_dir}/streamnet -fel {self.interim_dir}/elv-fel.tif -p {self.interim_dir}/elv-fdir.tif -ad8 {self.interim_dir}/elv-ad8.tif -src {self.interim_dir}/elv-src.tif -ord {self.interim_dir}/elv-ord.tif -tree {self.interim_dir}/basin-tree.dat -coord {self.interim_dir}/basin-coord.dat -net {self.interim_dir}/basin-streams.shp -o {self.interim_dir}/gauges.shp -w {self.interim_dir}/elv-watersheds.tif"
@@ -551,7 +553,7 @@ class GeofabricDelineator:
             f"{mpi_prefix}{self.taudem_dir}/aread8 -p {self.interim_dir}/elv-fdir.tif -ad8 {self.interim_dir}/elv-ad8.tif -o {self.interim_dir}/elv-src-sa.tif -wg {self.interim_dir}/elv-src.tif -nc",
             
             # Step 6: Move outlets to stream network
-            f"{mpi_prefix}{self.taudem_dir}/moveoutletstostrm -p {self.interim_dir}/elv-fdir.tif -src {self.interim_dir}/elv-src.tif -o {pour_point_path} -om {self.interim_dir}/gauges.shp -md {max_distance}",
+            f"{mpi_prefix}{self.taudem_dir}/moveoutletstostreams -p {self.interim_dir}/elv-fdir.tif -src {self.interim_dir}/elv-src.tif -o {pour_point_path} -om {self.interim_dir}/gauges.shp -md {max_distance}",
             
             # Step 7: Generate final stream network and watersheds
             f"{mpi_prefix}{self.taudem_dir}/streamnet -fel {self.interim_dir}/elv-fel.tif -p {self.interim_dir}/elv-fdir.tif -ad8 {self.interim_dir}/elv-ad8.tif -src {self.interim_dir}/elv-src.tif -ord {self.interim_dir}/elv-ord.tif -tree {self.interim_dir}/basin-tree.dat -coord {self.interim_dir}/basin-coord.dat -net {self.interim_dir}/basin-streams.shp -o {self.interim_dir}/gauges.shp -w {self.interim_dir}/elv-watersheds.tif"
@@ -563,6 +565,7 @@ class GeofabricDelineator:
         
         self.logger.info("Slope-area based stream identification completed")
         self.logger.info(f"Used slope^{slope_exponent} * area^{area_exponent} >= {slope_area_threshold} criterion")
+
 
     def _run_multi_scale_method(self, dem_path: Path, pour_point_path: Path, mpi_prefix: str):
         """
@@ -620,7 +623,7 @@ class GeofabricDelineator:
         
         # Continue with standard streamnet workflow
         steps = [
-            f"{mpi_prefix}{self.taudem_dir}/moveoutletstostrm -p {self.interim_dir}/elv-fdir.tif -src {self.interim_dir}/elv-src.tif -o {pour_point_path} -om {self.interim_dir}/gauges.shp -md {max_distance}",
+            f"{mpi_prefix}{self.taudem_dir}/moveoutletstostreams -p {self.interim_dir}/elv-fdir.tif -src {self.interim_dir}/elv-src.tif -o {pour_point_path} -om {self.interim_dir}/gauges.shp -md {max_distance}",
             f"{mpi_prefix}{self.taudem_dir}/streamnet -fel {self.interim_dir}/elv-fel.tif -p {self.interim_dir}/elv-fdir.tif -ad8 {self.interim_dir}/elv-ad8.tif -src {self.interim_dir}/elv-src.tif -ord {self.interim_dir}/elv-ord.tif -tree {self.interim_dir}/basin-tree.dat -coord {self.interim_dir}/basin-coord.dat -net {self.interim_dir}/basin-streams.shp -o {self.interim_dir}/gauges.shp -w {self.interim_dir}/elv-watersheds.tif"
         ]
         
@@ -1214,7 +1217,7 @@ class GeofabricDelineator:
         
         This method creates a simple square buffer with 0.01 degree (~1km) around the pour point
         specified in the configuration. It saves the buffer as shapefiles in both the river_basins
-        and catchment directories to satisfy CONFLUENCE's requirements.
+        and catchment directories to satisfy SYMFLUENCE's requirements.
         
         Returns:
             Tuple[Optional[Path], Optional[Path]]: Paths to the created river_basins and catchment shapefiles
@@ -1661,7 +1664,7 @@ class GeofabricSubsetter:
 
         self.config = config
         self.logger = logger
-        self.data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+        self.data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
         self.domain_name = self.config.get('DOMAIN_NAME')
         self.project_dir = self.data_dir / f"domain_{self.domain_name}"
 
@@ -1728,7 +1731,7 @@ class GeofabricSubsetter:
         subset_basins = basins[basins[fabric_config['basin_id_col']].isin(upstream_basin_ids)].copy()
         subset_rivers = rivers[rivers[fabric_config['river_id_col']].isin(upstream_basin_ids)].copy()
 
-        # Add CONFLUENCE specific columns dependiing on fabric
+        # Add SYMFLUENCE specific columns dependiing on fabric
 
         if self.config.get('GEOFABRIC_TYPE') == 'NWS':
             subset_basins['GRU_ID'] = subset_basins['COMID']
@@ -1913,7 +1916,7 @@ class LumpedWatershedDelineator:
     def __init__(self, config: Dict[str, Any], logger: Any):
         self.config = config
         self.logger = logger
-        self.data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
+        self.data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
         self.domain_name = self.config.get('DOMAIN_NAME')
         self.project_dir = self.data_dir / f"domain_{self.domain_name}"
         self.output_dir = self.project_dir / "shapefiles/tempdir"
@@ -2120,7 +2123,7 @@ class LumpedWatershedDelineator:
                 f"{mpi_prefix}{self.taudem_dir}/d8flowdir -fel {self.output_dir}/fel.tif -p {self.output_dir}/p.tif -sd8 {self.output_dir}/sd8.tif",
                 f"{mpi_prefix}{self.taudem_dir}/aread8 -p {self.output_dir}/p.tif -ad8 {self.output_dir}/ad8.tif",
                 f"{mpi_prefix}{self.taudem_dir}/threshold -ssa {self.output_dir}/ad8.tif -src {self.output_dir}/src.tif -thresh 100",
-                f"{mpi_prefix}{self.taudem_dir}/moveoutletstostrm -p {self.output_dir}/p.tif -src {self.output_dir}/src.tif -o {self.pour_point_path} -om {self.output_dir}/om.shp",
+                f"{mpi_prefix}{self.taudem_dir}/moveoutletstostreams -p {self.output_dir}/p.tif -src {self.output_dir}/src.tif -o {self.pour_point_path} -om {self.output_dir}/om.shp",
                 f"{mpi_prefix}{self.taudem_dir}/gagewatershed -p {self.output_dir}/p.tif -o {self.output_dir}/om.shp -gw {self.output_dir}/watershed.tif -id {self.output_dir}/watershed_id.txt"
             ]
             

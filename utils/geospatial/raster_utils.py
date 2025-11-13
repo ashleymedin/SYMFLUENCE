@@ -1,13 +1,8 @@
-# In utils/geospatial_utils/raster_utils.py
-
+# In utils/geospatial/raster_utils.py
 import numpy as np
 import rasterio # type: ignore
 from scipy import stats
 import glob
-import numpy as np
-import rasterio # type: ignore
-from scipy import stats
-
 
 def calculate_landcover_mode(input_dir, output_file, start_year, end_year, domain_name):
     """

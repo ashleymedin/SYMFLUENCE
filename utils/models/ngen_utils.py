@@ -1,16 +1,13 @@
 """
-NextGen (ngen) Framework Utilities for CONFLUENCE
+NextGen (ngen) Framework Utilities for SYMFLUENCE
 
 This module provides preprocessing, execution, and postprocessing utilities
-for the NOAA NextGen Water Resources Modeling Framework within CONFLUENCE.
+for the NOAA NextGen Water Resources Modeling Framework within SYMFLUENCE.
 
 Classes:
     NgenPreProcessor: Handles spatial preprocessing and configuration generation
     NgenRunner: Manages model execution
     NgenPostprocessor: Processes model outputs
-
-Author: CONFLUENCE Development Team
-Date: 2025
 """
 
 import os
@@ -27,14 +24,11 @@ from typing import Dict, Any, Optional, List, Tuple
 from shutil import copyfile
 import netCDF4 as nc4
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-
-
 class NgenPreProcessor:
     """
     Preprocessor for NextGen Framework.
     
-    Handles conversion of CONFLUENCE data to ngen-compatible formats including:
+    Handles conversion of SYMFLUENCE data to ngen-compatible formats including:
     - Catchment geometry (geopackage)
     - Nexus points (GeoJSON)
     - Forcing data (NetCDF)
@@ -54,9 +48,9 @@ class NgenPreProcessor:
         self.logger = logger
         
         # Directories
-        self.project_dir = Path(config.get('CONFLUENCE_DATA_DIR')) / f"domain_{config.get('DOMAIN_NAME')}"
+        self.project_dir = Path(config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{config.get('DOMAIN_NAME')}"
         self.ngen_setup_dir = self.project_dir / "settings" / "ngen"
-        self.forcing_dir = self.project_dir / "forcing" / "ngen_input"
+        self.forcing_dir = self.project_dir / "forcing" / "NGEN_input"
         
         # Shapefiles
         self.catchment_path = self._get_default_path('CATCHMENT_PATH', 'shapefiles/catchment')
@@ -88,18 +82,18 @@ class NgenPreProcessor:
         Copy Noah-OWP parameter tables from base settings to domain settings.
         
         Copies GENPARM.TBL, MPTABLE.TBL, and SOILPARM.TBL from:
-            CONFLUENCE_CODE_DIR/0_base_settings/NOAH/parameters/
+            SYMFLUENCE_CODE_DIR/0_base_settings/NOAH/parameters/
         To:
             domain_dir/settings/ngen/NOAH/parameters/
         """
         self.logger.info("Copying Noah-OWP parameter tables")
         
-        # Get path to CONFLUENCE code directory (parent of CONFLUENCE_DATA_DIR)
-        confluence_data_dir = Path(self.config.get('CONFLUENCE_DATA_DIR'))
-        confluence_code_dir = confluence_data_dir.parent / 'CONFLUENCE'
+        # Get path to SYMFLUENCE code directory (parent of SYMFLUENCE_DATA_DIR)
+        symfluence_data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
+        symfluence_code_dir = symfluence_data_dir.parent / 'SYMFLUENCE'
         
         # Source directory for Noah parameter tables
-        source_param_dir = confluence_code_dir / '0_base_settings' / 'NOAH' / 'parameters'
+        source_param_dir = symfluence_code_dir / '0_base_settings' / 'NOAH' / 'parameters'
         
         # Destination directory
         dest_param_dir = self.ngen_setup_dir / 'NOAH' / 'parameters'
@@ -287,7 +281,7 @@ class NgenPreProcessor:
     
     def create_catchment_geopackage(self) -> Path:
         """
-        Create ngen-compatible geopackage from CONFLUENCE catchment shapefile.
+        Create ngen-compatible geopackage from SYMFLUENCE catchment shapefile.
         
         The geopackage must contain a 'divides' layer with required attributes:
         - divide_id: Catchment identifier
@@ -364,7 +358,7 @@ class NgenPreProcessor:
     
     def prepare_forcing_data(self) -> Path:
         """
-        Convert CONFLUENCE basin-averaged ERA5 forcing to ngen format.
+        Convert SYMFLUENCE basin-averaged ERA5 forcing to ngen format.
         
         Processes:
         1. Load all monthly forcing files
@@ -439,7 +433,7 @@ class NgenPreProcessor:
         
         self.logger.info(f"Created ngen forcing file: {output_file}")
         return output_file
-    
+        
     def _create_ngen_forcing_dataset(self, forcing_data: xr.Dataset, catchment_ids: List[str]) -> xr.Dataset:
         """
         Create ngen-formatted forcing dataset with proper variable mapping.
@@ -478,17 +472,17 @@ class NgenPreProcessor:
         max_ns = 4102444800 * 1e9  # 2100-01-01 in nanoseconds
         if np.any(time_ns < min_ns) or np.any(time_ns > max_ns):
             raise ValueError(f"Time values out of reasonable range. Got min={time_ns.min()}, max={time_ns.max()}. "
-                           f"Expected between {min_ns} and {max_ns}")
+                        f"Expected between {min_ns} and {max_ns}")
         
-        # Create coordinate arrays
+        # FIXED: Use actual datetime64 values for time coordinate instead of integer indices
         catchment_coord = np.arange(n_catchments)
-        time_coord = np.arange(n_times)  # Simple indices for time dimension
+        time_coord = time_values  # CHANGED from np.arange(n_times)
         
-        # Initialize dataset with dimensions matching working example
+        # Initialize dataset with dimensions
         ngen_ds = xr.Dataset(
             coords={
                 'catchment-id': ('catchment-id', catchment_coord),
-                'time': ('time', time_coord),
+                'time': ('time', time_coord),  # Now using datetime64 values
                 'str_dim': ('str_dim', np.array([1]))  # Required dimension for ngen
             }
         )
@@ -920,26 +914,30 @@ class NgenRunner:
         self.config = config
         self.logger = logger
         
-        self.project_dir = Path(config.get('CONFLUENCE_DATA_DIR')) / f"domain_{config.get('DOMAIN_NAME')}"
+        self.project_dir = Path(config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{config.get('DOMAIN_NAME')}"
         self.ngen_setup_dir = self.project_dir / "settings" / "ngen"
         
         # Get ngen installation path
         ngen_install_path = config.get('NGEN_INSTALL_PATH', 'default')
         if ngen_install_path == 'default':
-            self.ngen_exe = Path(config.get('CONFLUENCE_DATA_DIR')).parent / 'installs' / 'ngen' / 'build' / 'ngen'
+            self.ngen_exe = Path(config.get('SYMFLUENCE_DATA_DIR')).parent / 'installs' / 'ngen' / 'build' / 'ngen'
         else:
             self.ngen_exe = Path(ngen_install_path) / 'ngen'
     
-    def run_model(self):
+    def run_model(self, experiment_id: str = None):
         """
         Execute NextGen model simulation.
         
+        Args:
+            experiment_id: Optional experiment identifier. If None, uses config value.
+        
         Runs ngen with the prepared catchment, nexus, forcing, and configuration files.
         """
-        self.logger.info("Starting NextGen model run")
+        self.logger.debug("Starting NextGen model run")
         
         # Get experiment info
-        experiment_id = self.config.get('EXPERIMENT_ID', 'default_run')
+        if experiment_id is None:
+            experiment_id = self.config.get('EXPERIMENT_ID', 'default_run')
         output_dir = self.project_dir / 'simulations' / experiment_id / 'ngen'
         output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -956,30 +954,6 @@ class NgenRunner:
         # Setup environment with library paths
         env = os.environ.copy()
         
-        # Get ngen conda environment path from config or use default
-        ngen_conda_env = self.config.get('NGEN_CONDA_ENV', 'ngen_py310')
-        ngen_conda_path = Path.home() / '.conda' / 'envs' / ngen_conda_env / 'lib'
-        
-        # Get current conda environment lib path
-        current_conda_env = os.environ.get('CONDA_DEFAULT_ENV', 'confluence')
-        current_conda_path = Path.home() / '.conda' / 'envs' / current_conda_env / 'lib'
-        
-        # Build LD_LIBRARY_PATH with conda environments and existing path
-        # Note: Load system modules (netcdf-c, netcdf-cxx4, udunits) before running CONFLUENCE
-        lib_paths = [
-            str(current_conda_path),  # Current environment first
-            str(ngen_conda_path),     # ngen environment second
-        ]
-        
-        # Add existing LD_LIBRARY_PATH if present (includes system module paths)
-        existing_ld_path = env.get('LD_LIBRARY_PATH', '')
-        if existing_ld_path:
-            lib_paths.append(existing_ld_path)
-        
-        env['LD_LIBRARY_PATH'] = ':'.join(lib_paths)
-        
-        self.logger.info(f"LD_LIBRARY_PATH: {env['LD_LIBRARY_PATH']}")
-        
         # Build ngen command
         ngen_cmd = [
             str(self.ngen_exe),
@@ -990,7 +964,7 @@ class NgenRunner:
             str(realization_file)
         ]
         
-        self.logger.info(f"Running command: {' '.join(ngen_cmd)}")
+        self.logger.debug(f"Running command: {' '.join(ngen_cmd)}")
         
         # Run ngen
         log_file = output_dir / "ngen_log.txt"
@@ -1008,13 +982,13 @@ class NgenRunner:
             # Move outputs from build directory to output directory
             self._move_ngen_outputs(self.ngen_exe.parent, output_dir)
             
-            self.logger.info("NextGen model run completed successfully")
-            return output_dir
+            self.logger.debug("NextGen model run completed successfully")
+            return True
             
         except subprocess.CalledProcessError as e:
             self.logger.error(f"NextGen model run failed with error code {e.returncode}")
             self.logger.error(f"Check log file: {log_file}")
-            raise
+            return False
     
     def _move_ngen_outputs(self, build_dir: Path, output_dir: Path):
         """
@@ -1046,11 +1020,11 @@ class NgenRunner:
                 moved_files.append(file.name)
         
         if moved_files:
-            self.logger.info(f"Moved {len(moved_files)} output files to {output_dir}")
+            self.logger.debug(f"Moved {len(moved_files)} output files to {output_dir}")
             for f in moved_files[:10]:  # Log first 10
-                self.logger.info(f"  - {f}")
+                self.logger.debug(f"  - {f}")
             if len(moved_files) > 10:
-                self.logger.info(f"  ... and {len(moved_files) - 10} more")
+                self.logger.debug(f"  ... and {len(moved_files) - 10} more")
         else:
             self.logger.warning(f"No output files found in {build_dir}. Check if model ran correctly.")
 
@@ -1074,7 +1048,7 @@ class NgenPostprocessor:
         self.config = config
         self.logger = logger
         
-        self.project_dir = Path(config.get('CONFLUENCE_DATA_DIR')) / f"domain_{config.get('DOMAIN_NAME')}"
+        self.project_dir = Path(config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{config.get('DOMAIN_NAME')}"
         self.results_dir = self.project_dir / "results"
         self.results_dir.mkdir(parents=True, exist_ok=True)
     
