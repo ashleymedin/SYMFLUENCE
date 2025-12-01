@@ -1,9 +1,9 @@
-### ============================================= CONFLUENCE configuration file ============================================================
-# This configuration file contains all settings required to run the CONFLUENCE workflow, from conceptualisation to evaluation.
+### ============================================= SYMFLUENCE configuration file ============================================================
+# This configuration file contains all settings required to run the SYMFLUENCE workflow, from conceptualisation to evaluation.
 # The configuration settings are organized based on modules and can be populated as the user moves through the individual components
-# of the hydrological modelling exercise. CONFLUENCE is comprised of the following modules:
+# of the hydrological modelling exercise. SYMFLUENCE is comprised of the following modules:
 # 
-# 1. Global settings: Underlying configuration of each CONFLUENCE initation which are used throughout the workflow, e.g. root path etc. 
+# 1. Global settings: Underlying configuration of each SYMFLUENCE initation which are used throughout the workflow, e.g. root path etc. 
 # 2. Geopsatial settings: Configurations required to define the geospatial domain of the project and prepare geospatial input files
 # 3. Model Agnostic settings: Configurations required for running the model agnostic data preprocessings
 # 4. Model Specific settings: Configurations required for running model specific data preprocessing and input file generation 
@@ -16,8 +16,8 @@
 
 ### ============================================= 1. Global settings: =====================================================================
 # Main paths
-CONFLUENCE_DATA_DIR: "/Users/darrieythorsson/compHydro/data/CONFLUENCE_data"
-CONFLUENCE_CODE_DIR: "/Users/darrieythorsson/compHydro/code/CONFLUENCE"
+SYMFLUENCE_DATA_DIR: "/Users/darrieythorsson/compHydro/data/SYMFLUENCE_data"
+SYMFLUENCE_CODE_DIR: "/Users/darrieythorsson/compHydro/code/SYMFLUENCE"
 
 # Experiment settings
 DOMAIN_NAME: "North_America"                                           # Name of experimental domain
@@ -104,7 +104,7 @@ GISTOOL_LIB_PATH: /work/comphyd_lab/envs/r-env/                     # Path to gi
 TOOL_CACHE: /work/comphyd_lab/users/darri/cache                                      # Path to gistool cache directory
 EASYMORE_CACHE: /work/comphyd_lab/users/darri/cache                          # Path to easymore cache directory
 EASYMORE_JOB_CONF: "installs/MAF/02_model_agnostic_component/easymore-job.slurm" #Path to easymore job config
-CLUSTER_JSON: /work/comphyd_lab/users/darri/data/CONFLUENCE_data/installs/datatool/etc/clusters/ucalgary-arc.json
+CLUSTER_JSON: /work/comphyd_lab/users/darri/data/SYMFLUENCE_data/installs/datatool/etc/clusters/ucalgary-arc.json
 
 ### ============================================= 6.1 Attribute Analysis settings: ===============================================================
 
