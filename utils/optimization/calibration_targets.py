@@ -2614,28 +2614,8 @@ class TWSTarget:
     TWS_OBS_PATH: Path to GRACE TWS anomaly CSV file
     TWS_GRACE_COLUMN: Which GRACE product to use ('grace_jpl_anomaly', 'grace_csr_anomaly', 
                       'grace_gsfc_anomaly', or 'grace_mean' for average of all)
-    TWS_STORAGE_COMPONENTS: Comma-separated list of SUMMA variables to sum
-                            (default: 'scalarSWE,scalarCanopyWat,scalarTotalSoilWat,scalarAquiferStorage')
     TWS_ANOMALY_BASELINE: Period for computing anomaly baseline ('full', 'overlap', or 'YYYY-YYYY')
-    TWS_UNIT_CONVERSION: Conversion factor if needed (default: 1.0, assumes mm)
     """
-    
-    # Default SUMMA variables that contribute to total storage
-    DEFAULT_STORAGE_VARS = [
-        'scalarSWE',           # Snow water equivalent [kg m-2] = [mm]
-        'scalarCanopyWat',     # Canopy water storage [kg m-2] = [mm]  
-        'scalarTotalSoilWat',  # Total soil water [kg m-2] = [mm]
-        'scalarAquiferStorage' # Aquifer storage [m] - needs conversion!
-    ]
-    
-    # Alternative soil water variables if scalarTotalSoilWat not available
-    SOIL_WATER_ALTERNATIVES = [
-        'scalarTotalSoilLiq',   # Total liquid soil water
-        'scalarTotalSoilIce',   # Total ice in soil
-        'mLayerVolFracWat',     # Layer-wise volumetric water content
-        'mLayerVolFracLiq',     # Layer-wise liquid water
-        'mLayerVolFracIce',     # Layer-wise ice content
-    ]
     
     def __init__(self, config: Dict[str, Any], project_dir: Path, logger: logging.Logger):
         """
@@ -2658,14 +2638,6 @@ class TWSTarget:
         self.grace_obs_path = self._get_grace_obs_path()
         self.grace_column = config.get('TWS_GRACE_COLUMN', 'grace_jpl_anomaly')
         self.anomaly_baseline = config.get('TWS_ANOMALY_BASELINE', 'overlap')
-        self.unit_conversion = config.get('TWS_UNIT_CONVERSION', 1.0)
-        
-        # Parse storage components to use
-        storage_str = config.get('TWS_STORAGE_COMPONENTS', '')
-        if storage_str:
-            self.storage_vars = [v.strip() for v in storage_str.split(',') if v.strip()]
-        else:
-            self.storage_vars = self.DEFAULT_STORAGE_VARS.copy()
         
         # Load GRACE observations
         self.grace_obs = self._load_grace_observations()
@@ -2821,38 +2793,16 @@ class TWSTarget:
         try:
             ds = xr.open_dataset(output_file)
             
-            # Initialize total storage
-            tws_components = {}
-            total_tws = None
-            
-            for var in self.storage_vars:
-                if var in ds.data_vars:
-                    data = ds[var].values
-                    
-                    # Handle aquifer storage unit conversion (m -> mm)
-                    if 'aquifer' in var.lower():
-                        data = data * 1000.0  # m to mm
-                    
-                    # Handle multi-dimensional data (HRUs, layers)
-                    if data.ndim > 1:
-                        # Sum over non-time dimensions (HRUs, layers)
-                        axes_to_sum = tuple(range(1, data.ndim))
-                        data = np.nanmean(data, axis=axes_to_sum)  # Use mean for HRU aggregation
-                    
-                    tws_components[var] = data
-                    
-                    if total_tws is None:
-                        total_tws = data.copy()
-                    else:
-                        total_tws = total_tws + data
-                    
-                    self.logger.debug(f"  Added {var}: mean={np.nanmean(data):.2f} mm")
-            
-            if total_tws is None:
-                # Try alternative soil water variables
-                total_tws = self._try_alternative_soil_vars(ds)
-            
-            if total_tws is None:
+            if 'basin__StorageChange' in ds.data_vars:
+                total_tws = ds['basin__StorageChange'].values
+                
+                # Handle multi-dimensional data (GRUs)
+                if total_tws.ndim > 1:
+                    # Sum over non-time dimensions (GRUs)
+                    axes_to_sum = tuple(range(1, total_tws.ndim))
+                    total_tws = np.nanmean(total_tws, axis=axes_to_sum)  # Use mean for GRU aggregation
+                            
+            else:
                 self.logger.warning(f"No storage variables found in SUMMA output")
                 return None
             
@@ -2861,11 +2811,14 @@ class TWSTarget:
             if time_coord is None:
                 return None
             
+            #calculate cumulative storage change
+            total_tws = total_tws.cumsum()*self.config.get('FORCING_TIME_STEP_SIZE')
+
             # Create time series
             tws_series = pd.Series(total_tws.flatten(), index=time_coord, name='simulated_tws')
             
-            # Apply unit conversion if needed
-            tws_series = tws_series * self.unit_conversion
+            # Convert units (kg/m²/s to cm/s) 
+            tws_series = tws_series / 10.0
             
             ds.close()
             
@@ -2877,37 +2830,7 @@ class TWSTarget:
         except Exception as e:
             self.logger.error(f"Error loading SUMMA output: {e}")
             return None
-    
-    def _try_alternative_soil_vars(self, ds: xr.Dataset) -> Optional[np.ndarray]:
-        """Try alternative methods to compute soil water storage."""
         
-        # Try total soil liquid + ice
-        if 'scalarTotalSoilLiq' in ds.data_vars and 'scalarTotalSoilIce' in ds.data_vars:
-            soil_liq = ds['scalarTotalSoilLiq'].values
-            soil_ice = ds['scalarTotalSoilIce'].values
-            if soil_liq.ndim > 1:
-                soil_liq = np.nanmean(soil_liq, axis=tuple(range(1, soil_liq.ndim)))
-                soil_ice = np.nanmean(soil_ice, axis=tuple(range(1, soil_ice.ndim)))
-            self.logger.debug("Using scalarTotalSoilLiq + scalarTotalSoilIce for soil water")
-            return soil_liq + soil_ice
-        
-        # Try layer-wise volumetric water content
-        if 'mLayerVolFracWat' in ds.data_vars:
-            # Need layer depths to convert to mm
-            if 'mLayerDepth' in ds.data_vars:
-                vol_frac = ds['mLayerVolFracWat'].values  # [time, hru, layer]
-                depth = ds['mLayerDepth'].values  # [time, hru, layer] in m
-                
-                # Soil water = sum(vol_frac * depth * 1000) for each layer
-                soil_water = np.nansum(vol_frac * depth * 1000, axis=-1)  # Sum over layers
-                if soil_water.ndim > 1:
-                    soil_water = np.nanmean(soil_water, axis=tuple(range(1, soil_water.ndim)))
-                
-                self.logger.debug("Using mLayerVolFracWat * mLayerDepth for soil water")
-                return soil_water
-        
-        return None
-    
     def _find_summa_output(self, summa_path: Path) -> Optional[Path]:
         """Find SUMMA output NetCDF file."""
         # Common output file patterns
