@@ -2597,7 +2597,7 @@ class GroundwaterTarget(CalibrationTarget):
 
 
 
-class TWSTarget:
+class TWSTarget(CalibrationTarget):
     """
     Total Water Storage calibration target comparing SUMMA storage to GRACE TWS anomalies.
     
