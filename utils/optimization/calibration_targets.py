@@ -2595,4 +2595,369 @@ class GroundwaterTarget(CalibrationTarget):
         except Exception:
             return pd.Series()
 
+class StorageTarget(CalibrationTarget):
+    """Mass change calibration target supporting both mass balance and GRACE TWS"""
+    
+    def __init__(self, config: Dict, project_dir: Path, logger: logging.Logger):
+        super().__init__(config, project_dir, logger)
+        
+        # Determine groundwater variable type from config
+        self.optimization_target = config.get('OPTIMISATION_TARGET', 'streamflow')
+        if self.optimization_target not in ['stor_mb', 'stor_grace']:
+            raise ValueError(f"Invalid groundwater optimization target: {self.optimization_target}")
+        
+        self.variable_name = self.optimization_target
+        
+        # GRACE processing center preference
+        self.grace_center = config.get('GRACE_PROCESSING_CENTER', 'jpl')  # Options: jpl, csr, gsfc (default to jpl for storage change since best for snow)
+        
+        self.logger.info(f"Initialized StorageTarget for {self.optimization_target.upper()} calibration")
+        if self.optimization_target == 'stor_grace':
+            self.logger.info(f"Using GRACE {self.grace_center.upper()} processing center data")
+    
+    def get_simulation_files(self, sim_dir: Path) -> List[Path]:
+        """Get SUMMA daily output files containing storage change variables"""
+        # Look for daily output files (they contain storage change variables)
+        daily_files = list(sim_dir.glob("*_day.nc"))
+        if daily_files:
+            return daily_files
+        
+        # Fallback to timestep files if daily not available
+        return list(sim_dir.glob("*timestep.nc"))
+    
+    def extract_simulated_data(self, sim_files: List[Path], **kwargs) -> pd.Series:
+        """Extract storage change data from SUMMA simulation files"""
+        sim_file = sim_files[0]  # Use first file
+        
+        try:
+            with xr.open_dataset(sim_file) as ds:
+                if self.optimization_target == 'stor_mb':
+                    return self._extract_water_depth(ds)
+                elif self.optimization_target == 'stor_grace':
+                    return self._extract_total_storage(ds)
+                else:
+                    raise ValueError(f"Unknown storage target: {self.optimization_target}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error extracting storage data from {sim_file}: {str(e)}")
+            raise
+    
+    def _extract_mass_balance(self, ds: xr.Dataset) -> pd.Series:
+        """Extract mass balance from SUMMA output"""
+        mb_vars = ['basin__GlacierStorage'] # more variables can be added if needed
+        if 'basin__GlacierArea' not in ds.variables:
+            raise ValueError("Glacier area variable not found in SUMMA output for mass balance calculation")
+        area = ds['basin__GlacierArea']
+        for var_name in mb_vars:
+            if var_name in ds.variables:
+                var = ds[var_name]*1e12/area # convert from Gt to m
+                
+                # Extract data based on dimensions
+                if len(var.shape) > 1:
+                    if 'hru' in var.dims:
+                        sim_data = var.isel(hru=0).to_pandas()
+                    elif 'gru' in var.dims:
+                        sim_data = var.isel(gru=0).to_pandas()
+                    else:
+                        # Take first spatial index
+                        non_time_dims = [dim for dim in var.dims if dim != 'time']
+                        if non_time_dims:
+                            sim_data = var.isel({non_time_dims[0]: 0}).to_pandas()
+                        else:
+                            sim_data = var.to_pandas()
+                else:
+                    sim_data = var.to_pandas()
+
+                # calculate mass balance, subtract initial value
+                sim_data = sim_data - sim_data.iloc[0]
+
+                return sim_data
+        
+        raise ValueError("No suitable mass balance variable found in SUMMA output")
+
+    
+    def _extract_total_water_storage(self, ds: xr.Dataset) -> pd.Series:
+        """Extract total water storage for GRACE comparison"""    
+        storage_vars = ['basin__StorageChange'] # more variables can be added if needed
+        
+        for var_name in storage_vars:
+            if var_name in ds.variables:
+                var = ds[var_name]
+                
+                # Extract data based on dimensions
+                if len(var.shape) > 1:
+                    if 'hru' in var.dims:
+                        sim_data = var.isel(hru=0).to_pandas()
+                    elif 'gru' in var.dims:
+                        sim_data = var.isel(gru=0).to_pandas()
+                    else:
+                        # Take first spatial index
+                        non_time_dims = [dim for dim in var.dims if dim != 'time']
+                        if non_time_dims:
+                            sim_data = var.isel({non_time_dims[0]: 0}).to_pandas()
+                        else:
+                            sim_data = var.to_pandas()
+                else:
+                    sim_data = var.to_pandas()
+
+                # calculate cumulative storage change
+                sim_data = sim_data.cumsum()*self.config.get('FORCING_TIME_STEP_SIZE')
+
+                # Convert units (kg/m²/s to cm/s) for SUMMA output to match GRACE
+                # 1 kg/m² = 0.1 cm water height
+                return sim_data / 10.0
+        
+        raise ValueError("No suitable storage variable found in SUMMA output")
+
+    
+    def get_observed_data_path(self) -> Path:
+        """Get path to observed storage change data"""
+        if self.optimization_target == 'stor_mb':
+            return self.project_dir / "observations" / "storage" / "mass-balance" / "processed" / f"{self.domain_name}_mb_processed.csv"
+        elif self.optimization_target == 'stor_grace':
+            return self.project_dir / "observations" / "storage" / "grace" / "processed" / f"{self.domain_name}_grace_processed.csv"
+        else:
+            raise ValueError(f"Unknown groundwater target: {self.optimization_target}")
+    
+    def _get_observed_data_column(self, columns: List[str]) -> Optional[str]:
+        """Identify the groundwater data column in observed data file"""
+        if self.optimization_target == 'stor_mb':
+            # Look for mass balance column
+            for col in columns:
+                if any(term in col.lower() for term in ['mass_balance', 'm.w.e.']):
+                    return col
+            # Fallback to exact match
+            if 'mass_balance' in columns:
+                return 'mass_balance'
+                
+        elif self.optimization_target == 'stor_grace':
+            # Look for GRACE TWS column based on processing center
+            grace_columns = {
+                'jpl': ['grace_jpl_tws'],
+                'csr': ['grace_csr_tws'],
+                'gsfc': ['grace_gsfc_tws']
+            }
+            
+            preferred_cols = grace_columns.get(self.grace_center, ['grace_jpl_tws'])
+            
+            for col in preferred_cols:
+                if col in columns:
+                    return col
+            
+            # Fallback to any GRACE column
+            for col in columns:
+                if 'grace' in col.lower() and 'tws' in col.lower():
+                    return col
+        
+        return None
+    
+    def _load_observed_data(self) -> Optional[pd.Series]:
+        """Load observed storage data with proper date parsing"""
+        try:
+            obs_path = self.get_observed_data_path()
+            if not obs_path.exists():
+                self.logger.error(f"Observed groundwater data file not found: {obs_path}")
+                return None
+            
+            obs_df = pd.read_csv(obs_path)
+            self.logger.debug(f"Loaded observed data with columns: {list(obs_df.columns)}")
+            
+            # Find date and data columns
+            date_col = self._find_date_column(obs_df.columns)
+            data_col = self._get_observed_data_column(obs_df.columns)
+            
+            if not date_col or not data_col:
+                self.logger.error(f"Could not identify date/data columns in {obs_path}")
+                self.logger.error(f"Available columns: {list(obs_df.columns)}")
+                return None
+            
+            self.logger.debug(f"Using date column: '{date_col}', data column: '{data_col}'")
+            
+            # Process data based on target type
+            if self.optimization_target == 'stor_mb':
+                # Handle timezone-aware datetime
+                obs_df['DateTime'] = pd.to_datetime(obs_df[date_col], errors='coerce')
+            else:  # stor_grace
+                # Handle MM/DD/YYYY format
+                obs_df['DateTime'] = pd.to_datetime(obs_df[date_col], format='%m/%d/%Y', errors='coerce')
+            
+            # Remove rows with invalid dates
+            obs_df = obs_df.dropna(subset=['DateTime'])
+            obs_df.set_index('DateTime', inplace=True)
+            
+            # Extract data column and clean
+            obs_series = pd.to_numeric(obs_df[data_col], errors='coerce')
+            
+            # Remove NaN values
+            obs_series = obs_series.dropna()
+            
+            # Convert timezone-naive for consistency
+            if obs_series.index.tz is not None:
+                obs_series.index = obs_series.index.tz_convert('UTC').tz_localize(None)
+            
+            self.logger.info(f"Loaded {len(obs_series)} valid observations")
+            self.logger.debug(f"Observed data range: {obs_series.min():.3f} to {obs_series.max():.3f}")
+            
+            return obs_series
+            
+        except Exception as e:
+            self.logger.error(f"Error loading observed groundwater data: {str(e)}")
+            return None
+    
+    def _find_date_column(self, columns: List[str]) -> Optional[str]:
+        """Find date column in observed data"""
+        date_candidates = ['time', 'Time', 'date', 'Date', 'DATE', 'datetime', 'DateTime']
+        
+        for candidate in date_candidates:
+            if candidate in columns:
+                return candidate
+        
+        # Look for columns containing date-like terms
+        for col in columns:
+            if any(term in col.lower() for term in ['date', 'time']):
+                return col
+        
+        return None
+    
+    def needs_routing(self) -> bool:
+        """Storage calibration doesn't need routing"""
+        return False
+    
+    def _calculate_performance_metrics(self, observed: pd.Series, simulated: pd.Series) -> Dict[str, float]:
+        """Calculate groundwater-specific performance metrics"""
+        try:
+            # Clean data
+            observed = pd.to_numeric(observed, errors='coerce')
+            simulated = pd.to_numeric(simulated, errors='coerce')
+            
+            valid = ~(observed.isna() | simulated.isna())
+            observed = observed[valid]
+            simulated = simulated[valid]
+            
+            if len(observed) == 0:
+                return {'KGE': np.nan, 'NSE': np.nan, 'RMSE': np.nan, 'PBIAS': np.nan, 'MAE': np.nan}
+            
+            # Standard metrics
+            base_metrics = super()._calculate_performance_metrics(observed, simulated)
+            
+            # Add groundwater-specific metrics
+            if self.optimization_target == 'stor_mb':
+                depth_metrics = self._calculate_mb_metrics(observed, simulated)
+                base_metrics.update(depth_metrics)
+            elif self.optimization_target == 'stor_grace':
+                tws_metrics = self._calculate_tws_metrics(observed, simulated)
+                base_metrics.update(tws_metrics)
+            
+            return base_metrics
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating storage performance metrics: {str(e)}")
+            return {'KGE': np.nan, 'NSE': np.nan, 'RMSE': np.nan, 'PBIAS': np.nan, 'MAE': np.nan}
+    
+    def _calculate_mb_metrics(self, observed: pd.Series, simulated: pd.Series) -> Dict[str, float]:
+        """Calculate storage mass-balance-specific metrics"""
+        try:
+            metrics = {}
+            
+            # Range preservation
+            obs_range = observed.max() - observed.min()
+            sim_range = simulated.max() - simulated.min()
+            
+            if obs_range > 0:
+                range_ratio = sim_range / obs_range
+                metrics['Range_Ratio'] = range_ratio
+                
+                # Range bias (how well does model capture variability)
+                range_bias = (sim_range - obs_range) / obs_range * 100
+                metrics['Range_Bias_Pct'] = range_bias
+            
+            # Trend analysis (are long-term trends captured?)
+            if len(observed) > 30:  # Need sufficient data
+                obs_trend = self._calculate_trend(observed)
+                sim_trend = self._calculate_trend(simulated)
+                
+                metrics['Obs_Trend'] = obs_trend
+                metrics['Sim_Trend'] = sim_trend
+                
+                if abs(obs_trend) > 1e-6:  # Avoid division by near-zero
+                    trend_ratio = sim_trend / obs_trend
+                    metrics['Trend_Ratio'] = trend_ratio
+            
+            return metrics
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating depth metrics: {str(e)}")
+            return {}
+    
+    def _calculate_tws_metrics(self, observed: pd.Series, simulated: pd.Series) -> Dict[str, float]:
+        """Calculate GRACE TWS-specific metrics"""
+        try:
+            metrics = {}
+            
+            # Seasonal cycle analysis
+            if len(observed) > 365:  # Need at least a year of data
+                obs_seasonal = self._extract_seasonal_cycle(observed)
+                sim_seasonal = self._extract_seasonal_cycle(simulated)
+                
+                # Seasonal amplitude comparison
+                obs_amplitude = obs_seasonal.max() - obs_seasonal.min()
+                sim_amplitude = sim_seasonal.max() - sim_seasonal.min()
+                
+                if obs_amplitude > 0:
+                    amplitude_ratio = sim_amplitude / obs_amplitude
+                    metrics['Seasonal_Amplitude_Ratio'] = amplitude_ratio
+                
+                # Seasonal timing (month of maximum)
+                obs_max_month = obs_seasonal.idxmax()
+                sim_max_month = sim_seasonal.idxmax()
+                
+                phase_diff = abs(obs_max_month - sim_max_month)
+                if phase_diff > 6:  # Handle wrap-around
+                    phase_diff = 12 - phase_diff
+                
+                metrics['Seasonal_Phase_Diff_Months'] = phase_diff
+            
+            # Anomaly correlation (detrended correlation)
+            obs_anomaly = observed - observed.rolling(window=12, center=True).mean()
+            sim_anomaly = simulated - simulated.rolling(window=12, center=True).mean()
+            
+            valid_anomaly = ~(obs_anomaly.isna() | sim_anomaly.isna())
+            if valid_anomaly.sum() > 10:
+                anomaly_corr = obs_anomaly[valid_anomaly].corr(sim_anomaly[valid_anomaly])
+                metrics['Anomaly_Correlation'] = anomaly_corr
+            
+            return metrics
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating TWS metrics: {str(e)}")
+            return {}
+    
+    def _calculate_trend(self, data: pd.Series) -> float:
+        """Calculate linear trend in data (units per year)"""
+        try:
+            if len(data) < 10:
+                return 0.0
+            
+            # Convert index to numeric (days since start)
+            numeric_time = (data.index - data.index[0]).days.values
+            numeric_time = numeric_time / 365.25  # Convert to years
+            
+            # Linear regression
+            coeffs = np.polyfit(numeric_time, data.values, 1)
+            trend_per_year = coeffs[0]
+            
+            return trend_per_year
+            
+        except Exception:
+            return 0.0
+    
+    def _extract_seasonal_cycle(self, data: pd.Series) -> pd.Series:
+        """Extract average seasonal cycle from data"""
+        try:
+            # Group by month and calculate mean
+            monthly_means = data.groupby(data.index.month).mean()
+            return monthly_means
+            
+        except Exception:
+            return pd.Series()
 
