@@ -386,7 +386,7 @@ class ETTarget(CalibrationTarget):
         super().__init__(config, project_dir, logger)
         
         # Determine ET variable type from config
-        self.optimization_target = config.get('OPTIMISATION_TARGET', 'streamflow')
+        self.optimization_target = config.get('OPTIMIZATION_TARGET', 'streamflow')
         if self.optimization_target not in ['et', 'latent_heat']:
             raise ValueError(f"Invalid ET optimization target: {self.optimization_target}")
         
@@ -1094,7 +1094,7 @@ class SoilMoistureTarget(CalibrationTarget):
         super().__init__(config, project_dir, logger)
         
         # Determine soil moisture variable type from config
-        self.optimization_target = config.get('OPTIMISATION_TARGET', 'streamflow')
+        self.optimization_target = config.get('OPTIMIZATION_TARGET', 'streamflow')
         if self.optimization_target not in ['sm_point', 'sm_smap', 'sm_esa']:
             raise ValueError(f"Invalid soil moisture optimization target: {self.optimization_target}")
         
@@ -1654,7 +1654,7 @@ class SnowTarget(CalibrationTarget):
         super().__init__(config, project_dir, logger)
         
         # Determine snow variable type from config
-        self.optimization_target = config.get('OPTIMISATION_TARGET', config.get('CALIBRATION_VARIABLE', 'streamflow'))
+        self.optimization_target = config.get('OPTIMIZATION_TARGET', config.get('CALIBRATION_VARIABLE', 'streamflow'))
         if self.optimization_target not in ['swe', 'sca', 'snow_depth']:
             # Check if it's a snow-related target but with different naming
             calibration_var = config.get('CALIBRATION_VARIABLE', '').lower()
@@ -2122,7 +2122,7 @@ class GroundwaterTarget(CalibrationTarget):
         super().__init__(config, project_dir, logger)
         
         # Determine groundwater variable type from config
-        self.optimization_target = config.get('OPTIMISATION_TARGET', 'streamflow')
+        self.optimization_target = config.get('OPTIMIZATION_TARGET', 'streamflow')
         if self.optimization_target not in ['gw_depth', 'gw_grace']:
             raise ValueError(f"Invalid groundwater optimization target: {self.optimization_target}")
         
@@ -2597,34 +2597,31 @@ class GroundwaterTarget(CalibrationTarget):
 
 
 
-class TWSTarget(CalibrationTarget):
+class StorageTarget(CalibrationTarget):
     """
-    Total Water Storage calibration target comparing SUMMA storage to GRACE TWS anomalies.
+    Storage calibration target comparing SUMMA storage to GRACE Storage anomalies or
+    independent observed storage anomalies (i.e. glacier mass balance)
     
-    Computes simulated TWS as sum of:
-    - Snow Water Equivalent (scalarSWE)
-    - Canopy Water Storage (scalarCanopyWat)  
-    - Total Soil Water (scalarTotalSoilWat or sum of mLayerVolFracWat)
-    - Aquifer Storage (scalarAquiferStorage, if available)
-    
-    Converts simulated TWS to anomaly form and compares to GRACE observations.
+    Converts simulated Storage to anomaly form and compares to GRACE observations.
     
     Configuration options:
     -----------------------
-    TWS_OBS_PATH: Path to GRACE TWS anomaly CSV file
-    TWS_GRACE_COLUMN: Which GRACE product to use ('grace_jpl_anomaly', 'grace_csr_anomaly', 
-                      'grace_gsfc_anomaly', or 'grace_mean' for average of all)
-    TWS_ANOMALY_BASELINE: Period for computing anomaly baseline ('full', 'overlap', or 'YYYY-YYYY')
+    OPTIMIZATION_TARGET2: 'stor_mb' for independent storage anomaly (e.g. glacier mass balance),
+                         'stor_grace' for GRACE total water storage anomaly
+    STOR_OBS_PATH: Path to Storage anomaly CSV file
+    GRACE_PROCESSING_CENTER: Which GRACE product to use ('jpl', csr', 'gsfc', or 'mean')
+    STOR_ANOMALY_BASELINE: Period for computing anomaly baseline ('full', 'overlap', or 'YYYY-YYYY')
+    NOTE: will need to preprocess GRACE data or seasonal mass balance data as csv files
     """
     
     def __init__(self, config: Dict[str, Any], project_dir: Path, logger: logging.Logger):
         """
-        Initialize TWS calibration target.
+        Initialize Storage calibration target.
         
         Parameters
         ----------
         config : Dict
-            Configuration dictionary containing TWS settings
+            Configuration dictionary containing Storage settings
         project_dir : Path
             Project directory path
         logger : Logger
@@ -2633,86 +2630,128 @@ class TWSTarget(CalibrationTarget):
         self.config = config
         self.project_dir = Path(project_dir)
         self.logger = logger
+
+        # Determine storage variable type from config
+       
+        self.optimization_target = config.get('OPTIMIZATION_TARGET', 'streamflow')
+        self.optimization2_target = config.get('OPTIMIZATION_TARGET2', 'stor_grace')
+        if self.optimization_target not in ['stor_mb', 'stor_grace']:
+            if self.optimization2_target in ['stor_mb', 'stor_grace']:
+                self.optimization_target = self.optimization2_target
+            else:
+                raise ValueError(f"Invalid storage optimization target: {self.optimization_target}")
+        self.variable_name = self.optimization_target
         
+        # GRACE processing center preference, snow/ice should not use csr as default
+        self.grace_center = config.get('GRACE_PROCESSING_CENTER', 'jpl') 
+        self.grace_column = 'grace' + '_' + self.grace_center + '_anomaly'
+        if self.grace_center == 'mean':
+            self.grace_column = 'grace_mean'
+        
+        self.logger.info(f"Initialized StorageTarget for {self.optimization_target.upper()} calibration")
+        if self.optimization_target == 'stor_grace':
+            self.logger.info(f"Using GRACE {self.grace_center.upper()} processing center data")
+
         # Parse configuration
-        self.grace_obs_path = self._get_grace_obs_path()
-        self.grace_column = config.get('TWS_GRACE_COLUMN', 'grace_jpl_anomaly')
-        self.anomaly_baseline = config.get('TWS_ANOMALY_BASELINE', 'overlap')
+        self.grace_obs_path = self._get_stor_obs_path()
+        self.anomaly_baseline = config.get('STOR_ANOMALY_BASELINE', 'overlap')
         
-        # Load GRACE observations
-        self.grace_obs = self._load_grace_observations()
+        # Load observations
+        self.stor_obs = self._load_stor_observations()
         
-        self.logger.info(f"TWSTarget initialized:")
-        self.logger.info(f"  GRACE data: {self.grace_obs_path}")
-        self.logger.info(f"  GRACE column: {self.grace_column}")
-        self.logger.info(f"  Storage components: {self.storage_vars}")
+        self.logger.info(f"StorageTarget initialized:")
+        if self.optimization_target == 'stor_mb':
+            self.logger.info(f"  Using independent storage anomaly observations")
+            self.logger.info(f"  Observations data: {self.stor_obs_path}")
+        else:
+            self.logger.info(f"  Using GRACE TWS anomaly observations from {self.grace_center.upper()}")
+            self.logger.info(f"  GRACE data: {self.stor_obs_path}")
+            self.logger.info(f"  GRACE column: {self.grace_column}")
+
         self.logger.info(f"  Anomaly baseline: {self.anomaly_baseline}")
     
-    def _get_grace_obs_path(self) -> Path:
-        """Get path to GRACE observations file."""
+    def _get_stor_obs_path(self) -> Path:
+        """Get path to observations file."""
         # Check explicit config path first
-        if 'TWS_OBS_PATH' in self.config:
-            return Path(self.config['TWS_OBS_PATH'])
+        if 'STOR_OBS_PATH' in self.config:
+            return Path(self.config['STOR_OBS_PATH'])
         
         # Try standard locations
         domain_name = self.config.get('DOMAIN_NAME', '')
         
-        # Check in observations directory
-        obs_dir = self.project_dir / 'observations' / 'grace'
-        potential_paths = [
-            obs_dir / f'{domain_name}_grace_tws_anomaly.csv',
-            obs_dir / f'grace_tws_anomaly.csv',
-            obs_dir / 'tws_anomaly.csv',
-            self.project_dir / 'observations' / f'{domain_name}_HRUs_GRUs_grace_tws_anomaly.csv',
-        ]
+        if self.optimization_target == 'stor_mb':
+            # Independent storage anomaly observations (e.g. glacier mass balance)
+            obs_dir = self.project_dir / 'observations' / 'storage' / 'mass_balance'
+            potential_paths = [
+                obs_dir / f'{domain_name}_mass_balance.csv',
+                obs_dir / f'obs_mass_balance.csv',
+                obs_dir / 'mass_balance.csv',
+            ]
+        else:
+            obs_dir = self.project_dir / 'observations' / 'grace'
+            potential_paths = [
+                obs_dir / f'{domain_name}_grace_tws_anomaly.csv',
+                obs_dir / f'grace_tws_anomaly.csv',
+                obs_dir / 'tws_anomaly.csv',
+                self.project_dir / 'observations' / f'{domain_name}_HRUs_GRUs_grace_tws_anomaly.csv',
+            ]
         
         for path in potential_paths:
             if path.exists():
                 return path
         
         # Return default path (will fail later with informative error)
-        return obs_dir / f'{domain_name}_grace_tws_anomaly.csv'
+        return obs_dir / f'{domain_name}_stor_anomaly.csv'
     
-    def _load_grace_observations(self) -> pd.DataFrame:
+    def _load_stor_observations(self) -> pd.DataFrame:
         """
-        Load and preprocess GRACE TWS anomaly observations.
+        Load and preprocess storage anomaly observations.
         
         Returns
         -------
         pd.DataFrame
-            GRACE observations with datetime index and selected column(s)
+            Observations with datetime index and selected column(s)
         """
-        if not self.grace_obs_path.exists():
-            self.logger.warning(f"GRACE observations file not found: {self.grace_obs_path}")
+        if not self.stor_obs_path.exists():
+            self.logger.warning(f"Observations file not found: {self.stor_obs_path}")
             return pd.DataFrame()
         
         try:
             # Read CSV with first column as index
-            df = pd.read_csv(self.grace_obs_path, index_col=0, parse_dates=True)
+            df = pd.read_csv(self.stor_obs_path, index_col=0, parse_dates=True)
             
             # Ensure datetime index
             if not isinstance(df.index, pd.DatetimeIndex):
                 df.index = pd.to_datetime(df.index)
+
+            if self.optimization_target == 'stor_mb':
+                # For independent storage anomaly, expect a single column plus datetime index
+                # NOTE: could change this to be more flexible if needed, one column per glacier, etc.
+                if df.shape[1] != 2:
+                    self.logger.warning(f"Expected 2 columns for storage mass balance observations and dates, found {df.shape[1]}")
+                else:
+                    df[self.grace_column] = df[df.columns[1]] # Use second column as storage anomaly, name it grace_column for consistency
+                self.logger.info(f"Loaded independent storage anomaly observations: {len(df)} months, "
+                               f"period {df.index.min()} to {df.index.max()}")
             
-            # Handle 'grace_mean' option - compute mean of all GRACE products
-            if self.grace_column == 'grace_mean':
-                grace_cols = [c for c in df.columns if 'grace' in c.lower()]
-                if grace_cols:
-                    df['grace_mean'] = df[grace_cols].mean(axis=1)
-            
-            # Validate requested column exists
-            if self.grace_column not in df.columns:
-                available = ', '.join(df.columns)
-                self.logger.warning(f"GRACE column '{self.grace_column}' not found. Available: {available}")
-                # Fall back to first GRACE column
-                grace_cols = [c for c in df.columns if 'grace' in c.lower()]
-                if grace_cols:
-                    self.grace_column = grace_cols[0]
-                    self.logger.info(f"Using fallback GRACE column: {self.grace_column}")
-            
-            self.logger.info(f"Loaded GRACE observations: {len(df)} months, "
-                           f"period {df.index.min()} to {df.index.max()}")
-            
+            else:
+                # Handle 'grace_mean' option - compute mean of all GRACE products
+                if self.grace_column == 'grace_mean':
+                    grace_cols = [c for c in df.columns if 'grace' in c.lower()]
+                    if grace_cols:
+                        df['grace_mean'] = df[grace_cols].mean(axis=1)
+
+                # Validate requested column exists
+                if self.grace_column not in df.columns:
+                    available = ', '.join(df.columns)
+                    self.logger.warning(f"GRACE column '{self.grace_column}' not found. Available: {available}")
+                    # Fall back to first GRACE column
+                    grace_cols = [c for c in df.columns if 'grace' in c.lower()]
+                    if grace_cols:
+                        self.grace_column = grace_cols[0]
+                        self.logger.info(f"Using fallback GRACE column: {self.grace_column}")
+                self.logger.info(f"Loaded GRACE observations: {len(df)} months, "
+                               f"period {df.index.min()} to {df.index.max()}")
             return df
             
         except Exception as e:
@@ -2721,14 +2760,14 @@ class TWSTarget(CalibrationTarget):
     
     def calculate_metrics(self, summa_dir: str, mizuroute_dir: str = None) -> Dict[str, float]:
         """
-        Calculate performance metrics comparing simulated TWS to GRACE anomalies.
+        Calculate performance metrics comparing simulated Storage to GRACE anomalies.
         
         Parameters
         ----------
         summa_dir : str
             Path to SUMMA output directory
         mizuroute_dir : str, optional
-            Path to mizuRoute output directory (not used for TWS)
+            Path to mizuRoute output directory (not used for Storage)
         
         Returns
         -------
@@ -2736,19 +2775,19 @@ class TWSTarget(CalibrationTarget):
             Dictionary of performance metrics (KGE, NSE, RMSE, correlation, bias)
         """
         try:
-            # Load and process simulated TWS
-            sim_tws = self._load_simulated_tws(summa_dir)
-            if sim_tws is None or len(sim_tws) == 0:
-                self.logger.warning("No simulated TWS data available")
+            # Load and process simulated Storage
+            sim_stor = self._load_simulated_stor(summa_dir)
+            if sim_stor is None or len(sim_stor) == 0:
+                self.logger.warning("No simulated storage data available")
                 return self._empty_metrics()
             
-            # Get GRACE observations
-            if self.grace_obs.empty:
-                self.logger.warning("No GRACE observations available")
+            # Get observations
+            if self.stor_obs.empty:
+                self.logger.warning("No storage observations available")
                 return self._empty_metrics()
             
             # Match time periods and prepare data
-            sim_matched, obs_matched = self._match_and_prepare_data(sim_tws)
+            sim_matched, obs_matched = self._match_and_prepare_data(sim_stor)
             
             if len(sim_matched) < 6:  # Need at least 6 months for meaningful metrics
                 self.logger.warning(f"Insufficient overlapping data: {len(sim_matched)} months")
@@ -2757,21 +2796,21 @@ class TWSTarget(CalibrationTarget):
             # Calculate metrics
             metrics = self._calculate_all_metrics(sim_matched, obs_matched)
             
-            self.logger.debug(f"TWS metrics: KGE={metrics.get('KGE', np.nan):.3f}, "
+            self.logger.debug(f"Storage metrics: KGE={metrics.get('KGE', np.nan):.3f}, "
                             f"NSE={metrics.get('NSE', np.nan):.3f}, "
                             f"correlation={metrics.get('correlation', np.nan):.3f}")
             
             return metrics
             
         except Exception as e:
-            self.logger.error(f"Error calculating TWS metrics: {e}")
+            self.logger.error(f"Error calculating Storage metrics: {e}")
             import traceback
             self.logger.debug(traceback.format_exc())
             return self._empty_metrics()
     
-    def _load_simulated_tws(self, summa_dir: str) -> Optional[pd.Series]:
+    def _load_simulated_stor(self, summa_dir: str) -> Optional[pd.Series]:
         """
-        Load and sum SUMMA storage components to get simulated TWS.
+        Load and sum SUMMA storage changes to get time series of total water storage.
         
         Parameters
         ----------
@@ -2793,39 +2832,70 @@ class TWSTarget(CalibrationTarget):
         try:
             ds = xr.open_dataset(output_file)
             
-            if 'basin__StorageChange' in ds.data_vars:
-                total_tws = ds['basin__StorageChange'].values
-                
-                # Handle multi-dimensional data (GRUs)
-                if total_tws.ndim > 1:
-                    # Sum over non-time dimensions (GRUs)
-                    axes_to_sum = tuple(range(1, total_tws.ndim))
-                    total_tws = np.nanmean(total_tws, axis=axes_to_sum)  # Use mean for GRU aggregation
-                            
+            if self.optimization_target == 'stor_mb':
+                if 'basin__GlacierArea' in ds.variables and 'basin__GlacierStorage' in ds.variables:
+                    area = ds['basin__GlacierArea']
+                    total_stor = ds['basin__GlacierStorage']/area
+                    total_stor[np.isnan(total_stor)] = 0.0
+                else:
+                    self.logger.warning(f"Glacier mass balance variables not found in SUMMA output for mass balance calculation")
+                    return None          
+
             else:
-                self.logger.warning(f"No storage variables found in SUMMA output")
-                return None
-            
-            # Get time coordinate
+                if 'basin__StorageChange' in ds.data_vars:
+                    total_stor = ds['basin__StorageChange']            
+                else:
+                    self.logger.warning(f"No total water storage variables found in SUMMA output")
+                    return None
+                
+            # Get time coordinate (DatetimeIndex) and determine the time dimension name
             time_coord = self._get_time_coordinate(ds)
             if time_coord is None:
                 return None
-            
-            #calculate cumulative storage change
-            total_tws = total_tws.cumsum()*self.config.get('FORCING_TIME_STEP_SIZE')
 
+            # Determine the name of the time dimension in the DataArray (robust to 'time', 'Time', 'time_coord', etc.)
+            time_dim = None
+            if hasattr(total_stor, 'dims'):
+                time_dim = next((d for d in total_stor.dims if 'time' in d.lower()), None)
+
+            # Fallback to dataset dims if not found on the variable
+            if time_dim is None:
+                time_dim = next((d for d in ds.dims if 'time' in d.lower()), 'time')
+
+            if self.optimization_target == 'stor_mb':
+                # subtract initial storage to get anomaly along the detected time dimension
+                if hasattr(total_stor, 'isel'):
+                    total_stor = total_stor - total_stor.isel({time_dim: 0})
+                else:
+                    total_stor = total_stor - total_stor[0]
+                # convert from Gt/m² (km³ of water/m² to cm
+                total_stor = total_stor * 1e9 * 100.0
+            else:
+                # total_stor is expected to be a rate (kg/m²/s), or mm/s water. Convert to mm/s and ntegrate over time.
+                if hasattr(total_stor, 'sel') or hasattr(total_stor, 'dims'):
+                    dt = self.config.get('FORCING_TIME_STEP_SIZE', 1)
+                    # integrate: mm/s * seconds -> cm per timestep, then cumulative sum over time
+                    total_stor = (total_stor * dt).cumsum(dim=time_dim) / 10.0
+                else:
+                    total_stor = total_stor / 10.0
+                    dt = self.config.get('FORCING_TIME_STEP_SIZE', 1)
+                    total_stor = np.cumsum(total_stor * dt, axis=0)
+
+            # Handle multi-dimensional data (GRUs)
+            if total_stor.ndim > 1:
+                # Sum over non-time dimensions (GRUs)
+                axes_to_sum = tuple(range(1, total_stor.ndim))
+                total_stor = np.nanmean(total_stor, axis=axes_to_sum)  # Use mean for GRU aggregatio
+            total_stor = total_stor.values
             # Create time series
-            tws_series = pd.Series(total_tws.flatten(), index=time_coord, name='simulated_tws')
-            
-            # Convert units (kg/m²/s to cm/s) 
-            tws_series = tws_series / 10.0
+            stor_series = pd.Series(total_stor.flatten(), index=time_coord, name='simulated_stor')
             
             ds.close()
             
-            self.logger.debug(f"Loaded simulated TWS: {len(tws_series)} timesteps, "
-                            f"mean={tws_series.mean():.2f} mm")
+            self.logger.debug(f"Loaded simulated Storage: {len(stor_series)} timesteps, "
+                            f"mean={stor_series.mean():.2f} cm")
             
-            return tws_series
+            return stor_series
             
         except Exception as e:
             self.logger.error(f"Error loading SUMMA output: {e}")
@@ -2865,14 +2935,14 @@ class TWSTarget(CalibrationTarget):
         self.logger.warning("Could not extract time coordinate from SUMMA output")
         return None
     
-    def _match_and_prepare_data(self, sim_tws: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
+    def _match_and_prepare_data(self, sim_stor: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
         """
         Match simulated and observed data, aggregate to monthly, compute anomalies.
         
         Parameters
         ----------
         sim_tws : pd.Series
-            Simulated TWS time series (can be sub-monthly)
+            Simulated Storage time series (can be sub-monthly)
         
         Returns
         -------
@@ -2880,23 +2950,23 @@ class TWSTarget(CalibrationTarget):
             Matched simulated and observed anomaly arrays
         """
         # Aggregate simulated to monthly means
-        sim_monthly = sim_tws.resample('MS').mean()  # MS = Month Start
+        sim_monthly = sim_stor.resample('MS').mean()  # MS = Month Start
         
-        # Get GRACE observations for the selected column
-        obs_monthly = self.grace_obs[self.grace_column].copy()
+        # Get observations for the selected column
+        obs_monthly = self.stor_obs[self.grace_column].copy()
         
         # Find overlapping period
         common_index = sim_monthly.index.intersection(obs_monthly.index)
         
         if len(common_index) == 0:
-            self.logger.warning("No overlapping time period between simulation and GRACE")
+            self.logger.warning("No overlapping time period between simulation and storage observations")
             return np.array([]), np.array([])
         
         # Extract matching periods
         sim_matched = sim_monthly.loc[common_index]
         obs_matched = obs_monthly.loc[common_index]
         
-        # Remove NaN values (GRACE has gaps)
+        # Remove NaN values (GRACE and mass balance have gaps)
         valid_mask = ~(sim_matched.isna() | obs_matched.isna())
         sim_matched = sim_matched[valid_mask]
         obs_matched = obs_matched[valid_mask]
@@ -2904,17 +2974,18 @@ class TWSTarget(CalibrationTarget):
         if len(sim_matched) == 0:
             return np.array([]), np.array([])
         
-        # Convert simulated to anomaly
-        sim_anomaly = self._compute_anomaly(sim_matched, obs_matched)
+        # Convert simulated to anomaly and observed to same anomaly form
+        sim_anomaly = self._compute_anomaly(sim_matched)
+        obs_matched = self._compute_anomaly(obs_matched)
         
         self.logger.debug(f"Matched {len(sim_matched)} months, "
                          f"period {sim_matched.index.min()} to {sim_matched.index.max()}")
         
         return sim_anomaly.values, obs_matched.values
     
-    def _compute_anomaly(self, sim_series: pd.Series, obs_series: pd.Series) -> pd.Series:
+    def _compute_anomaly(self, sim_series: pd.Series) -> pd.Series:
         """
-        Convert simulated TWS to anomaly form to match GRACE.
+        Convert simulated storage to anomaly form to match storage anomaly.
         
         Anomaly = value - baseline_mean
         
@@ -2922,6 +2993,8 @@ class TWSTarget(CalibrationTarget):
         - 'full': Use full simulation period mean
         - 'overlap': Use only the overlapping period mean (default)
         - 'YYYY-YYYY': Use specific date range
+        NOTE: the obs_series was originally in anomaly form based on 
+                baseline_start: str = '2003-01-01',baseline_end: str = '2008-12-31'
         """
         if self.anomaly_baseline == 'overlap':
             # Use mean of overlapping period
@@ -2960,7 +3033,7 @@ class TWSTarget(CalibrationTarget):
         sim : np.ndarray
             Simulated anomaly values
         obs : np.ndarray
-            Observed (GRACE) anomaly values
+            Observed anomaly values
         
         Returns
         -------
@@ -3031,7 +3104,7 @@ class TWSTarget(CalibrationTarget):
         metrics['sim_std'] = sim_std
         metrics['obs_std'] = obs_std
         
-        # Amplitude ratio (important for TWS seasonal cycle)
+        # Amplitude ratio (important for Storage seasonal cycle)
         sim_amplitude = np.max(sim) - np.min(sim)
         obs_amplitude = np.max(obs) - np.min(obs)
         metrics['amplitude_ratio'] = sim_amplitude / obs_amplitude if obs_amplitude > 0 else np.nan

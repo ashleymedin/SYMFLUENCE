@@ -2633,7 +2633,7 @@ class FUSERunner:
                             return True
             
             # Also check optimization target from config
-            optimization_target = self.config.get('OPTIMISATION_TARGET', 'streamflow')
+            optimization_target = self.config.get('OPTIMIZATION_TARGET', 'streamflow')
             if optimization_target in ['swe', 'sca', 'snow_depth', 'snow']:
                 return True
                 
@@ -2642,7 +2642,7 @@ class FUSERunner:
         except Exception as e:
             self.logger.warning(f"Could not determine if snow optimization: {str(e)}")
             # Fall back to checking config
-            optimization_target = self.config.get('OPTIMISATION_TARGET', 'streamflow')
+            optimization_target = self.config.get('OPTIMIZATION_TARGET', 'streamflow')
             return optimization_target in ['swe', 'sca', 'snow_depth', 'snow']
 
     def _copy_default_to_best_params(self):

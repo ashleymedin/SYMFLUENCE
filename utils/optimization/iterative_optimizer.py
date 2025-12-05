@@ -1435,7 +1435,7 @@ class BaseOptimizer(ABC):
 
     def _create_calibration_target(self) -> CalibrationTarget:
         """Factory method to create appropriate calibration target"""
-        optimization_target = self.config.get('OPTIMISATION_TARGET', 'streamflow')
+        optimization_target = self.config.get('OPTIMIZATION_TARGET', 'streamflow')
         calibration_variable = self.config.get('CALIBRATION_VARIABLE', 'streamflow').lower()
         
         # Check for ET/latent heat calibration FIRST (before streamflow)
@@ -3017,7 +3017,7 @@ if __name__ == "__main__":
         algorithm_name = self.get_algorithm_name()
         
         self.logger.info("=" * 60)
-        self.logger.info(f"Starting {algorithm_name} optimization for {self.config.get('OPTIMISATION_TARGET', 'streamflow')} calibration")
+        self.logger.info(f"Starting {algorithm_name} optimization for {self.config.get('OPTIMIZATION_TARGET', 'streamflow')} calibration")
         self.logger.info(f"Target metric: {self.target_metric}")
         self.logger.info(f"Max iterations: {self.max_iterations}")
         
@@ -4110,11 +4110,11 @@ class NSGA2Optimizer(BaseOptimizer):
         """
         # Get target configurations
         primary_target_type = self.config.get('NSGA2_PRIMARY_TARGET', 
-                                            self.config.get('OPTIMISATION_TARGET', 'streamflow'))
-        secondary_target_type = self.config.get('NSGA2_SECONDARY_TARGET', 'gw_depth')
+                                            self.config.get('OPTIMIZATION_TARGET', 'streamflow'))
+        secondary_target_type = self.config.get('NSGA2_SECONDARY_TARGET', self.config.get('OPTIMIZATION_TARGET2', 'storage'))
         
-        self.primary_metric = self.config.get('NSGA2_PRIMARY_METRIC', 'KGE')
-        self.secondary_metric = self.config.get('NSGA2_SECONDARY_METRIC', 'KGE')
+        self.primary_metric = self.config.get('NSGA2_PRIMARY_METRIC', self.config.get('OPTIMIZATION_METRIC', 'KGE'))
+        self.secondary_metric = self.config.get('NSGA2_SECONDARY_METRIC', self.config.get('OPTIMIZATION_METRIC', 'KGE'))
         
         # Create the two calibration targets
         self.primary_target = self._create_calibration_target_by_type(primary_target_type)
@@ -4478,7 +4478,7 @@ class NSGA2Optimizer(BaseOptimizer):
                     # ========== NEW: Multi-target configuration ==========
                     'multi_target_mode': self.multi_target_mode,
                     'primary_target_type': self.config.get('NSGA2_PRIMARY_TARGET', 
-                                                        self.config.get('OPTIMISATION_TARGET', 'streamflow')),
+                                                        self.config.get('OPTIMIZATION_TARGET', 'streamflow')),
                     'secondary_target_type': self.config.get('NSGA2_SECONDARY_TARGET', 'gw_depth'),
                     'primary_metric': self.primary_metric,
                     'secondary_metric': self.secondary_metric,

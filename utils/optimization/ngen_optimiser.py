@@ -102,7 +102,7 @@ class NgenOptimizer:
     
     def _create_calibration_target(self) -> Any:
         """Factory method to create appropriate ngen calibration target"""
-        optimization_target = self.config.get('OPTIMISATION_TARGET', 'streamflow')
+        optimization_target = self.config.get('OPTIMIZATION_TARGET', 'streamflow')
         
         # Get project directory for calibration target
         data_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
