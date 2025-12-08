@@ -1111,7 +1111,7 @@ class BaseOptimizer(ABC):
         self.summa_sim_dir = self.optimization_dir / "SUMMA"
         self.mizuroute_sim_dir = self.optimization_dir / "mizuRoute"
         self.optimization_settings_dir = self.optimization_dir / "settings" / "SUMMA"
-        self.output_dir = self.project_dir / "optimisation" / f"{self.algorithm_name}_{self.experiment_id}"
+        self.output_dir = self.project_dir / "optimization" / f"{self.algorithm_name}_{self.experiment_id}"
         
         # Initialize component managers
         self.parameter_manager = ParameterManager(config, logger, self.optimization_settings_dir)

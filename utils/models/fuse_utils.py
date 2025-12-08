@@ -3091,10 +3091,10 @@ class FuseDecisionAnalyzer:
         combinations = self.generate_combinations()
         self.logger.info(f"Generated {len(combinations)} decision combinations")
 
-        optimisation_dir = self.project_dir / 'optimisation'
-        optimisation_dir.mkdir(parents=True, exist_ok=True)
+        optimization_dir = self.project_dir / 'optimization'
+        optimization_dir.mkdir(parents=True, exist_ok=True)
 
-        master_file = optimisation_dir / f"{self.config.get('EXPERIMENT_ID')}_fuse_decisions_comparison.csv"
+        master_file = optimization_dir / f"{self.config.get('EXPERIMENT_ID')}_fuse_decisions_comparison.csv"
 
         # Write header to master file
         with open(master_file, 'w', newline='') as f:
@@ -3186,7 +3186,7 @@ class FuseDecisionAnalyzer:
             }
 
         # Save results to file
-        output_file = self.project_dir / 'optimisation' / 'best_fuse_decision_combinations.txt'
+        output_file = self.project_dir / 'optimization' / 'best_fuse_decision_combinations.txt'
         with open(output_file, 'w') as f:
             for metric, data in best_combinations.items():
                 f.write(f"Best combination for {metric} (score: {data['score']:.3f}):\n")

@@ -70,7 +70,7 @@ class NgenOptimizer:
         self.ngen_setup_dir = project_dir / 'settings' / 'ngen'
         
         # Results tracking
-        self.results_dir = Path(config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{self.domain_name}" / "optimisation"
+        self.results_dir = Path(config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{self.domain_name}" / "optimization"
         self.results_dir.mkdir(parents=True, exist_ok=True)
         
         # Initialize results storage
