@@ -463,7 +463,7 @@ class OptimizationManager:
         opt_dir.mkdir(parents=True, exist_ok=True)
 
         # Lazy import so we don’t require NGEN unless used
-        from ngen_optimiser import NgenOptimizer
+        from ngen_optimizer import NgenOptimizer
 
         self.logger.info(f"Using {algorithm} optimization for NGEN")
         ngen_opt = NgenOptimizer(self.config, self.logger, opt_dir)

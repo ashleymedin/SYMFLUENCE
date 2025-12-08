@@ -28,11 +28,13 @@ import re
 class CalibrationTarget(ABC):
     """Abstract base class for different calibration variables (streamflow, snow, etc.)"""
     
-    def __init__(self, config: Dict, project_dir: Path, logger: logging.Logger):
+    def __init__(self, variable_name: str, config: Dict, project_dir: Path, logger: logging.Logger):
+        self.variable_name = variable_name
         self.config = config
         self.project_dir = project_dir
         self.logger = logger
         self.domain_name = config.get('DOMAIN_NAME')
+
         
         # Parse time periods
         self.calibration_period = self._parse_date_range(config.get('CALIBRATION_PERIOD', ''))
@@ -385,13 +387,6 @@ class ETTarget(CalibrationTarget):
     def __init__(self, config: Dict, project_dir: Path, logger: logging.Logger):
         super().__init__(config, project_dir, logger)
         
-        # Determine ET variable type from config
-        self.optimization_target = config.get('OPTIMIZATION_TARGET', 'streamflow')
-        if self.optimization_target not in ['et', 'latent_heat']:
-            raise ValueError(f"Invalid ET optimization target: {self.optimization_target}")
-        
-        self.variable_name = self.optimization_target
-        
         # Temporal aggregation method for high-frequency FluxNet data
         self.temporal_aggregation = config.get('ET_TEMPORAL_AGGREGATION', 'daily_mean')  # daily_mean, daily_sum
         
@@ -399,7 +394,7 @@ class ETTarget(CalibrationTarget):
         self.use_quality_control = config.get('ET_USE_QUALITY_CONTROL', True)
         self.max_quality_flag = config.get('ET_MAX_QUALITY_FLAG', 2)  # FluxNet QC flags: 0=best, 3=worst
         
-        self.logger.info(f"Initialized ETTarget for {self.optimization_target.upper()} calibration")
+        self.logger.info(f"Initialized ETTarget for {self.variable_name.upper()} calibration")
         self.logger.info(f"Temporal aggregation: {self.temporal_aggregation}")
         if self.use_quality_control:
             self.logger.info(f"Quality control enabled: max flag = {self.max_quality_flag}")
@@ -420,12 +415,10 @@ class ETTarget(CalibrationTarget):
         
         try:
             with xr.open_dataset(sim_file) as ds:
-                if self.optimization_target == 'et':
+                if self.variable_name == 'et':
                     return self._extract_et_data(ds)
-                elif self.optimization_target == 'latent_heat':
+                elif self.variable_name == 'latent_heat':
                     return self._extract_latent_heat_data(ds)
-                else:
-                    raise ValueError(f"Unknown ET target: {self.optimization_target}")
                     
         except Exception as e:
             self.logger.error(f"Error extracting ET data from {sim_file}: {str(e)}")
@@ -575,7 +568,7 @@ class ETTarget(CalibrationTarget):
     
     def _get_observed_data_column(self, columns: List[str]) -> Optional[str]:
         """Identify the ET data column in FluxNet file"""
-        if self.optimization_target == 'et':
+        if self.variable_name == 'et':
             # Look for ET column
             for col in columns:
                 if any(term in col.lower() for term in ['et_from_le', 'et', 'evapotranspiration']):
@@ -584,7 +577,7 @@ class ETTarget(CalibrationTarget):
             if 'ET_from_LE_mm_per_day' in columns:
                 return 'ET_from_LE_mm_per_day'
                 
-        elif self.optimization_target == 'latent_heat':
+        elif self.variable_name == 'latent_heat':
             # Look for latent heat flux column
             for col in columns:
                 if any(term in col.lower() for term in ['le_f_mds', 'le_', 'latent']):
@@ -660,11 +653,11 @@ class ETTarget(CalibrationTarget):
         try:
             # Find quality control column
             qc_col = None
-            if self.optimization_target == 'et':
+            if self.variable_name == 'et':
                 # For ET derived from LE, use LE quality flags
                 if 'LE_F_MDS_QC' in obs_df.columns:
                     qc_col = 'LE_F_MDS_QC'
-            elif self.optimization_target == 'latent_heat':
+            elif self.variable_name == 'latent_heat':
                 if 'LE_F_MDS_QC' in obs_df.columns:
                     qc_col = 'LE_F_MDS_QC'
             
@@ -1093,23 +1086,16 @@ class SoilMoistureTarget(CalibrationTarget):
     def __init__(self, config: Dict, project_dir: Path, logger: logging.Logger):
         super().__init__(config, project_dir, logger)
         
-        # Determine soil moisture variable type from config
-        self.optimization_target = config.get('OPTIMIZATION_TARGET', 'streamflow')
-        if self.optimization_target not in ['sm_point', 'sm_smap', 'sm_esa']:
-            raise ValueError(f"Invalid soil moisture optimization target: {self.optimization_target}")
-        
-        self.variable_name = self.optimization_target
-        
         # Configuration for different observation types
-        if self.optimization_target == 'sm_point':
+        if self.variable_name == 'sm_point':
             # For point data, specify which depth to use
             self.target_depth = config.get('SM_TARGET_DEPTH', 'auto')  # 'auto' or specific depth like '0.1016'
             self.depth_tolerance = config.get('SM_DEPTH_TOLERANCE', 0.05)  # meters
-        elif self.optimization_target == 'sm_smap':
+        elif self.variable_name == 'sm_smap':
             # For SMAP, specify surface or rootzone
             self.smap_layer = config.get('SMAP_LAYER', 'surface_sm')  # 'surface_sm' or 'rootzone_sm'
             self.temporal_aggregation = config.get('SM_TEMPORAL_AGGREGATION', 'daily_mean')
-        elif self.optimization_target == 'sm_esa':
+        elif self.variable_name == 'sm_esa':
             # ESA is typically surface soil moisture
             self.temporal_aggregation = config.get('SM_TEMPORAL_AGGREGATION', 'daily_mean')
         
@@ -1117,10 +1103,10 @@ class SoilMoistureTarget(CalibrationTarget):
         self.use_quality_control = config.get('SM_USE_QUALITY_CONTROL', True)
         self.min_valid_pixels = config.get('SM_MIN_VALID_PIXELS', 10)  # For satellite data
         
-        self.logger.info(f"Initialized SoilMoistureTarget for {self.optimization_target.upper()} calibration")
-        if self.optimization_target == 'sm_point':
+        self.logger.info(f"Initialized SoilMoistureTarget for {self.variable_name.upper()} calibration")
+        if self.variable_name == 'sm_point':
             self.logger.info(f"Target depth: {self.target_depth}")
-        elif self.optimization_target == 'sm_smap':
+        elif self.variable_name == 'sm_smap':
             self.logger.info(f"SMAP layer: {self.smap_layer}")
     
     def get_simulation_files(self, sim_dir: Path) -> List[Path]:
@@ -1139,14 +1125,14 @@ class SoilMoistureTarget(CalibrationTarget):
         
         try:
             with xr.open_dataset(sim_file) as ds:
-                if self.optimization_target == 'sm_point':
+                if self.variable_name == 'sm_point':
                     return self._extract_point_soil_moisture(ds)
-                elif self.optimization_target == 'sm_smap':
+                elif self.variable_name == 'sm_smap':
                     return self._extract_smap_soil_moisture(ds)
-                elif self.optimization_target == 'sm_esa':
+                elif self.variable_name == 'sm_esa':
                     return self._extract_esa_soil_moisture(ds)
                 else:
-                    raise ValueError(f"Unknown soil moisture target: {self.optimization_target}")
+                    raise ValueError(f"Unknown soil moisture target: {self.variable_name}")
                     
         except Exception as e:
             self.logger.error(f"Error extracting soil moisture data from {sim_file}: {str(e)}")
@@ -1353,18 +1339,16 @@ class SoilMoistureTarget(CalibrationTarget):
     
     def get_observed_data_path(self) -> Path:
         """Get path to observed soil moisture data"""
-        if self.optimization_target == 'sm_point':
+        if self.variable_name == 'sm_point':
             return self.project_dir / "observations" / "soil_moisture" / "point" / "processed" / f"{self.domain_name}_sm_processed.csv"
-        elif self.optimization_target == 'sm_smap':
+        elif self.variable_name == 'sm_smap':
             return self.project_dir / "observations" / "soil_moisture" / "smap" / "processed" / f"{self.domain_name}_smap_processed.csv"
-        elif self.optimization_target == 'sm_esa':
+        elif self.variable_name == 'sm_esa':
             return self.project_dir / "observations" / "soil_moisture" / "esa_sm" / "processed" / f"{self.domain_name}_esa_processed.csv"
-        else:
-            raise ValueError(f"Unknown soil moisture target: {self.optimization_target}")
     
     def _get_observed_data_column(self, columns: List[str]) -> Optional[str]:
         """Identify the soil moisture data column in observed data file"""
-        if self.optimization_target == 'sm_point':
+        if self.variable_name == 'sm_point':
             # Find the best matching depth column
             if self.target_depth == 'auto':
                 # Look for surface layer (smallest depth)
@@ -1398,7 +1382,7 @@ class SoilMoistureTarget(CalibrationTarget):
                 self.logger.warning(f"Exact depth {self.target_depth} not found, searching for closest match")
                 return self._find_closest_depth_column(columns, float(self.target_depth))
                 
-        elif self.optimization_target == 'sm_smap':
+        elif self.variable_name == 'sm_smap':
             # Look for SMAP column
             if self.smap_layer in columns:
                 return self.smap_layer
@@ -1407,7 +1391,7 @@ class SoilMoistureTarget(CalibrationTarget):
                 if 'surface_sm' in col.lower() or 'rootzone_sm' in col.lower():
                     return col
                     
-        elif self.optimization_target == 'sm_esa':
+        elif self.variable_name == 'sm_esa':
             # Look for ESA column
             for col in columns:
                 if any(term in col.lower() for term in ['esa', 'soil_moisture', 'sm']):
@@ -1468,11 +1452,11 @@ class SoilMoistureTarget(CalibrationTarget):
             self.logger.debug(f"Using date column: '{date_col}', data column: '{data_col}'")
             
             # Process data based on target type
-            if self.optimization_target == 'sm_point':
+            if self.variable_name == 'sm_point':
                 obs_df['DateTime'] = pd.to_datetime(obs_df[date_col], errors='coerce')
-            elif self.optimization_target == 'sm_smap':
+            elif self.variable_name == 'sm_smap':
                 obs_df['DateTime'] = pd.to_datetime(obs_df[date_col], errors='coerce')
-            elif self.optimization_target == 'sm_esa':
+            elif self.variable_name == 'sm_esa':
                 obs_df['DateTime'] = pd.to_datetime(obs_df[date_col], format='%d/%m/%Y', errors='coerce')
             
             # Remove rows with invalid dates
@@ -1483,7 +1467,7 @@ class SoilMoistureTarget(CalibrationTarget):
             obs_series = pd.to_numeric(obs_df[data_col], errors='coerce')
             
             # Apply quality control for satellite data
-            if self.optimization_target == 'sm_smap' and self.use_quality_control:
+            if self.variable_name == 'sm_smap' and self.use_quality_control:
                 obs_series = self._apply_smap_quality_control(obs_df, obs_series)
             
             # Remove NaN values
@@ -1653,18 +1637,7 @@ class SnowTarget(CalibrationTarget):
     def __init__(self, config: Dict, project_dir: Path, logger: logging.Logger):
         super().__init__(config, project_dir, logger)
         
-        # Determine snow variable type from config
-        self.optimization_target = config.get('OPTIMIZATION_TARGET', config.get('CALIBRATION_VARIABLE', 'streamflow'))
-        if self.optimization_target not in ['swe', 'sca', 'snow_depth']:
-            # Check if it's a snow-related target but with different naming
-            calibration_var = config.get('CALIBRATION_VARIABLE', '').lower()
-            if 'swe' in calibration_var or 'snow' in calibration_var:
-                self.optimization_target = 'swe'
-            else:
-                raise ValueError(f"Invalid snow optimization target: {self.optimization_target}")
-        
-        self.variable_name = self.optimization_target
-        self.logger.info(f"Initialized SnowTarget for {self.optimization_target.upper()} calibration")
+        self.logger.info(f"Initialized SnowTarget for {self.variable_name.upper()} calibration")
     
     def get_simulation_files(self, sim_dir: Path) -> List[Path]:
         """Get SUMMA daily output files containing snow variables"""
@@ -1682,12 +1655,10 @@ class SnowTarget(CalibrationTarget):
         
         try:
             with xr.open_dataset(sim_file) as ds:
-                if self.optimization_target == 'swe':
+                if self.variable_name == 'swe':
                     return self._extract_swe_data(ds)
-                elif self.optimization_target == 'sca':
+                elif self.variable_name == 'sca':
                     return self._extract_sca_data(ds)
-                else:
-                    raise ValueError(f"Unknown snow target: {self.optimization_target}")
                     
         except Exception as e:
             self.logger.error(f"Error extracting snow data from {sim_file}: {str(e)}")
@@ -1769,16 +1740,14 @@ class SnowTarget(CalibrationTarget):
     
     def get_observed_data_path(self) -> Path:
         """Get path to observed snow data"""
-        if self.optimization_target == 'swe':
+        if self.variable_name == 'swe':
             return self.project_dir / "observations" / "snow" / "swe" / "processed" / f"{self.domain_name}_swe_processed.csv"
-        elif self.optimization_target == 'sca':
+        elif self.variable_name == 'sca':
             return self.project_dir / "observations" / "snow" / "sca" / "processed" / f"{self.domain_name}_sca_processed.csv"
-        else:
-            raise ValueError(f"Unknown snow target: {self.optimization_target}")
     
     def _get_observed_data_column(self, columns: List[str]) -> Optional[str]:
         """Identify the snow data column in observed data file"""
-        if self.optimization_target == 'swe':
+        if self.variable_name == 'swe':
             # Look for SWE column
             for col in columns:
                 if any(term in col.lower() for term in ['swe', 'snow_water_equivalent']):
@@ -1787,7 +1756,7 @@ class SnowTarget(CalibrationTarget):
             if 'SWE' in columns:
                 return 'SWE'
                 
-        elif self.optimization_target == 'sca':
+        elif self.variable_name == 'sca':
             # Look for snow cover ratio column
             for col in columns:
                 if any(term in col.lower() for term in ['snow_cover_ratio', 'sca', 'snow_cover']):
@@ -1821,7 +1790,7 @@ class SnowTarget(CalibrationTarget):
             self.logger.debug(f"Using date column: '{date_col}', data column: '{data_col}'")
             
             # Process data
-            if self.optimization_target == 'swe':
+            if self.variable_name == 'swe':
                 obs_df['DateTime'] = pd.to_datetime(obs_df[date_col], format='%d/%m/%Y', errors='coerce')
             else:  # sca
                 obs_df['DateTime'] = pd.to_datetime(obs_df[date_col], errors='coerce')
@@ -1854,11 +1823,11 @@ class SnowTarget(CalibrationTarget):
             self.logger.debug(f"Data quality: {total_points} total, {valid_count} valid, {nan_count} NaN, {zero_count} zeros")
             
             # Handle unit conversion for SWE if needed (before removing negative values)
-            if self.optimization_target == 'swe':
+            if self.variable_name == 'swe':
                 obs_series = self._convert_swe_units(obs_series)
             
             # Remove negative values (not physically meaningful for SWE)
-            if self.optimization_target == 'swe':
+            if self.variable_name == 'swe':
                 negative_mask = obs_series < 0
                 if negative_mask.any():
                     negative_count = negative_mask.sum()
@@ -1877,7 +1846,7 @@ class SnowTarget(CalibrationTarget):
             self.logger.debug(f"Observed data range: {obs_series.min():.3f} to {obs_series.max():.3f}")
             
             # Check for reasonable data range after unit conversion
-            if self.optimization_target == 'swe':
+            if self.variable_name == 'swe':
                 if obs_series.max() > 10000:  # Very high SWE values might indicate unit issues
                     self.logger.warning(f"Very high SWE values detected (max: {obs_series.max():.1f} kg/m²). Please verify units.")
                 elif obs_series.max() < 1:  # Very low SWE values might indicate unit issues
@@ -2046,7 +2015,7 @@ class SnowTarget(CalibrationTarget):
             base_metrics = super()._calculate_performance_metrics(observed, simulated)
             
             # Add snow-specific metrics
-            if self.optimization_target == 'swe':
+            if self.variable_name == 'swe':
                 swe_metrics = self._calculate_swe_metrics(observed, simulated)
                 base_metrics.update(swe_metrics)
             
@@ -2121,18 +2090,11 @@ class GroundwaterTarget(CalibrationTarget):
     def __init__(self, config: Dict, project_dir: Path, logger: logging.Logger):
         super().__init__(config, project_dir, logger)
         
-        # Determine groundwater variable type from config
-        self.optimization_target = config.get('OPTIMIZATION_TARGET', 'streamflow')
-        if self.optimization_target not in ['gw_depth', 'gw_grace']:
-            raise ValueError(f"Invalid groundwater optimization target: {self.optimization_target}")
-        
-        self.variable_name = self.optimization_target
-        
         # GRACE processing center preference
         self.grace_center = config.get('GRACE_PROCESSING_CENTER', 'csr')  # Options: jpl, csr, gsfc
         
-        self.logger.info(f"Initialized GroundwaterTarget for {self.optimization_target.upper()} calibration")
-        if self.optimization_target == 'gw_grace':
+        self.logger.info(f"Initialized GroundwaterTarget for {self.variable_name.upper()} calibration")
+        if self.variable_name == 'gw_grace':
             self.logger.info(f"Using GRACE {self.grace_center.upper()} processing center data")
     
     def get_simulation_files(self, sim_dir: Path) -> List[Path]:
@@ -2151,12 +2113,10 @@ class GroundwaterTarget(CalibrationTarget):
         
         try:
             with xr.open_dataset(sim_file) as ds:
-                if self.optimization_target == 'gw_depth':
+                if self.variable_name == 'gw_depth':
                     return self._extract_groundwater_depth(ds)
-                elif self.optimization_target == 'gw_grace':
+                elif self.variable_name == 'gw_grace':
                     return self._extract_total_water_storage(ds)
-                else:
-                    raise ValueError(f"Unknown groundwater target: {self.optimization_target}")
                     
         except Exception as e:
             self.logger.error(f"Error extracting groundwater data from {sim_file}: {str(e)}")
@@ -2346,16 +2306,14 @@ class GroundwaterTarget(CalibrationTarget):
     
     def get_observed_data_path(self) -> Path:
         """Get path to observed groundwater data"""
-        if self.optimization_target == 'gw_depth':
+        if self.variable_name == 'gw_depth':
             return self.project_dir / "observations" / "groundwater" / "depth" / "processed" / f"{self.domain_name}_gw_processed.csv"
-        elif self.optimization_target == 'gw_grace':
+        elif self.variable_name == 'gw_grace':
             return self.project_dir / "observations" / "groundwater" / "grace" / "processed" / f"{self.domain_name}_grace_processed.csv"
-        else:
-            raise ValueError(f"Unknown groundwater target: {self.optimization_target}")
     
     def _get_observed_data_column(self, columns: List[str]) -> Optional[str]:
         """Identify the groundwater data column in observed data file"""
-        if self.optimization_target == 'gw_depth':
+        if self.variable_name == 'gw_depth':
             # Look for depth column
             for col in columns:
                 if any(term in col.lower() for term in ['depth', 'depth_m', 'water_level']):
@@ -2364,7 +2322,7 @@ class GroundwaterTarget(CalibrationTarget):
             if 'Depth_m' in columns:
                 return 'Depth_m'
                 
-        elif self.optimization_target == 'gw_grace':
+        elif self.variable_name == 'gw_grace':
             # Look for GRACE TWS column based on processing center
             grace_columns = {
                 'jpl': ['grace_jpl_tws'],
@@ -2408,7 +2366,7 @@ class GroundwaterTarget(CalibrationTarget):
             self.logger.debug(f"Using date column: '{date_col}', data column: '{data_col}'")
             
             # Process data based on target type
-            if self.optimization_target == 'gw_depth':
+            if self.variable_name == 'gw_depth':
                 # Handle timezone-aware datetime
                 obs_df['DateTime'] = pd.to_datetime(obs_df[date_col], errors='coerce')
             else:  # gw_grace
@@ -2475,10 +2433,10 @@ class GroundwaterTarget(CalibrationTarget):
             base_metrics = super()._calculate_performance_metrics(observed, simulated)
             
             # Add groundwater-specific metrics
-            if self.optimization_target == 'gw_depth':
+            if self.variable_name == 'gw_depth':
                 depth_metrics = self._calculate_depth_metrics(observed, simulated)
                 base_metrics.update(depth_metrics)
-            elif self.optimization_target == 'gw_grace':
+            elif self.variable_name == 'gw_grace':
                 tws_metrics = self._calculate_tws_metrics(observed, simulated)
                 base_metrics.update(tws_metrics)
             
@@ -2630,17 +2588,6 @@ class StorageTarget(CalibrationTarget):
         self.config = config
         self.project_dir = Path(project_dir)
         self.logger = logger
-
-        # Determine storage variable type from config
-       
-        self.optimization_target = config.get('OPTIMIZATION_TARGET', 'streamflow')
-        self.optimization2_target = config.get('OPTIMIZATION_TARGET2', 'stor_grace')
-        if self.optimization_target not in ['stor_mb', 'stor_grace']:
-            if self.optimization2_target in ['stor_mb', 'stor_grace']:
-                self.optimization_target = self.optimization2_target
-            else:
-                raise ValueError(f"Invalid storage optimization target: {self.optimization_target}")
-        self.variable_name = self.optimization_target
         
         # GRACE processing center preference, snow/ice should not use csr as default
         self.grace_center = config.get('GRACE_PROCESSING_CENTER', 'jpl') 
@@ -2648,8 +2595,8 @@ class StorageTarget(CalibrationTarget):
         if self.grace_center == 'mean':
             self.grace_column = 'grace_mean'
         
-        self.logger.info(f"Initialized StorageTarget for {self.optimization_target.upper()} calibration")
-        if self.optimization_target == 'stor_grace':
+        self.logger.info(f"Initialized StorageTarget for {self.variable_name.upper()} calibration")
+        if self.variable_name == 'stor_grace':
             self.logger.info(f"Using GRACE {self.grace_center.upper()} processing center data")
 
         # Parse configuration
@@ -2660,7 +2607,7 @@ class StorageTarget(CalibrationTarget):
         self.stor_obs = self._load_stor_observations()
         
         self.logger.info(f"StorageTarget initialized:")
-        if self.optimization_target == 'stor_mb':
+        if self.variable_name == 'stor_mb':
             self.logger.info(f"  Using independent storage anomaly observations")
             self.logger.info(f"  Observations data: {self.stor_obs_path}")
         else:
@@ -2679,7 +2626,7 @@ class StorageTarget(CalibrationTarget):
         # Try standard locations
         domain_name = self.config.get('DOMAIN_NAME', '')
         
-        if self.optimization_target == 'stor_mb':
+        if self.variable_name == 'stor_mb':
             # Independent storage anomaly observations (e.g. glacier mass balance)
             obs_dir = self.project_dir / 'observations' / 'storage' / 'mass_balance'
             potential_paths = [
@@ -2724,7 +2671,7 @@ class StorageTarget(CalibrationTarget):
             if not isinstance(df.index, pd.DatetimeIndex):
                 df.index = pd.to_datetime(df.index)
 
-            if self.optimization_target == 'stor_mb':
+            if self.variable_name == 'stor_mb':
                 # For independent storage anomaly, expect a single column plus datetime index
                 # NOTE: could change this to be more flexible if needed, one column per glacier, etc.
                 if df.shape[1] != 2:
@@ -2832,7 +2779,7 @@ class StorageTarget(CalibrationTarget):
         try:
             ds = xr.open_dataset(output_file)
             
-            if self.optimization_target == 'stor_mb':
+            if self.variable_name == 'stor_mb':
                 if 'basin__GlacierArea' in ds.variables and 'basin__GlacierStorage' in ds.variables:
                     area = ds['basin__GlacierArea']
                     total_stor = ds['basin__GlacierStorage']/area
@@ -2862,7 +2809,7 @@ class StorageTarget(CalibrationTarget):
             if time_dim is None:
                 time_dim = next((d for d in ds.dims if 'time' in d.lower()), 'time')
 
-            if self.optimization_target == 'stor_mb':
+            if self.variable_name == 'stor_mb':
                 # subtract initial storage to get anomaly along the detected time dimension
                 if hasattr(total_stor, 'isel'):
                     total_stor = total_stor - total_stor.isel({time_dim: 0})
@@ -3020,7 +2967,7 @@ class StorageTarget(CalibrationTarget):
         
         sim_anomaly = sim_series - baseline_mean
         
-        self.logger.debug(f"Anomaly baseline: {baseline_mean:.2f} mm")
+        self.logger.debug(f"Anomaly baseline: {baseline_mean:.2f} cm")
         
         return sim_anomaly
     

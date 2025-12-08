@@ -94,7 +94,7 @@ from fuse_worker_functions import (
 )
 
 
-from ngen_optimiser import NgenOptimizer
+from ngen_optimizer import NgenOptimizer
 from utils.optimization.local_scratch_manager import LocalScratchManager
 
 # ============= PARAMETER MANAGEMENT =============
@@ -4148,11 +4148,11 @@ class NSGA2Optimizer(BaseOptimizer):
         target_type : str
             Type of calibration target. Options:
             - 'streamflow': Streamflow/discharge calibration
-            - 'swe', 'sca', 'snow_depth': Snow calibration
+            - 'swe', 'sca': Snow calibration
             - 'gw_depth', 'gw_grace': Groundwater calibration
             - 'et', 'latent_heat': Evapotranspiration calibration
             - 'sm_point', 'sm_smap', 'sm_esa': Soil moisture calibration
-            - 'tws', 'grace', 'grace_tws': Total water storage vs GRACE
+            - 'stor_mb', 'stor_grace': Water storage calibration
         
         Returns
         -------
@@ -4173,26 +4173,47 @@ class NSGA2Optimizer(BaseOptimizer):
         target_type = target_type.lower()
         
         if target_type in ['streamflow', 'flow', 'discharge']:
-            return StreamflowTarget(self.config, self.project_dir, self.logger)
+            if target_type != 'streamflow':
+                self.logger.warning(f"Target type '{target_type}' mapped to 'streamflow'")
+                self.variable_name = 'streamflow'
+            return StreamflowTarget(self.variable_name, self.config, self.project_dir, self.logger)
         
         elif target_type in ['swe', 'sca', 'snow_depth', 'snow']:
-            return SnowTarget(self.config, self.project_dir, self.logger)
+            if target_type not in ['swe', 'sca']:
+                self.logger.warning(f"Target type '{target_type}' mapped to 'swe")
+                self.variable_name = 'swe'
+            return SnowTarget(self.target_type, self.config, self.project_dir, self.logger)
         
         elif target_type in ['gw_depth', 'gw_grace', 'groundwater', 'gw']:
-            return GroundwaterTarget(self.config, self.project_dir, self.logger)
+            if target_type not in ['gw_depth', 'gw_grace']:
+                self.logger.warning(f"Target type '{target_type}' mapped to 'gw_depth'")
+                self.variable_name = 'gw_depth'
+            return GroundwaterTarget(self.variable_name, self.config, self.project_dir, self.logger)
         
         elif target_type in ['et', 'latent_heat', 'evapotranspiration']:
-            return ETTarget(self.config, self.project_dir, self.logger)
+            if target_type not in ['et', 'latent_heat']:
+                self.logger.warning(f"Target type '{target_type}' mapped to 'et'")
+                self.variable_name = 'et'
+            return ETTarget(self.variable_name, self.config, self.project_dir, self.logger)
         
         elif target_type in ['sm_point', 'sm_smap', 'sm_esa', 'soil_moisture', 'sm']:
-            return SoilMoistureTarget(self.config, self.project_dir, self.logger)
+            if target_type not in ['sm_point', 'sm_smap', 'sm_esa']:
+                self.logger.warning(f"Target type '{target_type}' mapped to 'sm_point'")
+                self.variable_name = 'sm_point'
+            return SoilMoistureTarget(self.variable_name, self.config, self.project_dir, self.logger)
         
-        elif target_type in ['tws', 'mb', 'stor_grace', 'stor_mb']:
-            return StorageTarget(self.config, self.project_dir, self.logger)
+        elif target_type in ['tws', 'mb', 'stor_grace', 'stor_mb', 'storage']:
+            if target_type in ['tws', 'storage']:
+                self.logger.warning(f"Target type '{target_type}' mapped to 'stor_grace'")
+                self.variable_name = 'stor_grace'
+            elif target_type == 'mb':
+                self.logger.warning(f"Target type '{target_type}' mapped to 'stor_mb'")
+                self.variable_name = 'stor_mb'
+            return StorageTarget(self.variable_name, self.config, self.project_dir, self.logger)
         
         else:
             raise ValueError(f"Unknown calibration target type: {target_type}. "
-                            f"Valid options: streamflow, swe, gw_depth, et, sm_point, tws")
+                            f"Valid options: (streamflow), (swe, sca), (gw_depth, gw_depth), (et, latent_heat), (sm_point, sm_smap, sm_esa), (stor_mb, stor_grace)")
 
 
     def get_algorithm_name(self) -> str:
