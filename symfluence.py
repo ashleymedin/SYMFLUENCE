@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SYMFLUENCE - SYnergistic Modelling Framework for Linking and Unifying
+SYMFLUENCE - SYnergistic Modeling Framework for Linking and Unifying
 Earth-system Nexii for Computational Exploration
 
 Enhanced main entry point for the SYMFLUENCE hydrological modeling platform.
@@ -304,7 +304,7 @@ def main():
         # Display startup information (updated for SYMFLUENCE)
         if not (plan.get('mode') in ['status_only', 'management', 'binary_management']):
             print(f"\n{'='*70}")
-            print(f"SYMFLUENCE - SYnergistic Modelling Framework")
+            print(f"SYMFLUENCE - SYnergistic Modeling Framework")
             print(f"for Linking and Unifying Earth-system Nexii")
             print(f"for Computational Exploration")
             print(f"{'='*70}")

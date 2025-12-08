@@ -1,7 +1,7 @@
 ### ============================================= SYMFLUENCE configuration file ============================================================
 # This configuration file contains all settings required to run the SYMFLUENCE workflow, from conceptualisation to evaluation.
 # The configuration settings are organized based on modules and can be populated as the user moves through the individual components
-# of the hydrological modelling exercise. Configurations are organized into logical blocks:
+# of the hydrological modeling exercise. Configurations are organized into logical blocks:
 #
 #   1. Global and Logging Settings — Experiment metadata and runtime controls
 #   2. Geospatial Definition — Domain delineation and discretization

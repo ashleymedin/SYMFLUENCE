@@ -186,7 +186,7 @@ class CLIArgumentManager:
     def _setup_parser(self) -> None:
         """Set up the argument parser with all CLI options."""
         self.parser = argparse.ArgumentParser(
-            description='SYMFLUENCE - SYnergistic Modelling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration',
+            description='SYMFLUENCE - SYnergistic Modeling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration',
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog=self._get_examples_text()
         )

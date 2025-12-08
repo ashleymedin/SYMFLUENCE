@@ -46,7 +46,7 @@ This release formalizes SYMFLUENCE’s **reproducibility framework**, guaranteei
 
 ### Major: CONFLUENCE → SYMFLUENCE Rebranding
 
-**This is the rebranding release.** The project is now SYMFLUENCE (SYnergistic Modelling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration).
+**This is the rebranding release.** The project is now SYMFLUENCE (SYnergistic Modeling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration).
 
 ### Added
 - Complete rebranding to SYMFLUENCE

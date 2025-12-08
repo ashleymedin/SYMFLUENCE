@@ -5,7 +5,7 @@
 SYMFLUENCE Documentation
 ========================
 
-**SYnergistic Modelling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration**
+**SYnergistic Modeling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration**
 
 ---
 

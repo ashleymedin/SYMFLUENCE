@@ -9,7 +9,7 @@ Version 0.2.0 (Unreleased)
 
 Changed
 -------
-- **Major rebrand:** CONFLUENCE renamed to SYMFLUENCE (SYnergistic Modelling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration)
+- **Major rebrand:** CONFLUENCE renamed to SYMFLUENCE (SYnergistic Modeling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration)
 - All documentation updated to reference SYMFLUENCE
 - Repository moved to https://github.com/DarriEy/SYMFLUENCE
 - ReadTheDocs URL updated to symfluence.readthedocs.io

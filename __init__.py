@@ -1,5 +1,5 @@
 """
-SYMFLUENCE - SYnergistic Modelling Framework for Linking and Unifying
+SYMFLUENCE - SYnergistic Modeling Framework for Linking and Unifying
 Earth-system Nexii for Computational Exploration
 
 A comprehensive hydrological modeling platform for watershed analysis.

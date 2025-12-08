@@ -111,14 +111,14 @@ class OptimizationManager:
         """
         Main entry point for all optimization and emulation workflows.
         
-        This method checks the OPTIMISATION_METHODS configuration and runs
+        This method checks the OPTIMIZATION_METHODS configuration and runs
         the appropriate workflows in the correct order.
         
         Returns:
             Dict[str, Any]: Results from all completed workflows
         """
         results = {}
-        optimization_methods = self.config.get('OPTIMISATION_METHODS', [])
+        optimization_methods = self.config.get('OPTIMIZATION_METHODS', [])
         
         self.logger.info(f"Running optimization workflows: {optimization_methods}")
         
@@ -144,7 +144,7 @@ class OptimizationManager:
     
     def run_large_domain_emulation(self) -> Optional[Dict]:
         """Run large domain emulation workflow."""
-        if not 'large_domain_emulator' in self.config.get('OPTIMISATION_METHODS', []):
+        if not 'large_domain_emulator' in self.config.get('OPTIMIZATION_METHODS', []):
             self.logger.info("Large domain emulation is disabled in configuration")
             return None
         
@@ -229,15 +229,15 @@ class OptimizationManager:
         Enhanced to include large domain emulation status.
         """
         status = {
-            'iterative_optimization_enabled': 'iteration' in self.config.get('OPTIMISATION_METHODS', []),
+            'iterative_optimization_enabled': 'iteration' in self.config.get('OPTIMIZATION_METHODS', []),
             'optimization_algorithm': self.config.get('ITERATIVE_OPTIMIZATION_ALGORITHM', 'PSO'),
             'optimization_metric': self.config.get('OPTIMIZATION_METRIC', 'KGE'),
             'optimization_dir': str(self.project_dir / "optimization"),
             'results_exist': False,
-            'emulation_enabled': 'emulation' in self.config.get('OPTIMISATION_METHODS', []),
-            'rf_emulation_enabled': 'emulation' in self.config.get('OPTIMISATION_METHODS', []),
-            'differentiable_emulation_enabled': 'differentiable_parameter_emulation' in self.config.get('OPTIMISATION_METHODS', []),
-            'large_domain_emulation_enabled': 'large_domain_emulator' in self.config.get('OPTIMISATION_METHODS', [])
+            'emulation_enabled': 'emulation' in self.config.get('OPTIMIZATION_METHODS', []),
+            'rf_emulation_enabled': 'emulation' in self.config.get('OPTIMIZATION_METHODS', []),
+            'differentiable_emulation_enabled': 'differentiable_parameter_emulation' in self.config.get('OPTIMIZATION_METHODS', []),
+            'large_domain_emulation_enabled': 'large_domain_emulator' in self.config.get('OPTIMIZATION_METHODS', [])
         }
         
         # Check for optimization results
@@ -291,7 +291,7 @@ class OptimizationManager:
         self.logger.info("Starting model calibration")
         
         # Check if iterative optimization is enabled
-        if not 'iteration' in self.config.get('OPTIMISATION_METHODS', []):
+        if not 'iteration' in self.config.get('OPTIMIZATION_METHODS', []):
             self.logger.info("Iterative optimization is disabled in configuration")
             return None
         
@@ -535,9 +535,9 @@ class OptimizationManager:
         Entry point for all emulation workflows.
         
         This method dispatches to the appropriate emulation workflow based on
-        the OPTIMISATION_METHODS configuration.
+        the OPTIMIZATION_METHODS configuration.
         """
-        optimization_methods = self.config.get('OPTIMISATION_METHODS', [])
+        optimization_methods = self.config.get('OPTIMIZATION_METHODS', [])
         results = {}
         
         # Run differentiable parameter emulation
@@ -657,13 +657,13 @@ class OptimizationManager:
                           including configuration settings and existence of output files
         """
         status = {
-            'iterative_optimization_enabled': 'iteration' in self.config.get('OPTIMISATION_METHODS', []),
+            'iterative_optimization_enabled': 'iteration' in self.config.get('OPTIMIZATION_METHODS', []),
             'optimization_algorithm': self.config.get('ITERATIVE_OPTIMIZATION_ALGORITHM', 'PSO'),
             'optimization_metric': self.config.get('OPTIMIZATION_METRIC', 'KGE'),
             'optimization_dir': str(self.project_dir / "optimization"),
             'results_exist': False,
-            'emulation_enabled': 'emulation' in self.config.get('OPTIMISATION_METHODS', []),
-            'rf_emulation_enabled': 'emulation' in self.config.get('OPTIMISATION_METHODS', [])
+            'emulation_enabled': 'emulation' in self.config.get('OPTIMIZATION_METHODS', []),
+            'rf_emulation_enabled': 'emulation' in self.config.get('OPTIMIZATION_METHODS', [])
         }
         
         # Check for optimization results

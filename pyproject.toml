@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "symfluence"
 version = "0.5.0"         # <- static to avoid plugin issues
-description = "SYnergistic Modelling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration"
+description = "SYnergistic Modeling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.9"

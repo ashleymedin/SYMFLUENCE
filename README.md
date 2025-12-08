@@ -1,5 +1,5 @@
 # SYMFLUENCE
-**SYnergistic Modelling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration**
+**SYnergistic Modeling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration**
 
 [![PyPI version](https://badge.fury.io/py/symfluence.svg)](https://badge.fury.io/py/symfluence)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -130,5 +130,5 @@ See [LICENSE](LICENSE) for details.
 
 ---
 
-Happy modelling!  
+Happy modeling!  
 The SYMFLUENCE Team  

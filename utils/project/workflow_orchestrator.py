@@ -91,7 +91,7 @@ class WorkflowOrchestrator:
 
         # Get configured analyses
         analyses = self.config.get('ANALYSES', [])
-        optimizations = self.config.get('OPTIMISATION_METHODS', []) 
+        optimizations = self.config.get('OPTIMIZATION_METHODS', []) 
 
         return [
             # --- Project Initialization ---

@@ -48,10 +48,10 @@ class DomainManager:
     
     def create_point_domain_shapefile(self) -> Optional[Path]:
         """
-        Create a square basin shapefile from bounding box coordinates for point modelling.
+        Create a square basin shapefile from bounding box coordinates for point modeling.
         
         This method creates a rectangular polygon from the BOUNDING_BOX_COORDS and saves it
-        as a shapefile for point-based modelling approaches.
+        as a shapefile for point-based modeling approaches.
         
         Returns:
             Path to the created shapefile or None if failed
