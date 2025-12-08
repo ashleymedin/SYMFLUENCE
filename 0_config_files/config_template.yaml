@@ -17,8 +17,8 @@
 #E.g. '/home/user/non-default/path'
 
 # Global and Logging Settings
-SYMFLUENCE_DATA_DIR: "/path/to/data"
-SYMFLUENCE_CODE_DIR: "/path/to/code"
+SYMFLUENCE_DATA_DIR: /Users/amedin/Research/Symfluence/SYMFLUENCE_data
+SYMFLUENCE_CODE_DIR: /Users/amedin/Research/Symfluence/SYMFLUENCE
 DOMAIN_NAME: "bow_river"
 EXPERIMENT_ID: "baseline_01"
 EXPERIMENT_TIME_START: "2018-01-01"

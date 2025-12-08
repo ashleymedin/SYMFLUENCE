@@ -284,7 +284,7 @@ class DataPreProcessor:
 
         catchment_path = self._get_file_path('CATCHMENT_PATH', 'shapefiles/catchment', subbasins_name)
 
-        dem_name = self.config['DEM_NAME']
+        dem_name = self.config.get('DEM_NAME', "default")
         if dem_name == "default":
             dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
 

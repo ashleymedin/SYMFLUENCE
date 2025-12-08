@@ -47,7 +47,7 @@ class GeofabricDelineator:
         self.max_retries = self.config.get('MAX_RETRIES', 3)
         self.retry_delay = self.config.get('RETRY_DELAY', 5)
         self.min_gru_size = self.config.get('MIN_GRU_SIZE', 0)  # Default 1 km²
-        self.taudem_dir = self.config.get('TAUDEM_DIR')
+        self.taudem_dir = self.config.get('TAUDEM_DIR', "default")
         if self.taudem_dir == "default":
             self.taudem_dir = str(self.data_dir / 'installs' / 'TauDEM' / 'bin')
         
@@ -64,8 +64,8 @@ class GeofabricDelineator:
         self.use_drop_analysis = self.config.get('USE_DROP_ANALYSIS', False)
 
     def _get_dem_path(self) -> Path:
-        dem_path = self.config.get('DEM_PATH')
-        dem_name = self.config['DEM_NAME']
+        dem_path = self.config.get('DEM_PATH', "default")
+        dem_name = self.config.get('DEM_NAME', "default")
         if dem_name == "default":
             dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
 
@@ -75,7 +75,9 @@ class GeofabricDelineator:
         return Path(dem_path / dem_name)
 
     def _set_taudem_path(self):
-        taudem_dir = self.config['TAUDEM_DIR']
+        taudem_dir = self.config.get('TAUDEM_DIR', "default")
+        if taudem_dir == "default":
+            taudem_dir = str(self.data_dir / 'installs' / 'TauDEM' / 'bin')
         os.environ['PATH'] = f"{os.environ['PATH']}:{taudem_dir}"
 
     def delineate_geofabric(self) -> Tuple[Optional[Path], Optional[Path]]:
@@ -1940,12 +1942,12 @@ class LumpedWatershedDelineator:
         self.output_dir = self.project_dir / "shapefiles/tempdir"
         self.mpi_processes = self.config.get('MPI_PROCESSES', 1)
         self.delineation_method = 'TauDEM'
-        self.dem_path = self.config.get('DEM_PATH')
-        self.taudem_dir = self.config.get('TAUDEM_DIR')
+        self.dem_path = self.config.get('DEM_PATH', "default")
+        self.taudem_dir = self.config.get('TAUDEM_DIR', "default")
         if self.taudem_dir == "default":
             self.taudem_dir = str(self.data_dir / 'installs' / 'TauDEM' / 'bin')
 
-        dem_name = self.config['DEM_NAME']
+        dem_name = self.config.get('DEM_NAME', "default")
         if dem_name == "default":
             dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
 

@@ -38,7 +38,7 @@ class DomainDiscretizer:
         self.root_path = Path(self.config.get('SYMFLUENCE_DATA_DIR'))
         self.domain_name = self.config.get('DOMAIN_NAME')
         self.project_dir = self.root_path / f"domain_{self.domain_name}"
-        dem_name = self.config['DEM_NAME']
+        dem_name = self.config.get('DEM_NAME', "default")
         if dem_name == "default":
             dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
 
@@ -241,7 +241,7 @@ class DomainDiscretizer:
             attr_lower = attr.lower()
             
             if attr_lower == 'elevation':
-                dem_name = self.config['DEM_NAME']
+                dem_name = self.config.get('DEM_NAME', "default")
                 if dem_name == "default":
                     dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
                 
@@ -280,7 +280,7 @@ class DomainDiscretizer:
                 # Calculate radiation if it doesn't exist
                 if not radiation_raster.exists():
                     self.logger.info("Annual radiation raster not found. Calculating radiation...")
-                    dem_name = self.config['DEM_NAME']
+                    dem_name = self.config.get('DEM_NAME', "default")
                     if dem_name == "default":
                         dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
                     dem_raster = self._get_file_path("DEM_PATH", "attributes/elevation/dem", dem_name)
@@ -302,7 +302,7 @@ class DomainDiscretizer:
                 # Calculate aspect if it doesn't exist
                 if not aspect_raster.exists():
                     self.logger.info("Aspect raster not found. Calculating aspect...")
-                    dem_name = self.config['DEM_NAME']
+                    dem_name = self.config.get('DEM_NAME', "default")
                     if dem_name == "default":
                         dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
                     dem_raster = self._get_file_path("DEM_PATH", "attributes/elevation/dem", dem_name)
@@ -772,7 +772,7 @@ class DomainDiscretizer:
         else:
             gru_shapefile = self._get_file_path("RIVER_BASINS_PATH", "shapefiles/river_basins", self.config.get('RIVER_BASINS_NAME'))
         
-        dem_name = self.config['DEM_NAME']
+        dem_name = self.config.get('DEM_NAME', "default")
         if dem_name == "default":
             dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
 
@@ -872,7 +872,7 @@ class DomainDiscretizer:
             gru_shapefile = self._get_file_path("RIVER_BASINS_PATH", "shapefiles/river_basins", 
                                                self.config.get('RIVER_BASINS_NAME'))
 
-        dem_name = self.config['DEM_NAME']
+        dem_name = self.config.get('DEM_NAME', "default")
         if dem_name == "default":
             dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
 
@@ -1035,7 +1035,7 @@ class DomainDiscretizer:
             Optional[Path]: Path to the output HRU shapefile, or None if discretization fails.
         """
         gru_shapefile = self._get_file_path("RIVER_BASINS_PATH", "shapefiles/river_basins", f"{self.domain_name}_riverBasins_{self.delineation_suffix}.shp")
-        dem_name = self.config['DEM_NAME']
+        dem_name = self.config.get('DEM_NAME', "default")
         if dem_name == "default":
             dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
 

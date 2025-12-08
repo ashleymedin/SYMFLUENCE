@@ -52,8 +52,8 @@ class GeofabricDelineator:
         #self.pour_point_path = self.project_dir / 'shapefiles' / 'pour_point' / f"{self.config['DOMAIN_NAME']}_pourPoint.shp"
 
     def _get_dem_path(self) -> Path:
-        dem_path = self.config.get('DEM_PATH')
-        dem_name = self.config['DEM_NAME']
+        dem_path = self.config.get('DEM_PATH', "default")
+        dem_name = self.config.get('DEM_NAME', "default")
         if dem_name == "default":
             dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
 
@@ -62,7 +62,9 @@ class GeofabricDelineator:
         return Path(dem_path)
 
     def _set_taudem_path(self):
-        taudem_dir = self.config['TAUDEM_DIR']
+        taudem_dir = self.config.get('TAUDEM_DIR', "default")
+        if taudem_dir == "default":
+            taudem_dir = str(self.data_dir / 'installs' / 'TauDEM' / 'bin')
         os.environ['PATH'] = f"{os.environ['PATH']}:{taudem_dir}"
 
     def run_command(self, command: str, retry: bool = True) -> None:
@@ -1020,9 +1022,9 @@ class LumpedWatershedDelineator:
         self.output_dir = self.project_dir / "shapefiles/tempdir"
         self.mpi_processes = self.config.get('MPI_PROCESSES', 4)
         self.delineation_method = self.config.get('LUMPED_WATERSHED_METHOD', 'pysheds')
-        self.dem_path = self.config.get('DEM_PATH')
+        self.dem_path = self.config.get('DEM_PATH', "default")
 
-        dem_name = self.config['DEM_NAME']
+        dem_name = self.config.get('DEM_NAME', "default")
         if dem_name == "default":
             dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
 

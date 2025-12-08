@@ -1553,9 +1553,8 @@ def _calculate_multitarget_objectives(task: Dict, summa_dir: str, mizuroute_dir:
         [objective1, objective2] values
     """
     from calibration_targets import (
-        StreamflowTarget, SnowTarget, GroundwaterTarget, ETTarget, SoilMoistureTarget
+        StreamflowTarget, SnowTarget, GroundwaterTarget, ETTarget, SoilMoistureTarget,StorageTarget
     )
-    from tws_calibration_target import TWSTarget
     from pathlib import Path
     
     project_path = Path(project_dir)
@@ -1575,7 +1574,7 @@ def _calculate_multitarget_objectives(task: Dict, summa_dir: str, mizuroute_dir:
         elif target_type in ['sm_point', 'sm_smap', 'sm_esa', 'soil_moisture', 'sm']:
             return SoilMoistureTarget(config, project_path, logger)
         elif target_type in ['tws', 'grace', 'grace_tws', 'total_storage']:
-            return TWSTarget(config, project_path, logger)
+            return StorageTarget(config, project_path, logger)
         else:
             # Default to streamflow
             return StreamflowTarget(config, project_path, logger)

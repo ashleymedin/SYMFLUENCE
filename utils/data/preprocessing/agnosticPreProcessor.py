@@ -40,7 +40,7 @@ class forcingResampler:
         self.domain_name = self.config['DOMAIN_NAME']
         self.project_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}"
         self.shapefile_path = self.project_dir / 'shapefiles' / 'forcing'
-        dem_name = self.config['DEM_NAME']
+        dem_name = self.config.get('DEM_NAME', "default")
         if dem_name == "default":
             dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
 
@@ -1130,7 +1130,7 @@ class geospatialStatistics:
         self.catchment_name = self.config.get('CATCHMENT_SHP_NAME')
         if self.catchment_name == 'default':
             self.catchment_name = f"{self.config['DOMAIN_NAME']}_HRUs_{str(self.config['DOMAIN_DISCRETIZATION']).replace(',','_')}.shp"
-        dem_name = self.config['DEM_NAME']
+        dem_name = self.config.get('DEM_NAME', "default")
         if dem_name == "default":
             dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
 

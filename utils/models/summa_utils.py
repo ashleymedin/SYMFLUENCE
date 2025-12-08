@@ -41,7 +41,7 @@ class SummaPreProcessor:
         self.summa_setup_dir = self.project_dir / "settings" / "SUMMA"
         self.shapefile_path = self.project_dir / 'shapefiles' / 'forcing'
         self.settings_path = self.project_dir / 'settings/SUMMA'
-        dem_name = self.config['DEM_NAME']
+        dem_name = self.config.get('DEM_NAME', "default")
         if dem_name == "default":
             dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
         self.dem_path = self._get_default_path('DEM_PATH', f"attributes/elevation/dem/{dem_name}")

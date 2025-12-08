@@ -34,8 +34,11 @@ class DomainManager:
         
         # Initialize utility classes
         self.delineator = GeofabricDelineator(self.config, self.logger)
+        print("Geofabric Delineator initialized")
         self.lumped_delineator = LumpedWatershedDelineator(self.config, self.logger)
+        print("Lumped Watershed Delineator initialized")
         self.subsetter = GeofabricSubsetter(self.config, self.logger)
+        print("Geofabric Subsetter initialized")
         
         self.domain_discretizer = None  # Initialized when needed
         
