@@ -2644,9 +2644,9 @@ class StorageTarget(CalibrationTarget):
                 obs_dir / 'mass_balance.csv',
             ]
         else:
-            obs_dir = self.project_dir / 'observations' / 'grace'
+            obs_dir = self.project_dir / 'observations' / 'storage' / 'grace'
             potential_paths = [
-                obs_dir / f'{domain_name}_grace_tws_anomaly.csv',
+                obs_dir / f'{domain_name}_HRUs_GRUs_grace_tws_anomaly.csv',
                 obs_dir / f'grace_tws_anomaly.csv',
                 obs_dir / 'tws_anomaly.csv',
                 self.project_dir / 'observations' / f'{domain_name}_HRUs_GRUs_grace_tws_anomaly.csv',
@@ -2657,35 +2657,48 @@ class StorageTarget(CalibrationTarget):
                 return path
         
         # Return default path (will fail later with informative error)
-        return obs_dir / f'{domain_name}_stor_anomaly.csv'
+        return obs_dir / f'{domain_name}_HRUs_GRUs_stor_anomaly.csv'
     
     def _get_observed_data_column(self, columns: List[str]) -> Optional[str]:
-        """Dummy method - handled in _load_observed_data"""
+        """Identify the storage data column in observed data file"""
+        if self.optimization_target == 'stor_mb':
+            # For independent storage anomaly, expect a specific column
+            for col in columns:
+                if 'mass_balance' in col.lower() or 'stor_mb' in col.lower():
+                    return col
+            # Fallback to exact match
+            if 'Mass_Balance' in columns:
+                return 'Mass_Balance'   
+        else:
+            # For GRACE storage anomaly, look for preferred column
+            if self.grace_column in columns:
+                return self.grace_column
+            
+            # Fallback to any GRACE anomaly column
+            for col in columns:
+                if 'grace' in col.lower() and 'anomaly' in col.lower():
+                    return col  
         return None
+    
 
     def _load_observed_data(self) -> Optional[pd.Series]:
         """Load and preprocess storage anomaly observations"""
         try:
             obs_path = self.get_observed_data_path()
             if not obs_path.exists():
-                self.logger.error(f"Observed groundwater data file not found: {obs_path}")
+                self.logger.error(f"Observed storage data file not found: {obs_path}")
                 return None
             
             df = pd.read_csv(obs_path, index_col=0, parse_dates=True)
             self.logger.debug(f"Loaded observed data with columns: {list(df.columns)}")
-            
+
             # Ensure datetime index
             if not isinstance(df.index, pd.DatetimeIndex):
                 df.index = pd.to_datetime(df.index)
 
             if self.optimization_target == 'stor_mb':
-                # For independent storage anomaly, expect a single column plus datetime index
-                # NOTE: could change this to be more flexible if needed, one column per glacier, etc.
-                if df.shape[1] != 2:
-                    self.logger.warning(f"Expected 2 columns for storage mass balance observations and dates, found {df.shape[1]}")
-                else:
-                    df[self.grace_column] = df[df.columns[1]] # Use second column as storage anomaly, name it grace_column for consistency
-                self.logger.info(f"Loaded independent storage anomaly observations: {len(df)} months, "
+                data_col = self._get_observed_data_column(df.columns)
+                self.logger.info(f"Loaded independent storage mass balance observations: {len(df)} months, "
                                f"period {df.index.min()} to {df.index.max()}")
             
             else:
@@ -2694,23 +2707,30 @@ class StorageTarget(CalibrationTarget):
                     grace_cols = [c for c in df.columns if 'grace' in c.lower()]
                     if grace_cols:
                         df['grace_mean'] = df[grace_cols].mean(axis=1)
-
-                # Validate requested column exists
-                if self.grace_column not in df.columns:
-                    available = ', '.join(df.columns)
-                    self.logger.warning(f"GRACE column '{self.grace_column}' not found. Available: {available}")
-                    # Fall back to first GRACE column
-                    grace_cols = [c for c in df.columns if 'grace' in c.lower()]
-                    if grace_cols:
-                        self.grace_column = grace_cols[0]
-                        self.logger.info(f"Using fallback GRACE column: {self.grace_column}")
+                data_col = self._get_observed_data_column(df.columns)
                 self.logger.info(f"Loaded GRACE observations: {len(df)} months, "
-                               f"period {df.index.min()} to {df.index.max()}")
-            return df
+                                   f"period {df.index.min()} to {df.index.max()}")
+
+                # Return a single series for observed storage anomalies
+                try:
+                    if data_col in df.columns:
+                        series = pd.to_numeric(df[data_col], errors='coerce')
+                        series = series.dropna()
+                        if not isinstance(series.index, pd.DatetimeIndex):
+                            try:
+                                series.index = pd.to_datetime(series.index)
+                            except Exception:
+                                pass
+                        return series
+                    self.logger.error("No suitable observed storage column found in observations")
+                    return None
+                except Exception as e:
+                    self.logger.error(f"Error converting dataframe to Series: {e}")
+                    return None
             
         except Exception as e:
-            self.logger.error(f"Error loading GRACE observations: {e}")
-            return pd.DataFrame()    
+            self.logger.error(f"Error loading storage observations: {e}")
+            return None
 
     def get_simulation_files(self, sim_dir: Path) -> List[Path]:
         """Get SUMMA monthly output files containing storage variables"""
@@ -2769,7 +2789,7 @@ class StorageTarget(CalibrationTarget):
                     # convert from Gt/m² (km³ of water/m² to cm
                     total_stor = total_stor * 1e9 * 100.0
                 else:
-                    # total_stor is expected to be a rate (kg/m²/s), or mm/s water. Convert to mm/s and ntegrate over time.
+                    # total_stor is expected to be a rate (kg/m²/s), or mm/s water. Convert to mm/s and integrate over time.
                     if hasattr(total_stor, 'sel') or hasattr(total_stor, 'dims'):
                         dt = self.config.get('FORCING_TIME_STEP_SIZE', 1)
                         # integrate: mm/s * seconds -> cm per timestep, then cumulative sum over time
@@ -2780,15 +2800,39 @@ class StorageTarget(CalibrationTarget):
                         total_stor = np.cumsum(total_stor * dt, axis=0)
 
                 # Handle multi-dimensional data (GRUs)
-                if total_stor.ndim > 1:
+                if getattr(total_stor, 'ndim', None) is not None and total_stor.ndim > 1:
                     # Sum over non-time dimensions (GRUs)
                     axes_to_sum = tuple(range(1, total_stor.ndim))
                     total_stor = np.nanmean(total_stor, axis=axes_to_sum)  # Use mean for GRU aggregation
-                total_stor = total_stor.values
+
+                # Convert total_stor to a numpy array if necessary (supports xarray.DataArray, pandas, numpy)
+                if hasattr(total_stor, 'values'):
+                    arr = total_stor.values
+                elif isinstance(total_stor, np.ndarray):
+                    arr = total_stor
+                elif isinstance(total_stor, (pd.Series, pd.DataFrame)):
+                    arr = total_stor.values
+                else:
+                    try:
+                        arr = np.array(total_stor)
+                    except Exception as e:
+                        self.logger.error(f"Could not convert total_stor to numpy array: {e}")
+                        return None
+
+                arr = np.asarray(arr).flatten()
+
+                # Ensure time coordinate aligns with data length
+                if time_coord is None:
+                    self.logger.warning("Time coordinate missing from dataset; creating integer index for simulated storage")
+                    time_coord = pd.RangeIndex(start=0, stop=len(arr))
+                elif len(arr) != len(time_coord):
+                    minlen = min(len(arr), len(time_coord))
+                    self.logger.warning(f"Length mismatch between time coordinate ({len(time_coord)}) and storage data ({len(arr)}); truncating to {minlen}")
+                    arr = arr[:minlen]
+                    time_coord = time_coord[:minlen]
+
                 # Create time series
-                stor_series = pd.Series(total_stor.flatten(), index=time_coord, name='simulated_stor')
-                # Correct for anomaly form by subtracting mean over the baseline period
-                stor_series = self._compute_anomaly(stor_series)
+                stor_series = pd.Series(arr, index=time_coord, name='simulated_stor')
                 return stor_series
                     
         except Exception as e:
