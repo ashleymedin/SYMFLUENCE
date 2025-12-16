@@ -1563,21 +1563,22 @@ def _calculate_multitarget_objectives(task: Dict, summa_dir: str, mizuroute_dir:
         """Create calibration target by type name."""
         target_type = target_type.lower()
         
-        if target_type in ['streamflow', 'flow', 'discharge']:
-            return StreamflowTarget(config, project_path, logger)
-        elif target_type in ['swe', 'sca', 'snow_depth', 'snow']:
-            return SnowTarget(config, project_path, logger)
-        elif target_type in ['gw_depth', 'gw_grace', 'groundwater', 'gw']:
-            return GroundwaterTarget(config, project_path, logger)
-        elif target_type in ['et', 'latent_heat', 'evapotranspiration']:
-            return ETTarget(config, project_path, logger)
-        elif target_type in ['sm_point', 'sm_smap', 'sm_esa', 'soil_moisture', 'sm']:
-            return SoilMoistureTarget(config, project_path, logger)
-        elif target_type in ['tws', 'grace', 'grace_tws', 'total_storage']:
-            return StorageTarget(config, project_path, logger)
+        if target_type in ['streamflow']:
+            return StreamflowTarget(target_type, config, project_path, logger)
+        elif target_type in ['swe', 'sca']:
+            return SnowTarget(target_type, config, project_path, logger)
+        elif target_type in ['gw_depth', 'gw_grace']:
+            return GroundwaterTarget(target_type, config, project_path, logger)
+        elif target_type in ['et', 'latent_heat']:
+            return ETTarget(target_type, config, project_path, logger)
+        elif target_type in ['sm_point', 'sm_smap', 'sm_esa']:
+            return SoilMoistureTarget(target_type, config, project_path, logger)
+        elif target_type in ['stor_mb', 'stor_grace']:
+            return StorageTarget(target_type, config, project_path, logger)
         else:
-            # Default to streamflow
-            return StreamflowTarget(config, project_path, logger)
+            raise ValueError(f"Unknown calibration target type: {target_type}. "
+                 f"Valid options: (streamflow), (swe, sca), (gw_depth, gw_depth), (et, latent_heat), (sm_point, sm_smap, sm_esa), (stor_mb, stor_grace)")
+
     
     def extract_metric(metrics: Dict, metric_name: str) -> float:
         """Extract specific metric from metrics dictionary."""

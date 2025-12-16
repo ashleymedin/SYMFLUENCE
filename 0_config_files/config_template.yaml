@@ -60,7 +60,7 @@ LAPSE_RATE: -6.5
 DATA_ACQUIRE: HPC                     # HPC | supplied | local
 
 # Model Configuration
-HYDROLOGICAL_MODEL: SUMMA            # SUMMA | FUSE | GR | LSTM | NextGen
+HYDROLOGICAL_MODEL: SUMMA            # SUMMA | FUSE | GR | LSTM | NGEN
 ROUTING_MODEL: mizuRoute
 SETTINGS_SUMMA_CONNECT_HRUS: yes 
 SETTINGS_SUMMA_TRIALPARAM_N: 1 

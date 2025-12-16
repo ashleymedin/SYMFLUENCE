@@ -230,7 +230,7 @@ class OptimizationManager:
         """
         status = {
             'iterative_optimization_enabled': 'iteration' in self.config.get('OPTIMIZATION_METHODS', []),
-            'optimization_algorithm': self.config.get('ITERATIVE_OPTIMIZATION_ALGORITHM', 'PSO'),
+            'optimization_algorithm': self.config.get('OPTIMIZATION_ALGORITHM', 'PSO'),
             'optimization_metric': self.config.get('OPTIMIZATION_METRIC', 'KGE'),
             'optimization_dir': str(self.project_dir / "optimization"),
             'results_exist': False,
@@ -275,7 +275,7 @@ class OptimizationManager:
         3. Executing the calibration for each configured hydrological model
         4. Saving and returning the path to the calibration results
         
-        The optimization algorithm is specified through the ITERATIVE_OPTIMIZATION_ALGORITHM
+        The optimization algorithm is specified through the OPTIMIZATION_ALGORITHM
         configuration parameter (default: 'PSO'). Supported algorithms include PSO,
         SCE-UA, DDS, DE, and NSGA-II.
         
@@ -296,7 +296,7 @@ class OptimizationManager:
             return None
         
         # Get the optimization algorithm from config
-        opt_algorithm = self.config.get('ITERATIVE_OPTIMIZATION_ALGORITHM', 'PSO')
+        opt_algorithm = self.config.get('OPTIMIZATION_ALGORITHM', 'PSO')
         
         try:
             hydrological_models = self.config.get('HYDROLOGICAL_MODEL', '').split(',')
@@ -658,7 +658,7 @@ class OptimizationManager:
         """
         status = {
             'iterative_optimization_enabled': 'iteration' in self.config.get('OPTIMIZATION_METHODS', []),
-            'optimization_algorithm': self.config.get('ITERATIVE_OPTIMIZATION_ALGORITHM', 'PSO'),
+            'optimization_algorithm': self.config.get('OPTIMIZATION_ALGORITHM', 'PSO'),
             'optimization_metric': self.config.get('OPTIMIZATION_METRIC', 'KGE'),
             'optimization_dir': str(self.project_dir / "optimization"),
             'results_exist': False,
@@ -710,7 +710,7 @@ class OptimizationManager:
         }
         
         # Check algorithm
-        algorithm = self.config.get('ITERATIVE_OPTIMIZATION_ALGORITHM', '')
+        algorithm = self.config.get('OPTIMIZATION_ALGORITHM', '')
         validation['algorithm_valid'] = algorithm in self.optimizers
         
         # Check model support

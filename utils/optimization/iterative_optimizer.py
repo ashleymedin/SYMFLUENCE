@@ -1437,34 +1437,33 @@ class BaseOptimizer(ABC):
         """Factory method to create appropriate calibration target"""
         optimization_target = self.config.get('OPTIMIZATION_TARGET', 'streamflow')
         calibration_variable = self.config.get('CALIBRATION_VARIABLE', 'streamflow').lower()
-        
+
         # Check for ET/latent heat calibration FIRST (before streamflow)
         if optimization_target in ['et', 'latent_heat']:
-            return ETTarget(self.config, self.project_dir, self.logger)
-        
+            return ETTarget(optimization_target,self.config, self.project_dir, self.logger)
+
         # Check for snow-related calibration
-        elif (optimization_target in ['swe', 'sca', 'snow_depth'] or 
-            'swe' in calibration_variable or 'snow' in calibration_variable):
-            return SnowTarget(self.config, self.project_dir, self.logger)
-        
+        elif (optimization_target in ['swe', 'sca']):
+            return SnowTarget(optimization_target, self.config, self.project_dir, self.logger)
+        elif ('swe' in calibration_variable or 'snow' in calibration_variable):
+            return SnowTarget('swe', self.config, self.project_dir, self.logger)
+
         # Check for groundwater calibration
         elif optimization_target in ['gw_depth', 'gw_grace']:
-            return GroundwaterTarget(self.config, self.project_dir, self.logger)
-        
+            return GroundwaterTarget(optimization_target, self.config, self.project_dir, self.logger)
+
         # Check for soil moisture calibration
         elif optimization_target in ['sm_point', 'sm_smap', 'sm_esa']:
-            return SoilMoistureTarget(self.config, self.project_dir, self.logger)
+            return SoilMoistureTarget(optimization_target, self.config, self.project_dir, self.logger)
         
+        elif optimization_target in ['stor_grace', 'stor_mb']:
+            return StorageTarget(optimization_target, self.config, self.project_dir, self.logger)
+
         # Check for streamflow calibration (should be near the end as it's most common)
         elif optimization_target == 'streamflow' or 'flow' in calibration_variable:
-            return StreamflowTarget(self.config, self.project_dir, self.logger)
+            return StreamflowTarget('streamflow', self.config, self.project_dir, self.logger)
         
-        else:
-            # Default fallback - try to infer from calibration variable
-            if 'streamflow' in calibration_variable or 'flow' in calibration_variable:
-                return StreamflowTarget(self.config, self.project_dir, self.logger)
-            else:
-                raise ValueError(f"Unsupported optimization target: {optimization_target} with calibration variable: {calibration_variable}")
+        raise ValueError(f"Unsupported optimization target: {optimization_target} with calibration variable: {calibration_variable}")
                 
     def _setup_parallel_processing(self) -> None:
         """Setup parallel processing directories and files"""
@@ -3014,7 +3013,10 @@ if __name__ == "__main__":
         """
         Main optimization method with enhanced final reporting
         """
-        algorithm_name = self.get_algorithm_name()
+        if 'NGEN' not in self.models_to_run:
+            algorithm_name = self.get_algorithm_name()
+        else:
+           algorithm_name = self.config.get('OPTIMIZATION_ALGORITHM', 'DDS')
         
         self.logger.info("=" * 60)
         self.logger.info(f"Starting {algorithm_name} optimization for {self.config.get('OPTIMIZATION_TARGET', 'streamflow')} calibration")
@@ -3036,6 +3038,8 @@ if __name__ == "__main__":
             elif algorithm == 'DE':
                 self.ngen_optimizer.run_de()
             elif algorithm == 'NSGA-II' or algorithm == 'NSGA2':
+                if self.config.get('NSGA2_MULTI_TARGET', False):
+                    self.logger.info(f"With multi-objective setting, also calibrating {self.config.get('OPTIMIZATION_TARGET2', 'storage')} with target: {self.config.get('OPTIMIZATION_METRIC2', 'KGE')}")
                 self.ngen_optimizer.run_nsga2()
             elif algorithm == 'ADAM':
                 steps = self.config.get('ADAM_STEPS', 100)
@@ -4114,7 +4118,7 @@ class NSGA2Optimizer(BaseOptimizer):
         secondary_target_type = self.config.get('NSGA2_SECONDARY_TARGET', self.config.get('OPTIMIZATION_TARGET2', 'storage'))
         
         self.primary_metric = self.config.get('NSGA2_PRIMARY_METRIC', self.config.get('OPTIMIZATION_METRIC', 'KGE'))
-        self.secondary_metric = self.config.get('NSGA2_SECONDARY_METRIC', self.config.get('OPTIMIZATION_METRIC', 'KGE'))
+        self.secondary_metric = self.config.get('NSGA2_SECONDARY_METRIC', self.config.get('OPTIMIZATION_METRIC2', 'KGE'))
         
         # Create the two calibration targets
         self.primary_target = self._create_calibration_target_by_type(primary_target_type)
@@ -4172,44 +4176,23 @@ class NSGA2Optimizer(BaseOptimizer):
         
         target_type = target_type.lower()
         
-        if target_type in ['streamflow', 'flow', 'discharge']:
-            if target_type != 'streamflow':
-                self.logger.warning(f"Target type '{target_type}' mapped to 'streamflow'")
-                self.variable_name = 'streamflow'
-            return StreamflowTarget(self.variable_name, self.config, self.project_dir, self.logger)
+        if target_type in ['streamflow']:
+            return StreamflowTarget(target_type,self.config, self.project_dir, self.logger)
         
-        elif target_type in ['swe', 'sca', 'snow_depth', 'snow']:
-            if target_type not in ['swe', 'sca']:
-                self.logger.warning(f"Target type '{target_type}' mapped to 'swe")
-                self.variable_name = 'swe'
-            return SnowTarget(self.target_type, self.config, self.project_dir, self.logger)
+        elif target_type in ['swe', 'sca']:
+            return SnowTarget(target_type, self.config, self.project_dir, self.logger)
         
-        elif target_type in ['gw_depth', 'gw_grace', 'groundwater', 'gw']:
-            if target_type not in ['gw_depth', 'gw_grace']:
-                self.logger.warning(f"Target type '{target_type}' mapped to 'gw_depth'")
-                self.variable_name = 'gw_depth'
-            return GroundwaterTarget(self.variable_name, self.config, self.project_dir, self.logger)
+        elif target_type in ['gw_depth', 'gw_grace']:
+            return GroundwaterTarget(target_type,self.config, self.project_dir, self.logger)
         
-        elif target_type in ['et', 'latent_heat', 'evapotranspiration']:
-            if target_type not in ['et', 'latent_heat']:
-                self.logger.warning(f"Target type '{target_type}' mapped to 'et'")
-                self.variable_name = 'et'
-            return ETTarget(self.variable_name, self.config, self.project_dir, self.logger)
+        elif target_type in ['et', 'latent_heat']:
+            return ETTarget(target_type,self.config, self.project_dir, self.logger)
         
-        elif target_type in ['sm_point', 'sm_smap', 'sm_esa', 'soil_moisture', 'sm']:
-            if target_type not in ['sm_point', 'sm_smap', 'sm_esa']:
-                self.logger.warning(f"Target type '{target_type}' mapped to 'sm_point'")
-                self.variable_name = 'sm_point'
-            return SoilMoistureTarget(self.variable_name, self.config, self.project_dir, self.logger)
+        elif target_type in ['sm_point', 'sm_smap', 'sm_esa']:
+            return SoilMoistureTarget(target_type, self.config, self.project_dir, self.logger)
         
-        elif target_type in ['tws', 'mb', 'stor_grace', 'stor_mb', 'storage']:
-            if target_type in ['tws', 'storage']:
-                self.logger.warning(f"Target type '{target_type}' mapped to 'stor_grace'")
-                self.variable_name = 'stor_grace'
-            elif target_type == 'mb':
-                self.logger.warning(f"Target type '{target_type}' mapped to 'stor_mb'")
-                self.variable_name = 'stor_mb'
-            return StorageTarget(self.variable_name, self.config, self.project_dir, self.logger)
+        elif target_type in ['stor_grace', 'stor_mb']:
+            return StorageTarget(target_type,self.config, self.project_dir, self.logger)
         
         else:
             raise ValueError(f"Unknown calibration target type: {target_type}. "

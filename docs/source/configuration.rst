@@ -100,7 +100,7 @@ Select hydrologic and routing models, and configure per-model parameters.
 
 .. code-block:: yaml
 
-   HYDROLOGICAL_MODEL: SUMMA            # SUMMA | FUSE | GR | LSTM | NextGen
+   HYDROLOGICAL_MODEL: SUMMA            # SUMMA | FUSE | GR | LSTM | NGEN
    ROUTING_MODEL: mizuRoute
 
 ### SUMMA

@@ -417,7 +417,7 @@ class LoggingManager:
             'configuration': {
                 'hydrological_model': self.config.get('HYDROLOGICAL_MODEL'),
                 'domain_definition_method': self.config.get('DOMAIN_DEFINITION_METHOD'),
-                'optimization_algorithm': self.config.get('ITERATIVE_OPTIMIZATION_ALGORITHM'),
+                'optimization_algorithm': self.config.get('OPTIMIZATION_ALGORITHM'),
                 'force_run_all': self.config.get('FORCE_RUN_ALL_STEPS', False)
             }
         }
