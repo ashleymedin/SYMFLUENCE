@@ -2698,9 +2698,7 @@ class StorageTarget(CalibrationTarget):
 
             if self.optimization_target == 'stor_mb':
                 data_col = self._get_observed_data_column(df.columns)
-                self.logger.info(f"Loaded independent storage mass balance observations: {len(df)} months, "
-                               f"period {df.index.min()} to {df.index.max()}")
-            
+             
             else:
                 # Handle 'grace_mean' option - compute mean of all GRACE products
                 if self.grace_column == 'grace_mean':
@@ -2708,8 +2706,6 @@ class StorageTarget(CalibrationTarget):
                     if grace_cols:
                         df['grace_mean'] = df[grace_cols].mean(axis=1)
                 data_col = self._get_observed_data_column(df.columns)
-                self.logger.info(f"Loaded GRACE observations: {len(df)} months, "
-                                   f"period {df.index.min()} to {df.index.max()}")
 
                 # Return a single series for observed storage anomalies
                 try:
