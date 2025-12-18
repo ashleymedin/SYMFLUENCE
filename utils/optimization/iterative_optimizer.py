@@ -650,6 +650,11 @@ class ModelExecutor:
             # Run SUMMA
             cmd = f"{summa_exe} -m {file_manager}"
             log_file = log_dir / f"summa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+            param_file = settings_dir / self.config.get('SETTINGS_SUMMA_TRIALPARAMS', 'trialParams.nc')
+
+            # copy trialParams.nc to log_dir for record-keeping, with timestamp
+            if self.config.get('PARAMS_KEEP_TRIALS', False) and param_file is not None:
+                shutil.copy(param_file, log_dir / f"trialParams_{datetime.now().strftime('%Y%m%d_%H%M%S')}.nc")               
             
             with open(log_file, 'w') as f:
                 result = subprocess.run(cmd, shell=True, stdout=f, stderr=subprocess.STDOUT, 
