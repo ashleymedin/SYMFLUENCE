@@ -41,8 +41,6 @@ Define experiment identifiers, paths, and computational options.
    LOG_TO_FILE: True
    LOG_FORMAT: detailed
 
-**Note:** For backward compatibility, ``CONFLUENCE_DATA_DIR`` and ``CONFLUENCE_CODE_DIR`` are still supported but deprecated. Please update to ``SYMFLUENCE_DATA_DIR`` and ``SYMFLUENCE_CODE_DIR``.
-
 ---
 
 Geospatial Definition
@@ -130,9 +128,9 @@ Select hydrologic and routing models, and configure per-model parameters.
 .. code-block:: yaml
 
    GR_SPATIAL_MODE: lumped
-   FLASH_HIDDEN_SIZE: 256
-   FLASH_EPOCHS: 100
-   FLASH_USE_ATTENTION: True
+   LSTM_HIDDEN_SIZE: 256
+   LSTM_EPOCHS: 100
+   LSTM_USE_ATTENTION: True
 
 ---
 

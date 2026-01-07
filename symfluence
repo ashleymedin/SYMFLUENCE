@@ -16,10 +16,47 @@ error_handler() {
 trap 'error_handler $LINENO' ERR
 
 # ----------------------------------------------------------------------
+# Platform Detection
+# ----------------------------------------------------------------------
+detect_platform() {
+    # Detect OS and set platform-specific variables
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            export PLATFORM="windows"
+            export VENV_ACTIVATE="Scripts/activate"
+            export VENV_BIN="Scripts"
+            export EXE_EXT=".exe"
+            ;;
+        Darwin*)
+            export PLATFORM="macos"
+            export VENV_ACTIVATE="bin/activate"
+            export VENV_BIN="bin"
+            export EXE_EXT=""
+            ;;
+        Linux*)
+            export PLATFORM="linux"
+            export VENV_ACTIVATE="bin/activate"
+            export VENV_BIN="bin"
+            export EXE_EXT=""
+            ;;
+        *)
+            print_warning "Unknown platform: $(uname -s), assuming Unix-like"
+            export PLATFORM="unix"
+            export VENV_ACTIVATE="bin/activate"
+            export VENV_BIN="bin"
+            export EXE_EXT=""
+            ;;
+    esac
+}
+
+# Detect platform before anything else
+detect_platform
+
+# ----------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------
 SCRIPT_NAME="symfluence"
-SYMFLUENCE_SCRIPT="symfluence.py"
+SYMFLUENCE_SCRIPT="run_symfluence.py"
 MIN_PYTHON_VERSION="3.11"
 REQUIRED_PYTHON_VERSION="3.11"
 
@@ -198,27 +235,55 @@ check_rpy2_dependencies() {
 }
 
 install_gdal_python() {
-    print_info "Detecting system GDAL version..."
-    if ! command -v gdal-config >/dev/null 2>&1; then
-        print_warning "gdal-config not found; skipping GDAL Python bindings"
+    # Check if GDAL Python bindings are already installed
+    if python -c "from osgeo import gdal" >/dev/null 2>&1; then
+        local installed_version
+        installed_version=$(python -c "from osgeo import gdal; print(gdal.__version__)" 2>/dev/null || echo "unknown")
+        print_success "GDAL Python bindings already installed (version: $installed_version)"
         return 0
     fi
-    local v
-    v=$(gdal-config --version 2>/dev/null || true)
-    [[ -z "$v" ]] && { print_warning "Could not detect GDAL version"; return 0; }
+
+    print_info "Detecting system GDAL version..."
+    local v=""
+
+    # Try gdal-config first
+    if command -v gdal-config >/dev/null 2>&1; then
+        v=$(gdal-config --version 2>/dev/null || true)
+    fi
+
+    # Fallback to GDAL_VERSION environment variable (set by Windows conda setup)
+    if [[ -z "$v" && -n "${GDAL_VERSION:-}" ]]; then
+        v="$GDAL_VERSION"
+        print_info "Using GDAL version from environment: $v"
+    fi
+
+    # If still no version, skip
+    if [[ -z "$v" ]]; then
+        print_warning "Could not detect GDAL version (gdal-config not found and GDAL_VERSION not set)"
+        return 0
+    fi
+
     print_success "Found system GDAL: $v"
     print_info "Installing matching GDAL Python bindings..."
 
-    if pip install "GDAL==$v"; then
+    # Try exact version first
+    if pip install "GDAL==$v" 2>/dev/null; then
         print_success "Installed GDAL Python bindings $v"
         return 0
     fi
 
-    local mm
-    mm=$(echo "$v" | cut -d. -f1,2)
-    print_info "Trying GDAL>=$mm.0,<$mm.99..."
-    if pip install "GDAL>=${mm}.0,<${mm}.99"; then
-        print_success "Installed GDAL Python bindings for $mm.x"
+    # Extract version components, handling potential suffixes like 3.12.0_1
+    local GDAL_MAJOR GDAL_MINOR GDAL_PATCH NEXT_PATCH
+    GDAL_MAJOR=$(echo "$v" | cut -d. -f1)
+    GDAL_MINOR=$(echo "$v" | cut -d. -f2)
+    GDAL_PATCH=$(echo "$v" | cut -d. -f3 | cut -d_ -f1)
+    NEXT_PATCH=$((GDAL_PATCH + 1))
+
+    # Try version range that allows same patch + post-releases, but not next patch
+    # E.g., for GDAL 3.12.0: allows 3.12.0, 3.12.0.post1, etc. but not 3.12.1
+    print_info "Trying GDAL>=${GDAL_MAJOR}.${GDAL_MINOR}.${GDAL_PATCH},<${GDAL_MAJOR}.${GDAL_MINOR}.${NEXT_PATCH}..."
+    if pip install "GDAL>=${GDAL_MAJOR}.${GDAL_MINOR}.${GDAL_PATCH},<${GDAL_MAJOR}.${GDAL_MINOR}.${NEXT_PATCH}"; then
+        print_success "Installed GDAL Python bindings compatible with $v"
         return 0
     fi
 
@@ -286,10 +351,18 @@ _is_bad_path() {
 }
 
 update_config_paths_in_yaml() {
-    # $1: path to YAML config (e.g., ./0_config_files/config.yaml)
+    # $1: path to YAML config (e.g., ./config.yaml)
     local cfg="$1"
-    local CODE="$PWD"
-    local DATA_BASE="$PWD/../SYMFLUENCE_data"; mkdir -p "$DATA_BASE"; local DATA="$(cd "$DATA_BASE" && pwd)"
+    local CODE="${SYMFLUENCE_CODE_DIR:-$PWD}"
+    # Use SYMFLUENCE_DATA_DIR if set, otherwise fall back to PWD/../SYMFLUENCE_data
+    local DATA
+    if [[ -n "${SYMFLUENCE_DATA_DIR:-}" && -d "${SYMFLUENCE_DATA_DIR}" ]]; then
+        DATA="${SYMFLUENCE_DATA_DIR}"
+    elif [[ -n "${SYMFLUENCE_DATA:-}" && -d "${SYMFLUENCE_DATA}" ]]; then
+        DATA="${SYMFLUENCE_DATA}"
+    else
+        local DATA_BASE="$PWD/../SYMFLUENCE_data"; mkdir -p "$DATA_BASE"; DATA="$(cd "$DATA_BASE" && pwd)"
+    fi
 
     # Ensure file exists
     if [[ ! -f "$cfg" ]]; then
@@ -379,8 +452,6 @@ find_symfluence_script() {
 
     if [[ -n "${SYMFLUENCE_CODE_DIR}" ]]; then
         search_paths=("${SYMFLUENCE_CODE_DIR}/${SYMFLUENCE_SCRIPT}" "${search_paths[@]}")
-    elif [[ -n "${CONFLUENCE_CODE_DIR}" ]]; then
-        search_paths=("${CONFLUENCE_CODE_DIR}/${SYMFLUENCE_SCRIPT}" "${search_paths[@]}")
     fi
 
     local path
@@ -438,11 +509,11 @@ check_virtual_env() {
 
     local venv_path
     for venv_path in "${venv_paths[@]}"; do
-        if [[ -f "${venv_path}/bin/activate" ]]; then
+        if [[ -f "${venv_path}/${VENV_ACTIVATE}" ]]; then
             print_info "Found virtual environment: ${venv_path}"
             print_info "Activating virtual environment..."
             export PYTHONPATH="${PYTHONPATH-}"
-            source "${venv_path}/bin/activate"
+            source "${venv_path}/${VENV_ACTIVATE}"
             if [[ -n "$PYTHONPATH" ]]; then
                 export PYTHONPATH=""
             fi
@@ -459,10 +530,9 @@ show_symfluence_help() {
     cat << EOF
 ${SCRIPT_NAME}: SYMFLUENCE Python script not found
 
-This wrapper looks for symfluence.py in:
+This wrapper looks for ${SYMFLUENCE_SCRIPT} in:
   - Current directory and parent directories
-  - \$SYMFLUENCE_CODE_DIR (preferred)
-  - \$CONFLUENCE_CODE_DIR (legacy)
+  - \$SYMFLUENCE_CODE_DIR
 
 Fix:
   1) Run this from the SYMFLUENCE project dir, or
@@ -484,7 +554,7 @@ Wrapper-only options:
   --wrapper-debug    Run wrapper in debug mode
   --install          Set up Python environment and install external tools
 
-All other options are passed to symfluence.py (see 'symfluence --help').
+All other options are passed to ${SYMFLUENCE_SCRIPT} (see 'symfluence --help').
 EOF
             exit 0
             ;;
@@ -497,19 +567,100 @@ EOF
             echo "SYMFLUENCE Wrapper Information"
             echo "=============================="
             echo "Wrapper script: $(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
-            echo "symfluence.py: ${symfluence_script:-'Not found'}"
+            echo "${SYMFLUENCE_SCRIPT}: ${symfluence_script:-'Not found'}"
             echo "Python command: ${python_cmd:-'Not found'}"
             echo "Python version: $(${python_cmd} --version 2>/dev/null || echo 'Unknown')"
             echo "Virtual env: ${VIRTUAL_ENV:-'None active'}"
             echo "Working directory: $(pwd)"
             echo "SYMFLUENCE_CODE_DIR: ${SYMFLUENCE_CODE_DIR:-'Not set'}"
-            echo "CONFLUENCE_CODE_DIR (legacy): ${CONFLUENCE_CODE_DIR:-'Not set'}"
             exit 0
             ;;
         --wrapper-debug) set -x; return 1 ;;
         --install)       return 1 ;;
         *)               return 1 ;;
     esac
+}
+
+# ----------------------------------------------------------------------
+# Windows-specific setup (conda/micromamba)
+# ----------------------------------------------------------------------
+setup_windows_dependencies() {
+    if [[ "$PLATFORM" != "windows" ]]; then
+        return 0
+    fi
+
+    print_info "Setting up Windows dependencies..."
+
+    # Check if conda/mamba is available
+    if command -v mamba >/dev/null 2>&1; then
+        print_info "Using mamba for package management"
+        CONDA_CMD="mamba"
+    elif command -v conda >/dev/null 2>&1; then
+        print_info "Using conda for package management"
+        CONDA_CMD="conda"
+    elif command -v micromamba >/dev/null 2>&1; then
+        print_info "Using micromamba for package management"
+        CONDA_CMD="micromamba"
+    else
+        print_warning "No conda/mamba/micromamba found in PATH"
+        print_info "Attempting to use system conda if available..."
+
+        # Try common conda locations
+        for conda_path in \
+            "$HOME/miniconda3/condabin/conda" \
+            "$HOME/anaconda3/condabin/conda" \
+            "/c/ProgramData/Miniconda3/condabin/conda" \
+            "/c/ProgramData/Anaconda3/condabin/conda"; do
+            if [[ -f "$conda_path" ]]; then
+                print_info "Found conda at: $conda_path"
+                export PATH="$(dirname "$conda_path"):$PATH"
+                CONDA_CMD="conda"
+                break
+            fi
+        done
+
+        if [[ -z "${CONDA_CMD:-}" ]]; then
+            print_warning "Conda not found. Skipping Windows-specific dependencies."
+            print_info "Manual installation required: gdal, netcdf4, hdf5, cmake, ninja"
+            print_info "You can install via: conda install -c conda-forge gdal netcdf4 hdf5 cmake ninja"
+            return 0
+        fi
+    fi
+
+    # Install essential Windows dependencies via conda
+    # Install C libraries only - Python packages will be installed in venv via pip
+    print_info "Installing Windows build dependencies via ${CONDA_CMD}..."
+    $CONDA_CMD install -c conda-forge -y \
+        cmake \
+        ninja \
+        libgdal=3.11 \
+        netcdf4 \
+        hdf5 \
+        || print_warning "Some conda packages may have failed to install"
+
+    # Add conda Library paths to environment for Windows
+    if [[ -d "$CONDA/Library" ]]; then
+        export PATH="$CONDA/Library/bin:$PATH"
+        export PATH="$CONDA/Library/mingw-w64/bin:$PATH"
+        export GDAL_DATA="$CONDA/Library/share/gdal"
+        export PROJ_LIB="$CONDA/Library/share/proj"
+
+        # Set compiler flags for pip to find GDAL headers/libs
+        export INCLUDE="$CONDA/Library/include${INCLUDE:+;$INCLUDE}"
+        export LIB="$CONDA/Library/lib${LIB:+;$LIB}"
+
+        # Set GDAL version for pip (matching conda libgdal version)
+        # libgdal=3.11 means any 3.11.x version
+        export GDAL_VERSION="3.11.4"
+
+        # Set UTF-8 encoding for Python to handle emoji output on Windows
+        export PYTHONIOENCODING="utf-8"
+
+        print_info "Added conda Library paths to environment"
+        print_info "GDAL version for pip: $GDAL_VERSION"
+    fi
+
+    print_success "Windows dependencies setup complete"
 }
 
 # ----------------------------------------------------------------------
@@ -531,17 +682,17 @@ main() {
     #set_default_symfluence_paths
     
     # Update config.yaml with PWD-based paths if current values are bad/missing (optional)
-    local CONFIG_YAML="./0_config_files/config_template.yaml"
+    local CONFIG_YAML="./config.yaml"
     if [[ -f "$CONFIG_YAML" ]] && declare -f update_config_paths_in_yaml >/dev/null 2>&1; then
         update_config_paths_in_yaml "$CONFIG_YAML" || {
             print_warning "Config update failed, continuing without update"
         }
     fi
 
-    # Find symfluence.py
+    # Find SYMFLUENCE CLI entry script
     local symfluence_script
     if ! symfluence_script=$(find_symfluence_script); then
-        print_error "symfluence.py not found"
+        print_error "${SYMFLUENCE_SCRIPT} not found"
         echo
         show_symfluence_help
         exit 1
@@ -561,6 +712,7 @@ main() {
     # ---------------- Installation mode (enhanced) ----------------
     if [[ "$run_install" == "true" ]]; then
         print_info "SYMFLUENCE installation mode"
+        print_info "Platform: $PLATFORM"
         echo ""
         print_info "Prerequisites:"
         print_info "  - Python 3.11+"
@@ -568,29 +720,44 @@ main() {
         print_info "  - Required libs/modules (xz, bzip2, libtirpc, zlib, netcdf, gdal, etc.)"
         echo ""
 
-        # Create venv if needed
+        # Setup Windows dependencies if on Windows
+        if [[ "$PLATFORM" == "windows" ]]; then
+            setup_windows_dependencies || {
+                print_warning "Windows dependency setup had issues, continuing..."
+            }
+        fi
+
+        # Create venv if needed, unless in a conda env or explicitly disabled
         local venv_path="${symfluence_dir}/venv"
-        if [[ ! -d "$venv_path" ]]; then
+        if [[ -n "${CONDA_DEFAULT_ENV:-}" && "${CONDA_DEFAULT_ENV}" != "base" ]]; then
+            print_info "Using active Conda environment: ${CONDA_DEFAULT_ENV}"
+            VENV_BIN_PATH=$(dirname "$(which python)")
+        elif [[ "${SYMFLUENCE_NO_VENV:-}" == "true" ]]; then
+            print_info "Virtual environment creation disabled by SYMFLUENCE_NO_VENV"
+            VENV_BIN_PATH=$(dirname "$(which python)")
+        elif [[ ! -d "$venv_path" ]]; then
             print_info "Creating Python virtual environment..."
             if ! $python_cmd -m venv "$venv_path"; then
                 print_error "Failed to create virtual environment"
                 exit 1
             fi
+            source "${venv_path}/${VENV_ACTIVATE}"
+            VENV_BIN_PATH="${venv_path}/${VENV_BIN}"
+        else
+            # Already exists, just activate
+            source "${venv_path}/${VENV_ACTIVATE}"
+            VENV_BIN_PATH="${venv_path}/${VENV_BIN}"
         fi
 
-        # Activate venv
-        export PYTHONPATH="${PYTHONPATH-}"
-        source "${venv_path}/bin/activate"
-
-        # Clear PYTHONPATH to isolate venv
+        # Clear PYTHONPATH to isolate environment
         if [[ -n "$PYTHONPATH" ]]; then
             print_warning "Clearing PYTHONPATH to isolate venv"
             export PYTHONPATH=""
         fi
         # Make clearing persistent for future activations
-        if ! grep -q "Clear PYTHONPATH" "${venv_path}/bin/activate" 2>/dev/null; then
-            if [[ -w "${venv_path}/bin/activate" ]]; then
-                cat >> "${venv_path}/bin/activate" << 'EOF'
+        if ! grep -q "Clear PYTHONPATH" "${venv_path}/${VENV_ACTIVATE}" 2>/dev/null; then
+            if [[ -w "${venv_path}/${VENV_ACTIVATE}" ]]; then
+                cat >> "${venv_path}/${VENV_ACTIVATE}" << 'EOF'
 
 # Clear PYTHONPATH to prevent system package conflicts
 if [ -n "$PYTHONPATH" ]; then
@@ -604,7 +771,12 @@ EOF
         fi
 
         print_info "Upgrading pip and preparing environment..."
-        pip install --upgrade pip
+        # Use python -m pip on Windows to avoid file lock issues
+        if [[ "$PLATFORM" == "windows" ]]; then
+            python -m pip install --upgrade pip || print_warning "pip upgrade failed"
+        else
+            pip install --upgrade pip || print_warning "pip upgrade failed"
+        fi
 
         setup_r_environment || print_warning "R setup had issues, continuing..."
 
@@ -625,16 +797,30 @@ EOF
 
         print_success "Python environment setup complete"
 
-        # External tools (mirrors your existing flow)
+        # Install SYMFLUENCE package in editable mode
+        print_info "Installing SYMFLUENCE package..."
+        pip install -e . || {
+            print_error "SYMFLUENCE package installation failed"
+            exit 1
+        }
+        print_success "SYMFLUENCE package installed"
+
+        # External tools - use installed symfluence command
         cd "$symfluence_dir"
         print_info "Installing external tools..."
-        $python_cmd "$SYMFLUENCE_SCRIPT" --get_executables
+        symfluence binary install || {
+            print_error "External tools installation failed"
+            exit 1
+        }
         print_info "Validating installation..."
-        $python_cmd "$SYMFLUENCE_SCRIPT" --validate_binaries
+        symfluence binary validate || {
+            print_error "Binary validation failed"
+            exit 1
+        }
 
         echo ""
         print_success "Installation complete!"
-        print_info "To use SYMFLUENCE: source ${venv_path}/bin/activate"
+        print_info "To use SYMFLUENCE: source ${venv_path}/${VENV_ACTIVATE}"
         exit 0
     fi
 

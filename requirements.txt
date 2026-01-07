@@ -8,14 +8,13 @@ distributed
 pyviscous
 ipykernel
 jupyterlab
-dataretrieval
 
 # Machine learning and data science libraries
 torch
 scikit-learn
-pyswarms
 
 # Geospatial libraries
+gdal
 geopandas
 rasterio
 pyproj
@@ -24,11 +23,10 @@ fiona
 easymore
 rasterstats
 pvlib
-cdo
+cdo>=1.6.0
 seaborn
 plotly
 rpy2
-findlibs
 gcsfs
 intake-xarray
 
@@ -46,7 +44,6 @@ SALib
 
 # Utility libraries
 psutil
-alive-progress
 tqdm
 contextily
 
@@ -56,7 +53,6 @@ pyyaml
 # Web APIs (if used for data acquisition)
 requests
 cdsapi
-hs_restclient
 s3fs
 
 # Testing

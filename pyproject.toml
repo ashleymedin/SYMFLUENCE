@@ -2,10 +2,13 @@
 requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+packages = ["src/symfluence"]
+
 [project]
 name = "symfluence"
-version = "0.5.0"         # <- static to avoid plugin issues
-description = "SYnergistic Modeling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration"
+version = "0.7.0"        # <- static to avoid plugin issues
+description = "SYnergistic Modelling Framework for Linking and Unifying Earth-system Nexii for Computational Exploration"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.9"
@@ -22,7 +25,7 @@ dependencies = [
   "pyviscous",
   "torch",
   "scikit-learn",
-  "pyswarms",
+  "gdal",
   "geopandas",
   "rasterio",
   "pyproj",
@@ -34,20 +37,19 @@ dependencies = [
   "cdo",
   "seaborn",
   "plotly",
-  "findlibs",
   "netCDF4",
   "hydrobm",
   "baseflow",
   "matplotlib",
   "SALib",
   "psutil",
-  "alive-progress",
   "tqdm",
   "contextily",
   "pyyaml",
   "requests",
+  "openai>=1.0.0",
   "cdsapi",
-  "hs_restclient",
+  "s3fs",
   "numexpr",
   "cftime",
   "pytest", 
@@ -58,7 +60,7 @@ dependencies = [
 
 [project.scripts]
 # thin wrapper that delegates to your existing CLI
-symfluence = "symfluence.cli:main"
+symfluence = "symfluence.main_cli:main"
 
 [project.urls]
 Homepage = "https://symfluence.org"
@@ -67,19 +69,18 @@ Issues = "https://github.com/DarriEy/SYMFLUENCE/issues"
 Documentation = "https://symfluence.org/"
 
 [tool.hatch.build.targets.wheel]
-# ship both the wrapper and your existing utils package (no moves)
-packages = ["src/symfluence", "utils"]
+packages = ["src/symfluence"]
+# Note: package data in src/symfluence/data/ is automatically included
 
 [tool.hatch.build.targets.sdist]
 include = [
   "src/symfluence",
-  "utils",
   "README.md",
   "LICENSE",
   "MANIFEST.in",
   "requirements.txt",
-  "symfluence_version.py" 
+  "examples/"
 ]
 
-[tool.hatch.build.targets.wheel.force-include]
-"symfluence_version.py" = "symfluence_version.py"
+# NOTE: pytest configuration is in pytest.ini (authoritative source)
+# This avoids duplication and ensures consistent test configuration
