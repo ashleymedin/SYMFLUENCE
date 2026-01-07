@@ -382,7 +382,7 @@ class LocalScratchManager:
         self.logger.info(f"Rank {self.mpi_rank}: Updating file paths for scratch space...")
         
         # Update fileManager.txt if it exists
-        file_manager = self.scratch_project_dir / "settings" / "SUMMA" / "fileManager.txt"
+        file_manager = self.scratch_project_dir / "settings" / "SUMMA" / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt')
         if file_manager.exists():
             self._update_file_manager(file_manager)
         
@@ -420,7 +420,7 @@ class LocalScratchManager:
         with open(file_manager_path, 'w') as f:
             f.writelines(updated_lines)
         
-        self.logger.debug(f"  Rank {self.mpi_rank}: fileManager.txt updated")
+        self.logger.debug(f"  Rank {self.mpi_rank}: {self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt')} updated")
     
     def _update_mizuroute_control(self, control_path: Path) -> None:
         """

@@ -278,7 +278,7 @@ class SummaInterface:
                 
                 # Paths for worker
                 'summa_exe': str(self.backend._get_summa_exe_path()),
-                'file_manager': str(proc_dirs['summa_settings_dir'] / 'fileManager.txt'),
+                'file_manager': str(proc_dirs['summa_settings_dir'] / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt')),
                 'summa_dir': str(proc_dirs['summa_dir']),
                 'mizuroute_dir': str(proc_dirs['mizuroute_dir']),
                 'summa_settings_dir': str(proc_dirs['summa_settings_dir']),
@@ -867,7 +867,7 @@ class DifferentiableParameterOptimizer:
             
             # Paths for worker
             'summa_exe': str(self.backend._get_summa_exe_path()),
-            'file_manager': str(proc_dirs['summa_settings_dir'] / 'fileManager.txt'),
+            'file_manager': str(proc_dirs['summa_settings_dir'] / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt')),
             'summa_dir': str(proc_dirs['summa_dir']),
             'mizuroute_dir': str(proc_dirs['mizuroute_dir']),
             'summa_settings_dir': str(proc_dirs['summa_settings_dir']),

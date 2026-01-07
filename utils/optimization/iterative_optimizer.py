@@ -1202,7 +1202,7 @@ class BaseOptimizer(ABC):
         
         # Define required vs optional files
         required_files = [
-            'fileManager.txt', 'modelDecisions.txt', 'outputControl.txt',
+            self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt'), 'modelDecisions.txt', 'outputControl.txt',
             'localParamInfo.txt', 'basinParamInfo.txt',
             'attributes.nc','coldState.nc'  # This is always required
         ]
@@ -1335,7 +1335,7 @@ class BaseOptimizer(ABC):
     def _update_optimization_file_managers(self) -> None:
         """Update file managers for optimization runs"""
         # Update SUMMA file manager
-        file_manager_path = self.optimization_settings_dir / 'fileManager.txt'
+        file_manager_path = self.optimization_settings_dir / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt')
         if file_manager_path.exists():
             self._update_summa_file_manager(file_manager_path)
         
@@ -1502,9 +1502,9 @@ class BaseOptimizer(ABC):
             self._copy_settings_to_process_dir(proc_summa_settings_dir, proc_mizu_settings_dir)
             
             # ADD THIS: Verify critical files were copied
-            fm_file = proc_summa_settings_dir / 'fileManager.txt'
+            fm_file = proc_summa_settings_dir / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt')
             if not fm_file.exists():
-                raise FileNotFoundError(f"Failed to copy fileManager.txt to {proc_summa_settings_dir}")
+                raise FileNotFoundError(f"Failed to copy {fm_file.name} to {proc_summa_settings_dir}")
             
             # Update file managers for this process
             self._update_process_file_managers(proc_id, proc_summa_dir, proc_mizuroute_dir,
@@ -1523,9 +1523,9 @@ class BaseOptimizer(ABC):
         # ADD THIS: Final verification that all parallel dirs are ready
         self.logger.info("Verifying all parallel directories are set up...")
         for proc_id, proc_dirs in enumerate(self.parallel_dirs):
-            fm_path = proc_dirs['summa_settings_dir'] / 'fileManager.txt'
+            fm_path = proc_dirs['summa_settings_dir'] / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt')
             if not fm_path.exists():
-                raise FileNotFoundError(f"Parallel proc {proc_id} missing fileManager.txt at {fm_path}")
+                raise FileNotFoundError(f"Parallel proc {proc_id} missing {fm_path.name} at {fm_path}")
         self.logger.info(f"All {len(self.parallel_dirs)} parallel directories verified and ready")
     
     def _copy_settings_to_process_dir(self, proc_summa_settings_dir: Path, proc_mizu_settings_dir: Path) -> None:
@@ -1549,7 +1549,7 @@ class BaseOptimizer(ABC):
                                     summa_settings_dir: Path, mizu_settings_dir: Path) -> None:
         """Update file managers for a specific process"""
         # Update SUMMA file manager
-        file_manager = summa_settings_dir / 'fileManager.txt'
+        file_manager = summa_settings_dir / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt')
         if file_manager.exists():
             with open(file_manager, 'r') as f:
                 lines = f.readlines()
@@ -1944,7 +1944,7 @@ class BaseOptimizer(ABC):
             try:
                 for proc_dirs in self.parallel_dirs[:effective_processes]:
                     settings_dir = Path(proc_dirs['summa_settings_dir'])
-                    for critical_file in ['fileManager.txt', 'attributes.nc', 'coldState.nc', 'trialParams.nc']:
+                    for critical_file in [self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt'), 'attributes.nc', 'coldState.nc', 'trialParams.nc']:
                         file_path = settings_dir / critical_file
                         if file_path.exists():
                             file_path.touch()
@@ -1976,7 +1976,7 @@ class BaseOptimizer(ABC):
                 
                 # Paths for worker
                 'summa_exe': str(self._get_summa_exe_path()),
-                'file_manager': str(proc_dirs['summa_settings_dir'] / 'fileManager.txt'),
+                'file_manager': str(proc_dirs['summa_settings_dir'] / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt')),
                 'summa_dir': str(proc_dirs['summa_dir']),
                 'mizuroute_dir': str(proc_dirs['mizuroute_dir']),
                 'summa_settings_dir': str(proc_dirs['summa_settings_dir']),
@@ -2553,7 +2553,7 @@ if __name__ == "__main__":
             files_to_fix = [
                 self.optimization_settings_dir / 'trialParams.nc',
                 self.optimization_settings_dir / 'coldState.nc',
-                self.optimization_settings_dir / 'fileManager.txt'
+                self.optimization_settings_dir / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt')
             ]
             
             # mizuRoute files if applicable
@@ -2807,7 +2807,7 @@ if __name__ == "__main__":
             # Always restore optimization settings
             self._restore_model_decisions_for_optimization()
             # Reset file manager back to optimization mode
-            self._update_summa_file_manager(self.optimization_settings_dir / 'fileManager.txt')
+            self._update_summa_file_manager(self.optimization_settings_dir / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt'))
 
     def _log_final_optimization_summary(self, algorithm_name: str, best_score: float, 
                                     final_result: Optional[Dict], duration) -> None:
@@ -2914,7 +2914,7 @@ if __name__ == "__main__":
 
     def _update_file_manager_for_final_run(self) -> None:
         """Update file manager to use full experiment period"""
-        file_manager_path = self.optimization_settings_dir / 'fileManager.txt'
+        file_manager_path = self.optimization_settings_dir / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt')
         
         if not file_manager_path.exists():
             return
@@ -3435,7 +3435,7 @@ class DDSOptimizer(BaseOptimizer):
             'mizuroute_dir': str(proc_dirs['mizuroute_dir']),
             'summa_settings_dir': str(proc_dirs['summa_settings_dir']),
             'mizuroute_settings_dir': str(proc_dirs['mizuroute_settings_dir']),
-            'file_manager': str(proc_dirs['summa_settings_dir'] / 'fileManager.txt')
+            'file_manager': str(proc_dirs['summa_settings_dir'] / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt'))
         }
     
     def _combine_dds_histories(self, results: List[Dict], num_starts: int) -> List[Dict]:
@@ -4260,7 +4260,7 @@ class NSGA2Optimizer(BaseOptimizer):
             'project_dir': str(self.project_dir),
             'original_depths': self.parameter_manager.original_depths.tolist() if self.parameter_manager.original_depths is not None else None,
             'summa_exe': str(self._get_summa_exe_path()),
-            'file_manager': str(proc_dirs['summa_settings_dir'] / 'fileManager.txt'),
+            'file_manager': str(proc_dirs['summa_settings_dir'] / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt')),
             'summa_dir': str(proc_dirs['summa_dir']),
             'mizuroute_dir': str(proc_dirs['mizuroute_dir']),
             'summa_settings_dir': str(proc_dirs['summa_settings_dir']),
@@ -4503,7 +4503,7 @@ class NSGA2Optimizer(BaseOptimizer):
                     
                     # Paths for worker
                     'summa_exe': str(self._get_summa_exe_path()),
-                    'file_manager': str(proc_dirs['summa_settings_dir'] / 'fileManager.txt'),
+                    'file_manager': str(proc_dirs['summa_settings_dir'] / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt')),
                     'summa_dir': str(proc_dirs['summa_dir']),
                     'mizuroute_dir': str(proc_dirs['mizuroute_dir']),
                     'summa_settings_dir': str(proc_dirs['summa_settings_dir']),
@@ -4565,7 +4565,7 @@ class NSGA2Optimizer(BaseOptimizer):
                     
                     # Paths for worker
                     'summa_exe': str(self._get_summa_exe_path()),
-                    'file_manager': str(proc_dirs['summa_settings_dir'] / 'fileManager.txt'),
+                    'file_manager': str(proc_dirs['summa_settings_dir'] / self.config.get('SETTINGS_SUMMA_FILEMANAGER', 'fileManager.txt')),
                     'summa_dir': str(proc_dirs['summa_dir']),
                     'mizuroute_dir': str(proc_dirs['mizuroute_dir']),
                     'summa_settings_dir': str(proc_dirs['summa_settings_dir']),
