@@ -1464,7 +1464,7 @@ class BaseOptimizer(ABC):
         elif optimization_target in ['stor_grace', 'stor_mb']:
             return StorageTarget(optimization_target, self.config, self.project_dir, self.logger)
 
-        # Check for streamflow calibration (should be near the end as it's most common) 
+        # Check for streamflow calibration (should be near the end as it's most common)
         elif optimization_target == 'streamflow' or 'flow' in calibration_variable:
             return StreamflowTarget('streamflow', self.config, self.project_dir, self.logger)
         
