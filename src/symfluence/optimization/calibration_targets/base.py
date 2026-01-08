@@ -42,7 +42,7 @@ from symfluence.evaluation.evaluators import (
 
     GroundwaterEvaluator as GroundwaterTarget,
 
-    TWSEvaluator as TWSTarget
+    TWSEvaluator as StorageTarget
 
 )
 
@@ -258,7 +258,7 @@ __all__ = [
 
     'GroundwaterTarget',
 
-    'TWSTarget',
+    'StorageTarget',
 
     'MultivariateTarget'
 

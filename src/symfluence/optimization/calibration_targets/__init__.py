@@ -16,7 +16,7 @@ Base calibration targets (aliases from evaluation.evaluators):
 - SoilMoistureTarget: Soil moisture calibration target
 - SnowTarget: Snow calibration target
 - GroundwaterTarget: Groundwater calibration target
-- TWSTarget: Terrestrial water storage calibration target
+- StorageTarget: Terrestrial water storage calibration target
 - MultivariateTarget: Multivariate calibration combining multiple variables
 
 Model-specific calibration targets:
@@ -34,7 +34,7 @@ from .base import (
     SoilMoistureTarget,
     SnowTarget,
     GroundwaterTarget,
-    TWSTarget,
+    StorageTarget,
     MultivariateTarget,
 )
 from .ngen_calibration_targets import NgenStreamflowTarget
@@ -50,7 +50,7 @@ __all__ = [
     'SoilMoistureTarget',
     'SnowTarget',
     'GroundwaterTarget',
-    'TWSTarget',
+    'StorageTarget',
     'MultivariateTarget',
     # Model-specific targets
     'NgenStreamflowTarget',

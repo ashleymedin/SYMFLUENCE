@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Tuple, Optional
 from symfluence.optimization.optimizers.base_optimizer import BaseOptimizer
 from symfluence.optimization.calibration_targets import (
-    CalibrationTarget, StreamflowTarget, SnowTarget, GroundwaterTarget, ETTarget, SoilMoistureTarget, TWSTarget
+    CalibrationTarget, StreamflowTarget, SnowTarget, GroundwaterTarget, ETTarget, SoilMoistureTarget, StorageTarget
 )
 
 class NSGA2Optimizer(BaseOptimizer):
@@ -33,9 +33,9 @@ class NSGA2Optimizer(BaseOptimizer):
 
     def _setup_multi_target_objectives(self) -> None:
         primary_target_type = self.config.get('NSGA2_PRIMARY_TARGET', self.config.get('OPTIMIZATION_TARGET', 'streamflow'))
-        secondary_target_type = self.config.get('NSGA2_SECONDARY_TARGET', 'gw_depth')
-        self.primary_metric = self.config.get('NSGA2_PRIMARY_METRIC', 'KGE')
-        self.secondary_metric = self.config.get('NSGA2_SECONDARY_METRIC', 'KGE')
+        secondary_target_type = self.config.get('NSGA2_SECONDARY_TARGET', self.config.get('OPTIMIZATION_TARGET2', 'gw_depth'))
+        self.primary_metric = self.config.get('NSGA2_PRIMARY_METRIC', self.config.get('OPTIMIZATION_METRIC', 'KGE'))
+        self.secondary_metric = self.config.get('NSGA2_SECONDARY_METRIC', self.config.get('OPTIMIZATION_METRIC2', 'KGE'))
         self.primary_target = self._create_calibration_target_by_type(primary_target_type)
         self.secondary_target = self._create_calibration_target_by_type(secondary_target_type)
         self.calibration_target = self.primary_target
@@ -45,12 +45,12 @@ class NSGA2Optimizer(BaseOptimizer):
 
     def _create_calibration_target_by_type(self, target_type: str):
         target_type = target_type.lower()
-        if target_type in ['streamflow', 'flow', 'discharge']: return StreamflowTarget(self.config, self.project_dir, self.logger)
-        elif target_type in ['swe', 'sca', 'snow_depth', 'snow']: return SnowTarget(self.config, self.project_dir, self.logger)
-        elif target_type in ['gw_depth', 'gw_grace', 'groundwater', 'gw']: return GroundwaterTarget(self.config, self.project_dir, self.logger)
-        elif target_type in ['et', 'latent_heat', 'evapotranspiration']: return ETTarget(self.config, self.project_dir, self.logger)
-        elif target_type in ['sm_point', 'sm_smap', 'sm_esa', 'soil_moisture', 'sm']: return SoilMoistureTarget(self.config, self.project_dir, self.logger)
-        elif target_type in ['tws', 'grace', 'grace_tws', 'total_storage']: return TWSTarget(self.config, self.project_dir, self.logger)
+        if target_type in ['streamflow']: return StreamflowTarget(self.config, self.project_dir, self.logger)
+        elif target_type in ['swe', 'sca']: return SnowTarget(self.config, self.project_dir, self.logger)
+        elif target_type in ['gw_depth', 'gw_grace']: return GroundwaterTarget(self.config, self.project_dir, self.logger)
+        elif target_type in ['et', 'latent_heat']: return ETTarget(self.config, self.project_dir, self.logger)
+        elif target_type in ['sm_point', 'sm_smap', 'sm_esa']: return SoilMoistureTarget(self.config, self.project_dir, self.logger)
+        elif target_type in ['stor_mb','stor_grace']: return StorageTarget(self.config, self.project_dir, self.logger)
         else: raise ValueError(f"Unknown target type: {target_type}")
 
     def get_algorithm_name(self) -> str:
