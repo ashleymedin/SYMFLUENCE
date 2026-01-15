@@ -3,9 +3,24 @@ Centralized default configuration values for SYMFLUENCE.
 
 This module provides default values for optional configuration parameters.
 Required parameters (defined in config_loader.py) must be set in config files.
+
+PHASE 3 REFACTORING: Model-specific defaults are now maintained in a single source -
+Pydantic Field(default=...) declarations in each model's config schema. The
+ModelDefaults class provides a unified interface via ModelRegistry for backward
+compatibility.
+
+All defaults are auto-generated from Pydantic models, eliminating the need for:
+- Manual defaults classes (e.g., FUSEDefaults)
+- Hardcoded _LEGACY_* dicts
+- Multi-layer registry patterns (DefaultsRegistry)
+
+Single source of truth: models/{model}/config.py → Pydantic Field declarations
 """
 
 from typing import Dict, Any
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigDefaults:
@@ -18,7 +33,7 @@ class ConfigDefaults:
     LOG_TO_FILE = True
     FORCE_RUN_ALL_STEPS = False
     STOP_ON_ERROR = True
-    
+
     # === Resource Paths ===
     SETTINGS_BASE_DIR = 'src/symfluence/resources/base_settings'
 
@@ -60,28 +75,6 @@ class ConfigDefaults:
     RANDOM_SEED = 42
     LAPSE_RATE = -0.0065  # °C/m (standard atmospheric lapse rate)
 
-    # === Large Domain Emulator ===
-    LARGE_DOMAIN_EMULATOR_MODE = 'EMULATOR'
-    LARGE_DOMAIN_EMULATOR_HIDDEN_DIM = 512
-    LARGE_DOMAIN_EMULATOR_N_HEADS = 8
-    LARGE_DOMAIN_EMULATOR_N_LAYERS = 6
-    LARGE_DOMAIN_EMULATOR_DROPOUT = 0.1
-    LARGE_DOMAIN_EMULATOR_PRETRAIN_NN_HEAD = False
-    LARGE_DOMAIN_EMULATOR_BATCH_SIZE = 16
-    LARGE_DOMAIN_EMULATOR_LEARNING_RATE = 1e-4
-    LARGE_DOMAIN_EMULATOR_EPOCHS = 50
-    LARGE_DOMAIN_EMULATOR_VALIDATION_SPLIT = 0.2
-    LARGE_DOMAIN_EMULATOR_WINDOW_DAYS = 30
-    LARGE_DOMAIN_EMULATOR_TRAINING_SAMPLES = 500
-    LARGE_DOMAIN_EMULATOR_OPTIMIZATION_STEPS = 200
-    LARGE_DOMAIN_EMULATOR_OPTIMIZATION_LR = 1e-2
-    LARGE_DOMAIN_EMULATOR_FD_STEP = 1e-3
-    LARGE_DOMAIN_EMULATOR_FD_STEPS = 100
-    LARGE_DOMAIN_EMULATOR_FD_STEP_SIZE = 1e-1
-    LARGE_DOMAIN_EMULATOR_AUTODIFF_STEPS = 200
-    LARGE_DOMAIN_EMULATOR_AUTODIFF_LR = 1e-2
-    LARGE_DOMAIN_EMULATOR_USE_NN_HEAD = True
-
     # === Drop Analysis ===
     DROP_ANALYSIS_MIN_THRESHOLD = 100
     DROP_ANALYSIS_MAX_THRESHOLD = 10000
@@ -116,58 +109,58 @@ class ConfigDefaults:
 
 
 class ModelDefaults:
-    """Model-specific default configuration values."""
+    """
+    Model-specific default configuration values.
 
-    FUSE = {
-        'FUSE_SPATIAL_MODE': 'lumped',
-        'ROUTING_MODEL': 'none',
-        'FUSE_INSTALL_PATH': 'default',
-        'SETTINGS_FUSE_PATH': 'default',
-        'SETTINGS_FUSE_FILEMANAGER': 'fm_catch.txt',
-        'FUSE_EXE': 'fuse.exe',
-        'EXPERIMENT_OUTPUT_FUSE': 'default',
-    }
+    PHASE 3 REFACTORING: Model defaults are now maintained in a single source -
+    Pydantic Field(default=...) declarations in each model's config schema.
+    This class provides a unified interface via ModelRegistry for backward compatibility.
 
-    SUMMA = {
-        'ROUTING_MODEL': 'mizuRoute',
-        'SUMMA_INSTALL_PATH': 'default',
-        'SETTINGS_SUMMA_PATH': 'default',
-        'SETTINGS_SUMMA_FILEMANAGER': 'fileManager.txt',
-        'SUMMA_EXE': 'summa_sundials.exe',
-        'SETTINGS_SUMMA_CONNECT_HRUS': 'yes',
-        'SETTINGS_SUMMA_USE_PARALLEL_SUMMA': False,
-        'EXPERIMENT_OUTPUT_SUMMA': 'default',
-        'INSTALL_PATH_MIZUROUTE': 'default',
-        'EXE_NAME_MIZUROUTE': 'mizuroute.exe',
-        'SETTINGS_MIZU_PATH': 'default',
-        'EXPERIMENT_OUTPUT_MIZUROUTE': 'default',
-    }
+    Migration path:
+        OLD: ModelDefaults.get_defaults_for_model('SUMMA')
+        NEW: ModelRegistry.get_config_defaults('SUMMA')
 
-    GR = {
-        'GR_MODEL_TYPE': 'GR4J',
-        'GR_SPATIAL_MODE': 'lumped',
-        'GR_EXE': 'GR.r',
-    }
+    All defaults are auto-generated from Pydantic models, eliminating the need
+    for manual defaults classes, hardcoded dicts, or multi-layer registries.
+    """
 
-    HYPE = {
-        'SETTINGS_HYPE_PATH': 'default',
-        'HYPE_INSTALL_PATH': 'default',
-        'HYPE_EXE': 'hype',
-        'SETTINGS_HYPE_CONTROL_FILE': 'info.txt',
-    }
+    # Legacy attributes for backward compatibility
+    SUMMA: Dict[str, Any] = {}
+    FUSE: Dict[str, Any] = {}
 
     @classmethod
     def get_defaults_for_model(cls, model: str) -> Dict[str, Any]:
         """
         Get default configuration for a specific model.
 
+        Uses ModelRegistry as the single source of truth. All defaults are
+        auto-generated from Pydantic Field declarations in model config schemas.
+
         Args:
             model: Model name (FUSE, SUMMA, GR, HYPE, etc.)
 
         Returns:
             Dict[str, Any]: Model-specific default configuration
+
+        Example:
+            >>> defaults = ModelDefaults.get_defaults_for_model('SUMMA')
+            >>> defaults['SUMMA_EXE']
+            'summa_sundials.exe'
         """
-        return getattr(cls, model.upper(), {}).copy()
+        from symfluence.models.registry import ModelRegistry
+
+        # Get defaults from ModelRegistry (single source via AutoGeneratedConfigAdapter)
+        defaults = ModelRegistry.get_config_defaults(model)
+
+        if not defaults:
+            logger.warning(
+                f"No defaults found for model '{model}'. "
+                f"Ensure {model}ConfigAdapter is registered with ModelRegistry."
+            )
+            return {}
+
+        logger.debug(f"Retrieved {len(defaults)} defaults for {model} from ModelRegistry")
+        return defaults
 
 
 class ForcingDefaults:

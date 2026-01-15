@@ -1,11 +1,10 @@
 """Unit tests for NotebookService."""
 
 import pytest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 from pathlib import Path
-import os
 
-from symfluence.cli.notebook_service import NotebookService
+from symfluence.cli.services import NotebookService
 
 pytestmark = [pytest.mark.unit, pytest.mark.cli, pytest.mark.quick]
 
@@ -88,45 +87,46 @@ class TestExampleIDParsing:
 class TestNotebookDiscovery:
     """Test notebook file discovery."""
 
-    @patch('subprocess.run')
     @patch('sys.executable', '/usr/bin/python3')
-    def test_single_notebook_match(self, mock_subprocess):
+    @patch.object(Path, 'is_dir', return_value=True)
+    @patch.object(Path, 'exists', return_value=True)
+    @patch('pathlib.Path.rglob')
+    @patch('subprocess.run')
+    def test_single_notebook_match(self, mock_subprocess, mock_rglob, mock_exists, mock_isdir):
         """Test discovery when one notebook matches."""
         service = NotebookService()
         repo_root = Path('/tmp/test_repo')
 
         # Create mock notebook
         nb_path = repo_root / 'examples' / '01a_point_scale_snotel.ipynb'
+        mock_rglob.return_value = [nb_path]
 
-        def exists_side_effect(self):
-            # Repo root and examples dir exist
-            return str(self) in [str(repo_root), str(repo_root / 'examples')]
+        # Mock subprocess calls for ipykernel and jupyter
+        mock_subprocess.return_value = MagicMock(returncode=0)
 
-        def is_dir_side_effect(self):
-            # Repo root and examples dir are directories
-            return str(self) in [str(repo_root), str(repo_root / 'examples')]
+        result = service.launch_example_notebook('01a', repo_root=repo_root)
 
-        def rglob_side_effect(self, pattern):
-            # Return our mock notebook when searching
-            return [nb_path]
+        # Should attempt to launch (may fail but that's ok for this test)
+        assert result in [0, 3]  # 0 for success, 3 for jupyter not available
 
-        with patch.object(Path, 'exists', exists_side_effect), \
-             patch.object(Path, 'is_dir', is_dir_side_effect), \
-             patch.object(Path, 'rglob', rglob_side_effect):
-
-            # Mock subprocess calls for ipykernel and jupyter
-            mock_subprocess.return_value = MagicMock(returncode=0)
-
-            result = service.launch_example_notebook('01a', repo_root=repo_root)
-
-            # Should attempt to launch (may fail but that's ok for this test)
-            assert result in [0, 3]  # 0 for success, 3 for jupyter not available
-
-    @patch('subprocess.run')
     @patch('sys.executable', '/usr/bin/python3')
-    def test_multiple_notebook_matches(self, mock_subprocess, capsys):
+    @patch.object(Path, 'is_dir', return_value=True)
+    @patch.object(Path, 'exists', return_value=True)
+    @patch('pathlib.Path.rglob')
+    @patch('subprocess.run')
+    def test_multiple_notebook_matches(self, mock_subprocess, mock_rglob, mock_exists, mock_isdir, capsys):
         """Test behavior when multiple notebooks match."""
-        service = NotebookService()
+        import sys
+        from symfluence.cli.console import Console, ConsoleConfig
+
+        # Use capture-friendly console
+        console = Console(ConsoleConfig(
+            output_stream=sys.stdout,
+            error_stream=sys.stderr,
+            use_colors=False,
+            show_progress=False
+        ))
+        service = NotebookService(console=console)
         repo_root = Path('/tmp/test_repo')
 
         # Create multiple matching notebooks
@@ -134,49 +134,28 @@ class TestNotebookDiscovery:
             repo_root / 'examples' / '01a_test1.ipynb',
             repo_root / 'examples' / '01a_test2.ipynb',
         ]
+        mock_rglob.return_value = nb_paths
 
-        def exists_side_effect(self):
-            return str(self) in [str(repo_root), str(repo_root / 'examples')]
+        mock_subprocess.return_value = MagicMock(returncode=0)
 
-        def is_dir_side_effect(self):
-            return str(self) in [str(repo_root), str(repo_root / 'examples')]
+        result = service.launch_example_notebook('01a', repo_root=repo_root)
 
-        def rglob_side_effect(self, pattern):
-            return nb_paths
+        # Should print warning about multiple matches
+        captured = capsys.readouterr()
+        assert 'Multiple' in captured.out or 'multiple' in captured.out.lower()
 
-        with patch.object(Path, 'exists', exists_side_effect), \
-             patch.object(Path, 'is_dir', is_dir_side_effect), \
-             patch.object(Path, 'rglob', rglob_side_effect):
-
-            mock_subprocess.return_value = MagicMock(returncode=0)
-
-            result = service.launch_example_notebook('01a', repo_root=repo_root)
-
-            # Should print warning about multiple matches
-            captured = capsys.readouterr()
-            assert 'Multiple' in captured.out or 'multiple' in captured.out.lower()
-
-    def test_no_notebook_matches(self):
+    @patch.object(Path, 'is_dir', return_value=True)
+    @patch.object(Path, 'exists', return_value=True)
+    @patch('pathlib.Path.rglob', return_value=[])
+    def test_no_notebook_matches(self, mock_rglob, mock_exists, mock_isdir):
         """Test error when no notebooks match."""
         service = NotebookService()
         repo_root = Path('/tmp/test_repo')
 
-        def exists_side_effect(self):
-            return str(self) in [str(repo_root), str(repo_root / 'examples')]
+        # All paths exist but no notebooks found via rglob
+        result = service.launch_example_notebook('nonexistent', repo_root=repo_root)
 
-        def is_dir_side_effect(self):
-            return str(self) in [str(repo_root), str(repo_root / 'examples')]
-
-        def rglob_side_effect(self, pattern):
-            return []
-
-        with patch.object(Path, 'exists', exists_side_effect), \
-             patch.object(Path, 'is_dir', is_dir_side_effect), \
-             patch.object(Path, 'rglob', rglob_side_effect):
-
-            result = service.launch_example_notebook('nonexistent', repo_root=repo_root)
-
-            assert result == 2  # Error code for notebook not found
+        assert result == 2  # Error code for notebook not found
 
 
 class TestVirtualEnvironmentDetection:
@@ -185,260 +164,153 @@ class TestVirtualEnvironmentDetection:
     @pytest.mark.parametrize("venv_name", [
         ".venv", "venv", "env", ".conda", ".virtualenv"
     ])
-    @patch('subprocess.run')
     @patch('sys.executable', '/usr/bin/python3')
-    def test_detect_various_venvs(self, mock_subprocess, venv_name):
+    @patch.object(Path, 'is_dir', return_value=True)
+    @patch.object(Path, 'exists', return_value=True)
+    @patch('pathlib.Path.rglob')
+    @patch('subprocess.run')
+    def test_detect_various_venvs(self, mock_subprocess, mock_rglob, mock_exists, mock_isdir, venv_name):
         """Test detection of different venv directory names."""
         service = NotebookService()
         repo_root = Path('/tmp/test_repo')
-        venv_dir = repo_root / venv_name
-        python_exe = venv_dir / 'bin' / 'python'
 
         nb_path = repo_root / 'examples' / '01a_test.ipynb'
+        mock_rglob.return_value = [nb_path]
+        mock_subprocess.return_value = MagicMock(returncode=0)
 
-        def exists_side_effect(self):
-            # Repo, examples, venv dir, and python exe exist
-            return str(self) in [
-                str(repo_root),
-                str(repo_root / 'examples'),
-                str(venv_dir),
-                str(python_exe)
-            ]
+        result = service.launch_example_notebook('01a', repo_root=repo_root)
 
-        def is_dir_side_effect(self):
-            # Repo, examples, and venv are directories
-            return str(self) in [
-                str(repo_root),
-                str(repo_root / 'examples'),
-                str(venv_dir)
-            ]
-
-        def rglob_side_effect(self, pattern):
-            return [nb_path]
-
-        with patch.object(Path, 'exists', exists_side_effect), \
-             patch.object(Path, 'is_dir', is_dir_side_effect), \
-             patch.object(Path, 'rglob', rglob_side_effect):
-
-            mock_subprocess.return_value = MagicMock(returncode=0)
-
-            result = service.launch_example_notebook('01a', repo_root=repo_root)
-
-            # Should have found the venv
-            assert result in [0, 3]
+        # Should have found the venv (0 for success, 3 for jupyter not available)
+        assert result in [0, 3]
 
 
 class TestPythonExecutableSelection:
     """Test Python executable selection logic."""
 
-    @patch('subprocess.run')
     @patch('sys.executable', '/usr/bin/python3')
-    def test_venv_python_priority(self, mock_subprocess):
+    @patch.object(Path, 'is_dir', return_value=True)
+    @patch.object(Path, 'exists', return_value=True)
+    @patch('pathlib.Path.rglob')
+    @patch('subprocess.run')
+    def test_venv_python_priority(self, mock_subprocess, mock_rglob, mock_exists, mock_isdir):
         """Test venv/bin/python tried first."""
         service = NotebookService()
         repo_root = Path('/tmp/test_repo')
-        venv_dir = repo_root / '.venv'
-        python_path = venv_dir / 'bin' / 'python'
+        venv_path = repo_root / '.venv'
+        python_path = venv_path / 'bin' / 'python'
 
         nb_path = repo_root / 'examples' / '01a_test.ipynb'
+        mock_rglob.return_value = [nb_path]
+        mock_subprocess.return_value = MagicMock(returncode=0)
 
-        def exists_side_effect(self):
-            return str(self) in [
-                str(repo_root),
-                str(repo_root / 'examples'),
-                str(venv_dir),
-                str(python_path)
-            ]
+        result = service.launch_example_notebook('01a', repo_root=repo_root)
 
-        def is_dir_side_effect(self):
-            return str(self) in [
-                str(repo_root),
-                str(repo_root / 'examples'),
-                str(venv_dir)
-            ]
-
-        def rglob_side_effect(self, pattern):
-            return [nb_path]
-
-        with patch.object(Path, 'exists', exists_side_effect), \
-             patch.object(Path, 'is_dir', is_dir_side_effect), \
-             patch.object(Path, 'rglob', rglob_side_effect):
-
-            mock_subprocess.return_value = MagicMock(returncode=0)
-
-            result = service.launch_example_notebook('01a', repo_root=repo_root)
-
-            # Should use venv python
-            assert result in [0, 3]
+        # Should use venv python - check that subprocess was called
+        # with a python path from the venv directory
+        calls = [str(call) for call in mock_subprocess.call_args_list]
+        assert any('venv' in str(call) or 'python' in str(call) for call in calls)
 
 
 class TestKernelRegistration:
     """Test ipykernel installation and registration."""
 
-    @patch('subprocess.run')
     @patch('sys.executable', '/usr/bin/python3')
-    def test_ipykernel_already_installed(self, mock_subprocess):
+    @patch('subprocess.run')
+    @patch.object(Path, 'is_dir', return_value=True)
+    @patch.object(Path, 'exists', return_value=True)
+    @patch('pathlib.Path.rglob')
+    def test_ipykernel_already_installed(self, mock_rglob, mock_exists, mock_isdir, mock_subprocess):
         """Test kernel registration when ipykernel present."""
         service = NotebookService()
         repo_root = Path('/tmp/test_repo')
-        venv_dir = repo_root / '.venv'
-        python_exe = venv_dir / 'bin' / 'python'
 
         nb_path = repo_root / 'examples' / '01a_test.ipynb'
+        mock_rglob.return_value = [nb_path]
 
-        def exists_side_effect(self):
-            return str(self) in [
-                str(repo_root),
-                str(repo_root / 'examples'),
-                str(venv_dir),
-                str(python_exe)
-            ]
+        # Mock ipykernel already installed
+        mock_subprocess.return_value = MagicMock(returncode=0)
 
-        def is_dir_side_effect(self):
-            return str(self) in [
-                str(repo_root),
-                str(repo_root / 'examples'),
-                str(venv_dir)
-            ]
-
-        def rglob_side_effect(self, pattern):
-            return [nb_path]
-
-        with patch.object(Path, 'exists', exists_side_effect), \
-             patch.object(Path, 'is_dir', is_dir_side_effect), \
-             patch.object(Path, 'rglob', rglob_side_effect):
-
-            # Mock ipykernel already installed
-            mock_subprocess.return_value = MagicMock(returncode=0)
-
-            result = service.launch_example_notebook('01a', repo_root=repo_root)
+        result = service.launch_example_notebook('01a', repo_root=repo_root)
 
         # Should register kernel
         calls = [str(call) for call in mock_subprocess.call_args_list]
         assert any('ipykernel' in str(call) for call in calls)
 
-    @patch('subprocess.run')
     @patch('sys.executable', '/usr/bin/python3')
-    def test_ipykernel_installation(self, mock_subprocess):
+    @patch('subprocess.run')
+    @patch.object(Path, 'is_dir', return_value=True)
+    @patch.object(Path, 'exists', return_value=True)
+    @patch('pathlib.Path.rglob')
+    def test_ipykernel_installation(self, mock_rglob, mock_exists, mock_isdir, mock_subprocess):
         """Test ipykernel installation when missing."""
         service = NotebookService()
         repo_root = Path('/tmp/test_repo')
-        venv_dir = repo_root / '.venv'
-        python_exe = venv_dir / 'bin' / 'python'
 
         nb_path = repo_root / 'examples' / '01a_test.ipynb'
+        mock_rglob.return_value = [nb_path]
 
-        def exists_side_effect(self):
-            return str(self) in [
-                str(repo_root),
-                str(repo_root / 'examples'),
-                str(venv_dir),
-                str(python_exe)
-            ]
+        # Mock ipykernel not installed, then success after install
+        def subprocess_side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get('args', [])
+            if 'show' in cmd and 'ipykernel' in cmd:
+                return MagicMock(returncode=1)  # Not installed
+            return MagicMock(returncode=0)
 
-        def is_dir_side_effect(self):
-            return str(self) in [
-                str(repo_root),
-                str(repo_root / 'examples'),
-                str(venv_dir)
-            ]
+        mock_subprocess.side_effect = subprocess_side_effect
 
-        def rglob_side_effect(self, pattern):
-            return [nb_path]
+        result = service.launch_example_notebook('01a', repo_root=repo_root)
 
-        with patch.object(Path, 'exists', exists_side_effect), \
-             patch.object(Path, 'is_dir', is_dir_side_effect), \
-             patch.object(Path, 'rglob', rglob_side_effect):
-
-            # Mock ipykernel not installed, then success after install
-            def subprocess_side_effect(*args, **kwargs):
-                cmd = args[0] if args else kwargs.get('args', [])
-                if 'show' in cmd and 'ipykernel' in cmd:
-                    return MagicMock(returncode=1)  # Not installed
-                return MagicMock(returncode=0)
-
-            mock_subprocess.side_effect = subprocess_side_effect
-
-            result = service.launch_example_notebook('01a', repo_root=repo_root)
-
-            # Should have attempted to install ipykernel
-            calls = [str(call) for call in mock_subprocess.call_args_list]
-            assert any('install' in str(call) and 'ipykernel' in str(call) for call in calls)
+        # Should have attempted to install ipykernel
+        calls = [str(call) for call in mock_subprocess.call_args_list]
+        assert any('install' in str(call) and 'ipykernel' in str(call) for call in calls)
 
 
 class TestJupyterLaunch:
     """Test Jupyter launcher selection and execution."""
 
-    @patch('subprocess.run')
     @patch('sys.executable', '/usr/bin/python3')
-    def test_jupyterlab_launch(self, mock_subprocess):
+    @patch('subprocess.run')
+    @patch.object(Path, 'is_dir', return_value=True)
+    @patch.object(Path, 'exists', return_value=True)
+    @patch('pathlib.Path.rglob')
+    def test_jupyterlab_launch(self, mock_rglob, mock_exists, mock_isdir, mock_subprocess):
         """Test launch with JupyterLab."""
         service = NotebookService()
         repo_root = Path('/tmp/test_repo')
-        venv_dir = repo_root / '.venv'
-        python_exe = venv_dir / 'bin' / 'python'
 
         nb_path = repo_root / 'examples' / '01a_test.ipynb'
+        mock_rglob.return_value = [nb_path]
 
-        def exists_side_effect(self):
-            return str(self) in [
-                str(repo_root),
-                str(repo_root / 'examples'),
-                str(venv_dir),
-                str(python_exe)
-            ]
+        mock_subprocess.return_value = MagicMock(returncode=0)
 
-        def is_dir_side_effect(self):
-            return str(self) in [
-                str(repo_root),
-                str(repo_root / 'examples'),
-                str(venv_dir)
-            ]
+        result = service.launch_example_notebook('01a', repo_root=repo_root, prefer_lab=True)
 
-        def rglob_side_effect(self, pattern):
-            return [nb_path]
-
-        with patch.object(Path, 'exists', exists_side_effect), \
-             patch.object(Path, 'is_dir', is_dir_side_effect), \
-             patch.object(Path, 'rglob', rglob_side_effect):
-
-            mock_subprocess.return_value = MagicMock(returncode=0)
-
-            result = service.launch_example_notebook('01a', repo_root=repo_root, prefer_lab=True)
-
-            # Should attempt jupyterlab
-            calls = [str(call) for call in mock_subprocess.call_args_list]
-            assert any('jupyterlab' in str(call) or 'jupyter' in str(call) for call in calls)
+        # Should attempt jupyterlab
+        calls = [str(call) for call in mock_subprocess.call_args_list]
+        assert any('jupyterlab' in str(call) or 'jupyter' in str(call) for call in calls)
 
 
 class TestErrorCases:
     """Test error handling."""
 
-    def test_repo_root_not_found(self):
+    @patch.object(Path, 'exists', return_value=False)
+    def test_repo_root_not_found(self, mock_exists):
         """Test error when repo root missing."""
         service = NotebookService()
         repo_root = Path('/nonexistent/repo')
 
-        def exists_side_effect(self):
-            # Repo root doesn't exist
-            return False
+        result = service.launch_example_notebook('01a', repo_root=repo_root)
 
-        with patch.object(Path, 'exists', exists_side_effect):
-            result = service.launch_example_notebook('01a', repo_root=repo_root)
+        assert result == 1  # Error code for repo not found
 
-            assert result == 1  # Error code for repo not found
-
-    def test_examples_dir_not_found(self):
+    @patch.object(Path, 'is_dir', return_value=False)
+    @patch.object(Path, 'exists', return_value=True)
+    def test_examples_dir_not_found(self, mock_exists, mock_isdir):
         """Test error when examples directory missing."""
         service = NotebookService()
         repo_root = Path('/tmp/test_repo')
 
-        # We want repo_root.exists() to be True, but examples_root.exists() to be False
-        def exists_side_effect(self):
-            # Repo exists but examples directory doesn't
-            return str(self) == str(repo_root)
+        # Repo path exists but examples is not a directory
+        result = service.launch_example_notebook('01a', repo_root=repo_root)
 
-        with patch.object(Path, 'exists', exists_side_effect):
-            result = service.launch_example_notebook('01a', repo_root=repo_root)
-
-            assert result == 2  # Error code for examples dir not found
+        assert result == 2  # Error code for examples not found

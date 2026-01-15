@@ -6,13 +6,15 @@ handling various file formats and data transformations.
 """
 
 import pandas as pd  # type: ignore
-import numpy as np  # type: ignore
 from pathlib import Path
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any, Optional, cast
 import logging
 
+from symfluence.reporting.core.shapefile_helper import ShapefileHelper
+from symfluence.core.mixins import ConfigMixin
 
-class DataProcessor:
+
+class DataProcessor(ConfigMixin):
     """
     Handles loading and preparation of observation and simulation data.
 
@@ -32,9 +34,32 @@ class DataProcessor:
             config: SYMFLUENCE configuration dictionary
             logger: Logger instance
         """
-        self.config = config
+        # Import here to avoid circular imports
+
+        from symfluence.core.config.models import SymfluenceConfig
+
+
+
+        # Auto-convert dict to typed config for backward compatibility
+
+        if isinstance(config, dict):
+
+            try:
+
+                self._config = SymfluenceConfig(**config)
+
+            except Exception:
+
+                # Fallback for partial configs (e.g., in tests)
+
+                self._config = config
+
+        else:
+
+            self._config = config
         self.logger = logger
-        self.project_dir = Path(self.config.get('SYMFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}"
+        self.project_dir = Path(self._get_config_value(lambda: self.config.system.data_dir, dict_key='SYMFLUENCE_DATA_DIR')) / f"domain_{self._get_config_value(lambda: self.config.domain.name, dict_key='DOMAIN_NAME')}"
+        self._shapefile_helper = ShapefileHelper(config, logger, self.project_dir)
 
     def load_streamflow_observations(
         self,
@@ -148,7 +173,7 @@ class DataProcessor:
         if not sim_data:
             self.logger.error("No simulation data could be loaded")
 
-        return sim_data
+        return cast(List[Tuple[str, pd.Series]], sim_data)
 
     def load_distributed_model_outputs(
         self,
@@ -197,7 +222,7 @@ class DataProcessor:
                     series = series.iloc[:, 0]
 
             self.logger.info(f"Loaded distributed model output ({len(series)} timesteps)")
-            return series
+            return cast(pd.Series, series)
 
         except Exception as e:
             self.logger.error(f"Could not read distributed model file {model_file}: {str(e)}")
@@ -240,7 +265,7 @@ class DataProcessor:
                 series = series.iloc[:, 0]
 
             self.logger.info(f"Loaded snow data ({len(series)} timesteps)")
-            return series
+            return cast(pd.Series, series)
 
         except Exception as e:
             self.logger.error(f"Could not read snow file {snow_file}: {str(e)}")
@@ -281,35 +306,7 @@ class DataProcessor:
         Returns:
             Basin area in m², or None if not available
         """
-        import geopandas as gpd  # type: ignore
-        try:
-            basin_shapefile = self.config.get('RIVER_BASINS_NAME')
-            if basin_shapefile == 'default':
-                basin_shapefile = (
-                    f"{self.config.get('DOMAIN_NAME')}_riverBasins_"
-                    f"{self.config.get('DOMAIN_DEFINITION_METHOD')}.shp"
-                )
-
-            basin_path = self.project_dir / "shapefiles" / "river_basins" / basin_shapefile
-
-            if not basin_path.exists():
-                self.logger.warning(f"Basin shapefile not found: {basin_path}")
-                return None
-
-            basin_gdf = gpd.read_file(basin_path)
-            area_col = self.config.get('RIVER_BASIN_SHP_AREA', 'GRU_area')
-
-            if area_col not in basin_gdf.columns:
-                self.logger.warning(f"Area column '{area_col}' not found in basin shapefile")
-                return None
-
-            # Area is expected to be in m²
-            area_m2 = float(basin_gdf[area_col].sum())
-            return area_m2
-
-        except Exception as e:
-            self.logger.warning(f"Error getting basin area: {str(e)}")
-            return None
+        return self._shapefile_helper.get_basin_area()
 
     def align_multiple_datasets(
         self,
@@ -356,28 +353,28 @@ class DataProcessor:
     def read_results_file(self) -> pd.DataFrame:
         """
         Read simulation results and observed streamflow from standard results file.
-        
+
         Returns:
             DataFrame containing aligned simulation and observation data.
-            
+
         Raises:
             FileNotFoundError: If results file or observations file is missing.
             ValueError: If data is empty or invalid.
         """
         try:
             # Read simulation results
-            results_file = self.project_dir / "results" / f"{self.config.get('EXPERIMENT_ID')}_results.csv"
+            results_file = self.project_dir / "results" / f"{self._get_config_value(lambda: self.config.domain.experiment_id, dict_key='EXPERIMENT_ID')}_results.csv"
             if not results_file.exists():
                 raise FileNotFoundError(f"Results file not found: {results_file}")
-            
+
             # Read the CSV file
             sim_df = pd.read_csv(results_file)
-            
+
             # Check if the DataFrame is empty
             if sim_df.empty:
                 self.logger.error("Results file is empty")
                 raise ValueError("Results file contains no data")
-            
+
             # Convert time column to datetime and set as index
             if 'time' in sim_df.columns:
                 sim_df['time'] = pd.to_datetime(sim_df['time'])
@@ -398,11 +395,11 @@ class DataProcessor:
                     raise ValueError("Index cannot be converted to datetime format")
             else:
                 raise ValueError("No time or datetime column found in results file")
-            
+
             # Read observations
-            obs_file_path = self.config.get('OBSERVATIONS_PATH')
+            obs_file_path = self._get_config_value(lambda: self.config.paths.observations_path, dict_key='OBSERVATIONS_PATH')
             if obs_file_path == 'default' or obs_file_path is None:
-                obs_file_path = self.project_dir / 'observations' / 'streamflow' / 'preprocessed' / f"{self.config.get('DOMAIN_NAME')}_streamflow_processed.csv"
+                obs_file_path = self.project_dir / 'observations' / 'streamflow' / 'preprocessed' / f"{self._get_config_value(lambda: self.config.domain.name, dict_key='DOMAIN_NAME')}_streamflow_processed.csv"
             else:
                 obs_file_path = Path(obs_file_path)
 
@@ -412,39 +409,39 @@ class DataProcessor:
                 return sim_df
 
             obs_df = pd.read_csv(obs_file_path)
-            
+
             if obs_df.empty:
                 self.logger.warning("Observations file is empty")
                 return sim_df
-            
+
             # Process observations
             obs_df['datetime'] = pd.to_datetime(obs_df['datetime'], format='mixed', dayfirst=True)
             obs_df.set_index('datetime', inplace=True)
-            
+
             # Resample to daily if needed (assuming results are daily based on original logic)
             # Original logic resampled observations to daily. Let's keep that default but be mindful.
             obs_series = obs_df['discharge_cms'].resample('D').mean()
-            
+
             # Combine into single dataframe
             results_df = sim_df.copy()
             results_df['Observed'] = obs_series
-            
+
             # Skip first year (spin-up period) - preserving original logic
             if len(results_df.index) > 0:
                 start_time = results_df.index[0]
                 end_time = results_df.index[-1]
                 duration_days = (end_time - start_time).days
-                
+
                 if duration_days > 365:
                     first_year = results_df.index[0].year
                     start_date = pd.Timestamp(year=first_year + 1, month=1, day=1)
                     results_df = results_df[results_df.index >= start_date]
                 else:
                     self.logger.warning(f"Simulation duration ({duration_days} days) is short. Skipping first year removal to ensure data availability.")
-            
+
             self.logger.info(f"Data period: {results_df.index[0]} to {results_df.index[-1]}")
             return results_df
-            
+
         except Exception as e:
             self.logger.error(f"Error reading results: {str(e)}")
             raise

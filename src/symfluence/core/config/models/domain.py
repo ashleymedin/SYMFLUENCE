@@ -5,7 +5,7 @@ Contains DelineationConfig and DomainConfig for spatial extent, timing, and disc
 """
 
 from typing import Optional, Literal
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from pydantic import BaseModel, Field, field_validator
 
 from .base import FROZEN_CONFIG
 
@@ -35,6 +35,14 @@ class DelineationConfig(BaseModel):
     delineate_by_pourpoint: bool = Field(default=True, alias='DELINEATE_BY_POURPOINT')
     move_outlets_max_distance: float = Field(default=200.0, alias='MOVE_OUTLETS_MAX_DISTANCE')
 
+    @field_validator('multi_scale_thresholds', mode='before')
+    @classmethod
+    def normalize_multi_scale_thresholds(cls, v):
+        """Convert list to comma-separated string"""
+        if isinstance(v, list):
+            return ','.join(str(x) for x in v)
+        return v
+
     @field_validator('stream_threshold', 'slope_area_threshold')
     @classmethod
     def validate_positive_thresholds(cls, v, info):
@@ -58,6 +66,8 @@ class DomainConfig(BaseModel):
 
     # Optional time periods
     calibration_period: Optional[str] = Field(default=None, alias='CALIBRATION_PERIOD')
+    calibration_start_date: Optional[str] = Field(default=None, alias='CALIBRATION_START_DATE')
+    calibration_end_date: Optional[str] = Field(default=None, alias='CALIBRATION_END_DATE')
     evaluation_period: Optional[str] = Field(default=None, alias='EVALUATION_PERIOD')
     spinup_period: Optional[str] = Field(default=None, alias='SPINUP_PERIOD')
 

@@ -5,6 +5,9 @@ __pycache__/
 *.so
 .Python
 build/
+
+# Requirements - auto-generated from pyproject.toml
+requirements.txt
 develop-eggs/
 dist/
 downloads/
@@ -30,6 +33,7 @@ ENV/
 env/
 .env/
 .venv/
+.venv-docs/
 
 # Ignore everything in 0_config_files (user workspace)
 0_config_files/*
@@ -70,9 +74,29 @@ Icon
 temp/
 logs/
 
+# Development artifacts (root directory)
+*_log_tail.txt
+*_job_log.txt
+test_*.R
+
 # Distribution
 *.manifest
 *.spec
+node_modules/
+npm/*.tgz
+
+# Generated run logs in user data directory
+/data/**/_workLog*/
+/data/
+
+# Test data bundles
+tests/data/
+
+# Data files (NetCDF, HDF, etc.)
+default/*.nc
+default/*.hdf
+default/*.h5
+*.dat
 
 # Unit test / coverage reports
 htmlcov/
@@ -90,3 +114,6 @@ coverage.xml
 cover/*.nc
 *.err
 *.err
+
+# Docs build artifacts
+docs/_build/

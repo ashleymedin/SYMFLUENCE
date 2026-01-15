@@ -15,9 +15,6 @@ from typing import Dict, Any
 import numpy as np
 import geopandas as gpd
 from rasterstats import zonal_stats
-import rasterio
-import rasterio.mask
-from scipy.stats import skew, kurtosis
 
 from .base import BaseAttributeProcessor
 
@@ -59,7 +56,7 @@ class LandCoverProcessor(BaseAttributeProcessor):
         Returns:
             Dict[str, Any]: Dictionary of land cover attributes
         """
-        results = {}
+        results: Dict[str, Any] = {}
 
         # Define path to GLCLU2019 data
         glclu_path = Path("/work/comphyd_lab/data/_to-be-moved/NorthAmerica_geospatial/glclu2019/raw")
@@ -77,7 +74,7 @@ class LandCoverProcessor(BaseAttributeProcessor):
 
         # Check cache
         if cache_file.exists():
-            self.logger.info(f"Loading cached GLCLU2019 results")
+            self.logger.info("Loading cached GLCLU2019 results")
             try:
                 with open(cache_file, 'rb') as f:
                     return pickle.load(f)
@@ -165,7 +162,7 @@ class LandCoverProcessor(BaseAttributeProcessor):
             else:
                 # Distributed catchment
                 catchment = gpd.read_file(self.catchment_path)
-                hru_id_field = self.config.get('CATCHMENT_SHP_HRUID', 'HRU_ID')
+                hru_id_field = self._get_config_value(lambda: self.config.paths.catchment_hruid, default='HRU_ID', dict_key='CATCHMENT_SHP_HRUID')
 
                 for i, zonal_result in enumerate(zonal_out):
                     if i < len(catchment):
@@ -201,10 +198,10 @@ class LandCoverProcessor(BaseAttributeProcessor):
         Returns:
             Dict[str, Any]: Dictionary of LAI attributes
         """
-        results = {}
+        results: Dict[str, Any] = {}
 
         lai_path = Path("/work/comphyd_lab/data/_to-be-moved/NorthAmerica_geospatial/lai/monthly_average_2013_2023")
-        use_water_mask = self.config.get('USE_WATER_MASKED_LAI', True)
+        use_water_mask = self.config_dict.get('USE_WATER_MASKED_LAI', True)
 
         lai_folder = lai_path / ('monthly_lai_with_water_mask' if use_water_mask else 'monthly_lai_no_water_mask')
 
@@ -212,7 +209,7 @@ class LandCoverProcessor(BaseAttributeProcessor):
             # Try alternative
             lai_folder = lai_path / ('monthly_lai_no_water_mask' if use_water_mask else 'monthly_lai_with_water_mask')
             if not lai_folder.exists():
-                self.logger.warning(f"LAI folder not found")
+                self.logger.warning("LAI folder not found")
                 return results
 
         # Cache
@@ -269,7 +266,7 @@ class LandCoverProcessor(BaseAttributeProcessor):
                             monthly_lai_values.append((month, zonal_out[0]['mean'] * scale))
                 else:
                     catchment = gpd.read_file(self.catchment_path)
-                    hru_id_field = self.config.get('CATCHMENT_SHP_HRUID', 'HRU_ID')
+                    hru_id_field = self._get_config_value(lambda: self.config.paths.catchment_hruid, default='HRU_ID', dict_key='CATCHMENT_SHP_HRUID')
 
                     for i, zonal_result in enumerate(zonal_out):
                         if i < len(catchment):
@@ -359,7 +356,7 @@ class LandCoverProcessor(BaseAttributeProcessor):
                                 results[f"forest.height_{year}_{stat}"] = zonal_out[0][stat]
                 else:
                     catchment = gpd.read_file(self.catchment_path)
-                    hru_id_field = self.config.get('CATCHMENT_SHP_HRUID', 'HRU_ID')
+                    hru_id_field = self._get_config_value(lambda: self.config.paths.catchment_hruid, default='HRU_ID', dict_key='CATCHMENT_SHP_HRUID')
 
                     for i, zonal_result in enumerate(zonal_out):
                         if i < len(catchment):
@@ -395,14 +392,6 @@ class LandCoverProcessor(BaseAttributeProcessor):
         results = {}
 
         # Define ecological groupings
-        ecological_groups = {
-            "forest": ["forest", "tree", "woodland"],
-            "grassland": ["grass", "savanna"],
-            "wetland": ["wetland", "marsh"],
-            "cropland": ["crop", "agriculture"],
-            "urban": ["urban", "built"],
-            "water": ["water", "lake"]
-        }
 
         # Calculate anthropogenic influence
         urban_key = "landcover.urban_fraction"

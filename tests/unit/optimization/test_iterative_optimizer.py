@@ -6,10 +6,8 @@ Tests DDS, DE, PSO algorithms in both sequential and parallel modes.
 
 import pytest
 import numpy as np
-import pandas as pd
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
-import random
+from unittest.mock import patch, MagicMock
 
 from symfluence.optimization.optimizers import (
     BaseOptimizer,
@@ -20,6 +18,14 @@ from symfluence.optimization.optimizers import (
     PopulationDDSOptimizer,
     SCEUAOptimizer
 )
+from symfluence.core.config.models import SymfluenceConfig
+
+
+def create_config_with_overrides(base_config: SymfluenceConfig, **overrides) -> SymfluenceConfig:
+    """Create a new SymfluenceConfig with the given overrides."""
+    config_dict = base_config.to_dict(flatten=True)
+    config_dict.update(overrides)
+    return SymfluenceConfig(**config_dict)
 
 
 pytestmark = [pytest.mark.unit, pytest.mark.optimization]
@@ -46,7 +52,7 @@ def rosenbrock(x):
 @pytest.fixture
 def mock_optimizer_base():
     """Mock heavy components initialized in BaseOptimizer and subclasses."""
-    
+
     # We create a side effect for BaseOptimizer.__init__ to bypass file system logic
     def mock_init(self, config, logger):
         self.config = config
@@ -65,12 +71,12 @@ def mock_optimizer_base():
         self.mizuroute_sim_dir = self.optimization_dir / "mizuRoute"
         self.optimization_settings_dir = self.optimization_dir / "settings" / "SUMMA"
         self.output_dir = self.project_dir / "optimization" / f"{self.algorithm_name}_{self.experiment_id}"
-        
+
         # Mocks for managers
         self.parameter_manager = MagicMock()
         self.parameter_manager.all_param_names = ['theta_sat', 'k_soil', 'routingGammaScale']
         self.parameter_manager.param_bounds = {
-            'theta_sat': {'min': 0.3, 'max': 0.6}, 
+            'theta_sat': {'min': 0.3, 'max': 0.6},
             'k_soil': {'min': 1e-6, 'max': 1e-4},
             'routingGammaScale': {'min': 0.1, 'max': 1.0}
         }
@@ -78,12 +84,12 @@ def mock_optimizer_base():
         self.parameter_manager.denormalize_parameters.side_effect = lambda p: {'theta_sat': 0.45, 'k_soil': 5e-5, 'routingGammaScale': 0.5}
         self.parameter_manager.get_initial_parameters.return_value = {'theta_sat': 0.45, 'k_soil': 5e-5, 'routingGammaScale': 0.5}
         self.parameter_manager.original_depths = None
-        
+
         self.transformation_manager = MagicMock()
         self.calibration_target = MagicMock()
         self.model_executor = MagicMock()
         self.results_manager = MagicMock()
-        
+
         self.max_iterations = config.get('NUMBER_OF_ITERATIONS', 100)
         self.target_metric = config.get('OPTIMIZATION_METRIC', 'KGE')
         self.best_params = None
@@ -100,14 +106,14 @@ def mock_optimizer_base():
          patch.object(BaseOptimizer, '_run_final_evaluation') as mock_final_eval, \
          patch.object(BaseOptimizer, '_save_to_default_settings'), \
          patch.object(BaseOptimizer, '_create_calibration_target'):
-        
+
         # Setup final evaluation mock return value
         mock_final_eval.return_value = {
             'final_metrics': {'KGE': 0.85, 'NSE': 0.80},
             'calibration_metrics': {'KGE': 0.85, 'NSE': 0.80},
             'evaluation_metrics': {'KGE': 0.82, 'NSE': 0.78}
         }
-        
+
         yield None
 
 # ============================================================================
@@ -135,14 +141,16 @@ class TestDDSOptimizer:
         np.random.seed(42)
 
         # Run 1 iteration
-        dds_config_single = dds_config.copy()
-        dds_config_single['NUMBER_OF_ITERATIONS'] = 1
+        dds_config_single = create_config_with_overrides(
+            dds_config,
+            NUMBER_OF_ITERATIONS=1
+        )
 
         optimizer = DDSOptimizer(
             config=dds_config_single,
             logger=test_logger
         )
-        
+
         with patch.object(optimizer, '_evaluate_individual', side_effect=lambda x: 0.85):
              result = optimizer.run_optimization()
 
@@ -152,22 +160,24 @@ class TestDDSOptimizer:
 
     def test_dds_convergence(self, dds_config, test_logger, mock_optimizer_base):
         """Test that DDS converges on a simple problem."""
-        config = dds_config.copy()
-        config['NUMBER_OF_ITERATIONS'] = 50
+        config = create_config_with_overrides(
+            dds_config,
+            NUMBER_OF_ITERATIONS=50
+        )
 
         optimizer = DDSOptimizer(
             config=config,
             logger=test_logger
         )
-        
+
         # Override mock param manager for this test to be consistent
         optimizer.parameter_manager.all_param_names = ['x1', 'x2']
         optimizer.parameter_manager.param_bounds = {'x1': {'min': -5.0, 'max': 5.0}, 'x2': {'min': -5.0, 'max': 5.0}}
-        
+
         def denormalize(norm_arr):
             val = -5.0 + norm_arr * (5.0 - (-5.0))
             return {'x1': val[0], 'x2': val[1]}
-            
+
         def normalize(params):
             val = np.array([params['x1'], params['x2']])
             return (val - (-5.0)) / (5.0 - (-5.0))
@@ -200,7 +210,7 @@ class TestDDSOptimizer:
         def capture_eval(norm_params):
             captured_params.append(norm_params)
             return 0.5
-            
+
         with patch.object(optimizer, '_evaluate_individual', side_effect=capture_eval):
             optimizer.run_optimization()
 
@@ -252,7 +262,7 @@ class TestDEOptimizer:
             config=de_config,
             logger=test_logger
         )
-        
+
         optimizer.parameter_manager.all_param_names = ['x1', 'x2']
         optimizer.parameter_manager.normalize_parameters.side_effect = lambda p: np.array([0.5, 0.5])
 
@@ -267,26 +277,28 @@ class TestDEOptimizer:
 
     def test_de_convergence(self, de_config, test_logger, mock_optimizer_base):
         """Test that DE converges on Rosenbrock function."""
-        config = de_config.copy()
-        config['NUMBER_OF_ITERATIONS'] = 20
-        config['DE_POPULATION_SIZE'] = 10
+        config = create_config_with_overrides(
+            de_config,
+            NUMBER_OF_ITERATIONS=20,
+            DE_POPULATION_SIZE=10
+        )
 
         optimizer = DEOptimizer(
             config=config,
             logger=test_logger
         )
-        
+
         optimizer.parameter_manager.all_param_names = ['x1', 'x2']
         optimizer.parameter_manager.param_bounds = {'x1': {'min': -2.0, 'max': 2.0}, 'x2': {'min': -2.0, 'max': 2.0}}
-        
+
         def denormalize(norm_arr):
             val = -2.0 + norm_arr * (2.0 - (-2.0))
             return {'x1': val[0], 'x2': val[1]}
-            
+
         def normalize(params):
             val = np.array([params['x1'], params['x2']])
             return (val - (-2.0)) / (2.0 - (-2.0))
-            
+
         optimizer.parameter_manager.denormalize_parameters.side_effect = denormalize
         optimizer.parameter_manager.normalize_parameters.side_effect = normalize
         optimizer.parameter_manager.get_initial_parameters.return_value = {'x1': 0.0, 'x2': 0.0}
@@ -315,7 +327,7 @@ class TestDEOptimizer:
         def capture_eval(norm_params):
             captured_params.append(norm_params)
             return 0.5
-            
+
         with patch.object(optimizer, '_evaluate_individual', side_effect=capture_eval):
             optimizer.run_optimization()
 
@@ -347,7 +359,7 @@ class TestPSOOptimizer:
             config=pso_config,
             logger=test_logger
         )
-        
+
         optimizer.parameter_manager.all_param_names = ['x1', 'x2']
         optimizer.parameter_manager.normalize_parameters.side_effect = lambda p: np.array([0.5, 0.5])
 
@@ -359,26 +371,28 @@ class TestPSOOptimizer:
 
     def test_pso_convergence(self, pso_config, test_logger, mock_optimizer_base):
         """Test PSO convergence on sphere function."""
-        config = pso_config.copy()
-        config['NUMBER_OF_ITERATIONS'] = 20
-        config['SWRMSIZE'] = 10
+        config = create_config_with_overrides(
+            pso_config,
+            NUMBER_OF_ITERATIONS=20,
+            PSO_SWARM_SIZE=10
+        )
 
         optimizer = PSOOptimizer(
             config=config,
             logger=test_logger
         )
-        
+
         optimizer.parameter_manager.all_param_names = ['x1', 'x2']
         optimizer.parameter_manager.param_bounds = {'x1': {'min': -5.0, 'max': 5.0}, 'x2': {'min': -5.0, 'max': 5.0}}
-        
+
         def denormalize(norm_arr):
             val = -5.0 + norm_arr * (5.0 - (-5.0))
             return {'x1': val[0], 'x2': val[1]}
-            
+
         def normalize(params):
             val = np.array([params['x1'], params['x2']])
             return (val - (-5.0)) / (5.0 - (-5.0))
-            
+
         optimizer.parameter_manager.denormalize_parameters.side_effect = denormalize
         optimizer.parameter_manager.normalize_parameters.side_effect = normalize
         optimizer.parameter_manager.get_initial_parameters.return_value = {'x1': 4.0, 'x2': 4.0}
@@ -433,10 +447,12 @@ class TestParallelOptimization:
 
     def test_async_dds(self, dds_config, test_logger, mock_optimizer_base):
         """Test AsyncDDSOptimizer initialization and run."""
-        config = dds_config.copy()
-        config['MPI_PROCESSES'] = 2
-        config['NUMBER_OF_ITERATIONS'] = 50 
-        
+        config = create_config_with_overrides(
+            dds_config,
+            MPI_PROCESSES=2,
+            NUMBER_OF_ITERATIONS=50
+        )
+
         # Create optimizer instance
         optimizer = AsyncDDSOptimizer(
             config=config,
@@ -452,20 +468,22 @@ class TestParallelOptimization:
                     for task in tasks
                 ]
             mock_parallel.side_effect = parallel_eval_side_effect
-            
+
             # We also need to patch _evaluate_individual for the initialization pool to succeed (if called)
             with patch.object(optimizer, '_evaluate_individual', return_value=0.5):
                 # Run minimal optimization
                 optimizer.target_batches = 5
                 optimizer.run_optimization()
-                
+
                 # Should be called at least twice: once for pool init, once for batch(es)
                 assert mock_parallel.call_count >= 2
 
     def test_population_dds(self, dds_config, test_logger, mock_optimizer_base):
         """Test PopulationDDSOptimizer initialization and run."""
-        config = dds_config.copy()
-        config['MPI_PROCESSES'] = 2
+        config = create_config_with_overrides(
+            dds_config,
+            MPI_PROCESSES=2
+        )
 
         optimizer = PopulationDDSOptimizer(
             config=config,
@@ -479,10 +497,10 @@ class TestParallelOptimization:
                     for task in tasks
                 ]
             mock_parallel.side_effect = parallel_eval_side_effect
-            
+
             optimizer.max_iterations = 1
             optimizer.run_optimization()
-            
+
             assert mock_parallel.called
 
 
@@ -510,28 +528,24 @@ class TestEdgeCases:
             config=dds_config,
             logger=test_logger
         )
-        
+
         optimizer.parameter_manager.all_param_names = ['theta_sat']
         optimizer.parameter_manager.param_bounds = {'theta_sat': {'min': 0.3, 'max': 0.6}}
         optimizer.parameter_manager.normalize_parameters.side_effect = lambda p: np.array([0.5])
         optimizer.parameter_manager.get_initial_parameters.return_value = {'theta_sat': 0.45}
-        
+
         with patch.object(optimizer, '_evaluate_individual', return_value=0.5):
             result = optimizer.run_optimization()
 
         assert 'theta_sat' in result['best_parameters']
 
     def test_zero_iterations(self, dds_config, test_logger, mock_optimizer_base):
-        """Test with zero iterations (should handle gracefully)."""
-        config = dds_config.copy()
-        config['NUMBER_OF_ITERATIONS'] = 0
+        """Test that zero iterations is rejected by config validation."""
+        from pydantic import ValidationError
 
-        optimizer = DDSOptimizer(
-            config=config,
-            logger=test_logger
-        )
-
-        with patch.object(optimizer, '_evaluate_individual', return_value=0.5):
-            result = optimizer.run_optimization()
-            
-        assert isinstance(result, dict)
+        # SymfluenceConfig validates that NUMBER_OF_ITERATIONS >= 1
+        with pytest.raises(ValidationError):
+            config = create_config_with_overrides(
+                dds_config,
+                NUMBER_OF_ITERATIONS=0
+            )

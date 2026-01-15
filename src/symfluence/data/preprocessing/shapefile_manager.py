@@ -16,10 +16,11 @@ import logging
 
 import geopandas as gpd
 from shapely.affinity import translate
-from shapely.validation import make_valid
+
+from symfluence.core.mixins import ConfigMixin
 
 
-class ShapefileManager:
+class ShapefileManager(ConfigMixin):
     """
     Manages shapefile CRS conversions and HRU ID uniqueness for forcing remapping.
     """
@@ -32,7 +33,29 @@ class ShapefileManager:
             config: Configuration dictionary
             logger: Logger instance
         """
-        self.config = config
+        # Import here to avoid circular imports
+
+        from symfluence.core.config.models import SymfluenceConfig
+
+
+
+        # Auto-convert dict to typed config for backward compatibility
+
+        if isinstance(config, dict):
+
+            try:
+
+                self._config = SymfluenceConfig(**config)
+
+            except Exception:
+
+                # Fallback for partial configs (e.g., in tests)
+
+                self._config = config
+
+        else:
+
+            self._config = config
         self.logger = logger
 
     def ensure_wgs84(
@@ -64,7 +87,7 @@ class ShapefileManager:
             self.logger.info(f"Checking CRS for {shapefile_path.name}: {current_crs}")
 
             # Handle unique HRU IDs if requested
-            actual_hru_field = hru_id_field
+            actual_hru_field = hru_id_field or 'hru_id'
             if ensure_unique_ids and hru_id_field:
                 shapefile_path, actual_hru_field = self.ensure_unique_hru_ids(
                     shapefile_path, hru_id_field
@@ -88,7 +111,7 @@ class ShapefileManager:
                     wgs84_shapefile, ensure_unique_ids, actual_hru_field
                 )
                 if existing is not None:
-                    return existing
+                    return existing  # type: ignore
 
             # Convert to WGS84
             self.logger.info(f"Converting {shapefile_path.name} from {current_crs} to WGS84")
@@ -103,6 +126,7 @@ class ShapefileManager:
                     actual_saved_field = possible_fields[0]
                     self.logger.info(f"Using field '{actual_saved_field}' from WGS84 shapefile")
                     return wgs84_shapefile, actual_saved_field
+                # actual_hru_field is guaranteed to be str at this point due to earlier initialization
                 return wgs84_shapefile, actual_hru_field
 
             return wgs84_shapefile
@@ -121,7 +145,7 @@ class ShapefileManager:
         try:
             wgs84_gdf = gpd.read_file(wgs84_path)
             if wgs84_gdf.crs is None or wgs84_gdf.crs.to_epsg() != 4326:
-                self.logger.warning(f"Existing WGS84 file has wrong CRS. Recreating.")
+                self.logger.warning("Existing WGS84 file has wrong CRS. Recreating.")
                 return None
 
             if check_unique_ids:
@@ -229,7 +253,7 @@ class ShapefileManager:
         """
         try:
             source_gdf = gpd.read_file(source_shapefile)
-            lon_field = self.config.get('FORCING_SHAPE_LON_NAME')
+            lon_field = self._get_config_value(lambda: self.config.forcing.shape_lon_name, dict_key='FORCING_SHAPE_LON_NAME')
 
             if lon_field not in source_gdf.columns:
                 return target_shapefile, False
@@ -254,7 +278,7 @@ class ShapefileManager:
                 lambda geom: translate(geom, xoff=360) if geom is not None else geom
             )
 
-            target_lon_field = self.config.get('CATCHMENT_SHP_LON')
+            target_lon_field = self._get_config_value(lambda: self.config.paths.catchment_lon, dict_key='CATCHMENT_SHP_LON')
             if target_lon_field in target_gdf.columns:
                 target_gdf[target_lon_field] = target_gdf[target_lon_field].apply(
                     lambda v: v + 360 if v < 0 else v

@@ -4,10 +4,11 @@ LSTM Model Postprocessor.
 Handles result saving, visualization, and metric calculation for the LSTM model.
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Optional, List, cast
 from pathlib import Path
 import pandas as pd
 import xarray as xr
+import numpy as np
 
 from symfluence.models.registry import ModelRegistry
 from symfluence.models.base import BaseModelPostProcessor
@@ -28,7 +29,7 @@ class LSTMPostprocessor(BaseModelPostProcessor):
     def extract_streamflow(self) -> Optional[Path]:
         """
         Extract streamflow from LSTM output.
-        
+
         For LSTM, results are typically passed directly to save_results by the runner.
         This method is implemented to satisfy the abstract base class and can be used
         if we need to reload from the NetCDF file.
@@ -37,7 +38,7 @@ class LSTMPostprocessor(BaseModelPostProcessor):
             output_file = self.sim_dir / f"{self.experiment_id}_LSTM_output.nc"
             if not output_file.exists():
                 return None
-            
+
             ds = xr.open_dataset(output_file)
             if 'predicted_streamflow' in ds:
                 return self.save_streamflow_to_results(ds['predicted_streamflow'].to_series())
@@ -49,7 +50,7 @@ class LSTMPostprocessor(BaseModelPostProcessor):
     def save_results(self, results: pd.DataFrame, use_snow: bool, hru_ids: Optional[List[int]] = None):
         """
         Save LSTM model results to disk as NetCDF and CSV (for standardization).
-        
+
         Args:
             results (pd.DataFrame): Simulation results dataframe.
             use_snow (bool): Whether snow was simulated.
@@ -60,7 +61,7 @@ class LSTMPostprocessor(BaseModelPostProcessor):
         # Prepare the output directory
         self.sim_dir.mkdir(parents=True, exist_ok=True)
         output_file = self.sim_dir / f"{self.experiment_id}_LSTM_output.nc"
-        
+
         # Check if distributed
         is_distributed = hru_ids is not None and len(hru_ids) > 1
 
@@ -81,11 +82,11 @@ class LSTMPostprocessor(BaseModelPostProcessor):
                     "time": results.index
                 }
             )
-            
+
             # Add attributes
             ds.predicted_streamflow.attrs['units'] = 'm3 s-1'
             ds.predicted_streamflow.attrs['long_name'] = 'Routed streamflow'
-            
+
             # Save Streamflow to Standardized CSV (Triggers Plotting)
             self.save_streamflow_to_results(
                 results['predicted_streamflow'],
@@ -95,13 +96,13 @@ class LSTMPostprocessor(BaseModelPostProcessor):
             # Distributed mode: Unflatten results to (time, gru)
             # results index is [time, hruId]
             pivot_df = results.reset_index().pivot(index='time', columns='hruId', values='predicted_streamflow')
-            
+
             # Reorder columns to match hru_ids
             pivot_df = pivot_df[hru_ids]
-            
+
             n_hrus = len(hru_ids)
-            n_timesteps = len(pivot_df)
-            
+            len(pivot_df)
+
             # Create Dataset compatible with mizuRoute/dRoute
             ds = xr.Dataset(
                 coords={
@@ -109,18 +110,18 @@ class LSTMPostprocessor(BaseModelPostProcessor):
                     'gru': np.arange(n_hrus)
                 }
             )
-            
+
             ds['gruId'] = (['gru'], np.array(hru_ids, dtype='int32'))
-            
+
             # Use same var name as configured for routing if possible
             routing_var = self.config_dict.get('SETTINGS_MIZU_ROUTING_VAR', 'averageRoutedRunoff')
             if routing_var == 'default':
                 routing_var = 'averageRoutedRunoff'
-                
+
             ds[routing_var] = (['time', 'gru'], pivot_df.values)
             ds[routing_var].attrs['units'] = 'm3 s-1' # Default LSTM output is CMS
             ds[routing_var].attrs['long_name'] = 'LSTM runoff'
-            
+
             # Add SWE if enabled
             if use_snow and 'predicted_SWE' in results.columns:
                 swe_pivot = results.reset_index().pivot(index='time', columns='hruId', values='predicted_SWE')
@@ -138,22 +139,39 @@ class LSTMPostprocessor(BaseModelPostProcessor):
         # Common attributes
         ds.attrs['model'] = 'LSTM'
         ds.attrs['experiment_id'] = self.experiment_id
-        
+
         # Save as NetCDF
         ds.to_netcdf(output_file)
         self.logger.info(f"LSTM results saved to {output_file}")
-        
+
         # Also produce the standard format file needed by some evaluators
         standard_file = self.sim_dir / f"{self.experiment_id}_timestep.nc"
         if not standard_file.exists():
             import shutil
             shutil.copy2(output_file, standard_file)
-            
+
         return output_file
 
     def calculate_metrics(self, obs: pd.Series, sim: pd.Series) -> Dict[str, float]:
         """
-        Calculate performance metrics.
+        Calculate performance metrics for LSTM predictions.
+
+        Computes standard hydrological performance metrics comparing observed
+        and simulated streamflow. Handles missing data by dropping NaN values
+        before calculation.
+
+        Args:
+            obs: Observed streamflow series (m³/s).
+            sim: Simulated streamflow series (m³/s).
+
+        Returns:
+            dict: Dictionary of metric names to values including:
+                - RMSE: Root Mean Square Error
+                - KGE: Kling-Gupta Efficiency
+                - KGEp: KGE' (modified KGE with bias term)
+                - NSE: Nash-Sutcliffe Efficiency
+                - MAE: Mean Absolute Error
+                - KGEnp: Non-parametric KGE
         """
         # Ensure obs and sim have the same length and are aligned
         aligned_data = pd.concat([obs, sim], axis=1, keys=['obs', 'sim']).dropna()
@@ -165,10 +183,10 @@ class LSTMPostprocessor(BaseModelPostProcessor):
             return {}
 
         return {
-            'RMSE': rmse(obs_vals, sim_vals, transfo=1),
-            'KGE': kge(obs_vals, sim_vals, transfo=1),
-            'KGEp': kge_prime(obs_vals, sim_vals, transfo=1),
-            'NSE': nse(obs_vals, sim_vals, transfo=1),
-            'MAE': mae(obs_vals, sim_vals, transfo=1),
-            'KGEnp': kge_np(obs_vals, sim_vals, transfo=1)
+            'RMSE': cast(float, rmse(obs_vals, sim_vals, transfo=1)),
+            'KGE': cast(float, kge(obs_vals, sim_vals, transfo=1)),
+            'KGEp': cast(float, kge_prime(obs_vals, sim_vals, transfo=1)),
+            'NSE': cast(float, nse(obs_vals, sim_vals, transfo=1)),
+            'MAE': cast(float, mae(obs_vals, sim_vals, transfo=1)),
+            'KGEnp': cast(float, kge_np(obs_vals, sim_vals, transfo=1))
         }

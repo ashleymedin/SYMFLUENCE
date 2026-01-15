@@ -26,9 +26,9 @@ Overview
 Quick Start
 -----------
 
-- :doc:`installation` — Installation and environment setup  
-- :doc:`getting_started` — Your first project workflow  
-- :doc:`examples` — Tutorials and case studies  
+- :doc:`installation` — Installation and environment setup
+- :doc:`getting_started` — Your first project workflow
+- :doc:`examples` — Tutorials and case studies
 - `GitHub Repository <https://github.com/DarriEy/SYMFLUENCE>`_
 
 ---
@@ -42,22 +42,54 @@ Quick Start
    configuration
    calibration
    examples
-   earth_engine_integration
+
+.. toctree::
+   :maxdepth: 2
+   :caption: AI Agent
+
+   agent_guide
+   agent_tools
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Hydrological Models
+
+   models/model_summa
+   models/model_fuse
+   models/model_gr
+   models/model_hype
+   models/model_ngen
+   models/model_lstm
+   models/model_gnn
+   models/model_mesh
+   models/model_rhessys
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Routing Models
+
+   routing/mizuroute
+   routing/troute
 
 .. toctree::
    :maxdepth: 2
    :caption: Reference
 
    api
+   config_system
    troubleshooting
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Developer Documentation
+
+   developer_guide
 
 .. toctree::
    :maxdepth: 1
    :caption: Project Information
 
-   contributing
    changelog
-   license
 
 ---
 

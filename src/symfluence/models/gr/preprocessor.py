@@ -6,57 +6,109 @@ Supports both lumped and distributed spatial modes.
 Uses shared utilities for forcing data processing and data quality handling.
 """
 
-from typing import Dict, Any
-from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
 import geopandas as gpd
 
-from symfluence.data.utilities.variable_utils import VariableHandler
+from symfluence.data.utils.variable_utils import VariableHandler
 from symfluence.core.constants import UnitConversion
 from ..registry import ModelRegistry
 from ..base import BaseModelPreProcessor
 from ..mixins import PETCalculatorMixin, ObservationLoaderMixin, DatasetBuilderMixin
-from ..utilities import ForcingDataProcessor, DataQualityHandler
+from ..utilities import ForcingDataProcessor
 from symfluence.geospatial.geometry_utils import GeospatialUtilsMixin
-from symfluence.core.exceptions import ModelExecutionError, symfluence_error_handler
 
 # Optional R/rpy2 support - only needed for GR models
-try:
-    import rpy2.robjects as robjects
-    from rpy2.robjects.packages import importr
-    from rpy2.robjects import pandas2ri
-    from rpy2.robjects.conversion import localconverter
-    HAS_RPY2 = True
-except (ImportError, ValueError) as e:
-    HAS_RPY2 = False
+from importlib.util import find_spec
+
+HAS_RPY2 = find_spec("rpy2") is not None
 
 
 @ModelRegistry.register_preprocessor('GR')
 class GRPreProcessor(BaseModelPreProcessor, PETCalculatorMixin, GeospatialUtilsMixin, ObservationLoaderMixin, DatasetBuilderMixin):
     """
-    Preprocessor for the GR family of models (initially GR4J).
+    Preprocessor for the GR family of models (GR4J, GR5J, GR6J).
 
-    Handles data preparation, PET calculation, snow module setup, and file organization.
-    Supports both lumped and distributed spatial modes.
-    Inherits common functionality from BaseModelPreProcessor, PET calculations from PETCalculatorMixin,
-    geospatial utilities from GeospatialUtilsMixin, and observation loading from ObservationLoaderMixin.
+    Handles complete preprocessing workflow for GR models including forcing data processing,
+    PET calculation, optional snow module setup, and preparation of input data for R-based
+    execution. GR models are parsimonious lumped/semi-distributed rainfall-runoff models
+    developed by INRAE (France).
+
+    Key Operations:
+        - Process forcing data (precipitation, temperature, PET)
+        - Calculate potential evapotranspiration using multiple methods
+        - Prepare input data for GR model execution via rpy2/R interface
+        - Handle both lumped and distributed (HRU-based) spatial configurations
+        - Configure optional snow module (CemaNeige) for snowmelt modeling
+        - Quality control and gap-filling of forcing data
+        - Load and align observation data for calibration/evaluation
+
+    Workflow Steps:
+        1. Initialize paths and validate R/rpy2 installation
+        2. Determine spatial mode (lumped vs. distributed)
+        3. Process forcing data and calculate PET
+        4. Aggregate forcing data by spatial units (if distributed)
+        5. Handle data quality issues (gaps, outliers)
+        6. Prepare input matrices for R model execution
+        7. Configure snow module parameters (if enabled)
+        8. Save processed data in R-compatible format
+
+    Supported Spatial Modes:
+        - Lumped: Single catchment-averaged inputs
+        - Distributed: Multiple HRUs with area-weighted aggregation
+        - Auto: Automatically detect based on domain definition method
+
+    GR Model Variants:
+        - GR4J: 4-parameter daily model (basic rainfall-runoff)
+        - GR5J: 5-parameter daily model (includes groundwater exchange)
+        - GR6J: 6-parameter daily model (includes parallel routing)
+        - CemaNeige: Optional 2-parameter snow module
+
+    PET Calculation Methods:
+        - Oudin: Simple temperature-based method (GR model default)
+        - Hamon: Temperature and daylight-based
+        - Priestley-Taylor: Radiation-based method
+
+    Inherits from:
+        BaseModelPreProcessor: Common preprocessing patterns and utilities
+        PETCalculatorMixin: Potential evapotranspiration calculation methods
+        GeospatialUtilsMixin: Spatial operations (area calculation, centroid)
+        ObservationLoaderMixin: Observation data loading capabilities
+        DatasetBuilderMixin: NetCDF dataset construction utilities
 
     Attributes:
-        config: Configuration settings for GR models (inherited)
-        logger: Logger object for recording processing information (inherited)
-        project_dir: Directory for the current project (inherited)
-        setup_dir: Directory for GR setup files (inherited)
-        domain_name: Name of the domain being processed (inherited)
-        spatial_mode: Spatial mode ('lumped' or 'distributed')
+        config (SymfluenceConfig): Typed configuration object
+        logger: Logger object for recording processing information
+        project_dir (Path): Directory for the current project
+        forcing_gr_path (Path): Directory for GR input files
+        catchment_path (Path): Path to catchment shapefile
+        spatial_mode (str): Spatial configuration ('lumped' or 'distributed')
+        forcing_processor (ForcingDataProcessor): Handles forcing data transformation
+        quality_handler (DataQualityHandler): Handles data quality control
+
+    Requirements:
+        - R programming language (>= 4.0)
+        - rpy2 Python package (R-Python interface)
+        - airGR R package (GR model implementations)
+
+    Example:
+        >>> from symfluence.models.gr.preprocessor import GRPreProcessor
+        >>> preprocessor = GRPreProcessor(config, logger)
+        >>> preprocessor.run_preprocessing()
+        # Creates GR input files in: project_dir/forcing/GR_input/
+        # Generates: forcing_data.csv, catchment_attributes.csv
+
+    Raises:
+        ImportError: If R or rpy2 is not installed
+        ModelExecutionError: If preprocessing fails
     """
 
     def _get_model_name(self) -> str:
         """Return model name for GR."""
         return "GR"
 
-    def __init__(self, config: Dict[str, Any], logger: Any):
+    def __init__(self, config, logger):
         if not HAS_RPY2:
             raise ImportError(
                 "GR models require R and rpy2. "
@@ -64,32 +116,29 @@ class GRPreProcessor(BaseModelPreProcessor, PETCalculatorMixin, GeospatialUtilsM
                 "See https://rpy2.github.io/doc/latest/html/overview.html#installation"
             )
 
-        # Initialize base class
+        # Initialize base class (handles typed config validation)
         super().__init__(config, logger)
 
         # GR-specific paths
         self.forcing_gr_path = self.project_dir / 'forcing' / 'GR_input'
 
-        # GR-specific catchment configuration - maintain compatibility with old code pattern
+        # GR-specific catchment configuration
         self.catchment_path = self._get_default_path('CATCHMENT_PATH', 'shapefiles/catchment')
 
-        # Phase 3: Use typed config when available
-        self.catchment_name = self._resolve_config_value(
-            lambda: self.config.paths.catchment_shp_name,
-            'CATCHMENT_SHP_NAME'
+        # Use typed config accessor
+        self.catchment_name = self._get_config_value(
+            lambda: self.config.paths.catchment_name
         )
         if self.catchment_name == 'default' or self.catchment_name is None:
-            discretization = self._resolve_config_value(
-                lambda: self.config.domain.discretization,
-                'DOMAIN_DISCRETIZATION'
+            discretization = self._get_config_value(
+                lambda: self.config.domain.discretization
             )
             self.catchment_name = f"{self.domain_name}_HRUs_{discretization}.shp"
-        
+
         # Resolve spatial mode
-        # 1. Check for explicit configuration (typed or dict)
-        configured_mode = self._resolve_config_value(
-            lambda: self.config.model.gr.spatial_mode if hasattr(self.config, 'model') and self.config.model and self.config.model.gr else None,
-            'GR_SPATIAL_MODE'
+        # 1. Check for explicit configuration
+        configured_mode = self._get_config_value(
+            lambda: self.config.model.gr.spatial_mode if self.config.model and self.config.model.gr else None
         )
 
         # 2. If 'auto' or not set, infer from domain definition method
@@ -113,6 +162,8 @@ class GRPreProcessor(BaseModelPreProcessor, PETCalculatorMixin, GeospatialUtilsM
         Uses the template method pattern from BaseModelPreProcessor.
         """
         self.logger.info(f"Starting GR preprocessing in {self.spatial_mode} mode")
+        # GR does not ship base settings; avoid noisy warning.
+        self.copy_base_settings = lambda *args, **kwargs: None
         return self.run_preprocessing_template()
 
     def _prepare_forcing(self) -> None:
@@ -133,10 +184,11 @@ class GRPreProcessor(BaseModelPreProcessor, PETCalculatorMixin, GeospatialUtilsM
             # Subset to simulation window using base class method
             ds = self.subset_to_simulation_time(ds, "Forcing")
 
+            # Basin-averaged forcing data is already in CFIF format (from model-agnostic preprocessing)
             variable_handler = VariableHandler(
                 config=self.config_dict,
                 logger=self.logger,
-                dataset=self.config_dict.get('FORCING_DATASET'),
+                dataset='CFIF',
                 model='GR'
             )
 
@@ -170,13 +222,7 @@ class GRPreProcessor(BaseModelPreProcessor, PETCalculatorMixin, GeospatialUtilsM
             fdp = ForcingDataProcessor(self.config, self.logger)
             ds = fdp.resample_to_frequency(ds, target_freq='D', method='mean')
 
-        # Apply GR-specific unit conversions (Kelvin to Celsius, rate to mm/day)
-        try:
-            fdp = ForcingDataProcessor(self.config, self.logger)
-            ds = fdp.apply_unit_conversion(ds, 'airtemp', 'temp_k_to_c', 'temp')
-            ds = fdp.apply_unit_conversion(ds, 'pptrate', 'precip_rate_to_mm_day', 'pr')
-        except Exception:
-            pass
+        # Unit conversions already handled by VariableHandler.process_forcing_data()
 
         # Load streamflow observations
         obs_path = self.project_dir / 'observations' / 'streamflow' / 'preprocessed' / f"{self.domain_name}_streamflow_processed.csv"
@@ -201,7 +247,7 @@ class GRPreProcessor(BaseModelPreProcessor, PETCalculatorMixin, GeospatialUtilsM
             method_suffix = self._get_method_suffix()
             basin_name = f"{self.config_dict.get('DOMAIN_NAME')}_riverBasins_{method_suffix}.shp"
         basin_path = basin_dir / basin_name
-        
+
         if basin_path.exists():
             basin_gdf = gpd.read_file(basin_path)
             area_km2 = basin_gdf['GRU_area'].sum() / 1e6
@@ -211,7 +257,7 @@ class GRPreProcessor(BaseModelPreProcessor, PETCalculatorMixin, GeospatialUtilsM
 
         self.logger.info(f"Total catchment area from GRU_area: {area_km2:.2f} km2")
 
-        # Convert units from cms to mm/day
+        # Convert units from cms to mm/day for GR input
         obs_daily['discharge_mmday'] = obs_daily['discharge_cms'] / area_km2 * UnitConversion.MM_DAY_TO_CMS
 
         # Create observation dataset
@@ -229,8 +275,8 @@ class GRPreProcessor(BaseModelPreProcessor, PETCalculatorMixin, GeospatialUtilsM
             self.logger.warning(f"Catchment shapefile not found at {catchment_path}, using default latitude")
             mean_lat = 45.0
 
-        # Calculate PET
-        pet = self.calculate_pet_oudin(ds['temp'], mean_lat)
+        # Calculate PET using GR variable name 'T' (mapped by VariableHandler)
+        pet = self.calculate_pet_oudin(ds['T'], mean_lat)
 
         # Find overlapping time period
         start_time = max(ds.time.min().values, obs_ds.time.min().values)
@@ -244,11 +290,11 @@ class GRPreProcessor(BaseModelPreProcessor, PETCalculatorMixin, GeospatialUtilsM
         obs_ds = obs_ds.sel(time=slice(start_time, end_time)).reindex(time=time_index)
         pet = pet.sel(time=slice(start_time, end_time)).reindex(time=time_index)
 
-        # Create GR forcing data
+        # Create GR forcing data using GR variable names (P, T after VariableHandler processing)
         gr_forcing = pd.DataFrame({
             'time': time_index.strftime('%Y-%m-%d'),
-            'pr': ds['pr'].values,
-            'temp': ds['temp'].values,
+            'pr': ds['P'].values,  # GR uses 'P' for precipitation
+            'temp': ds['T'].values,  # GR uses 'T' for temperature
             'pet': pet.values,
             'q_obs': obs_ds['q_obs'].values
         })
@@ -277,12 +323,7 @@ class GRPreProcessor(BaseModelPreProcessor, PETCalculatorMixin, GeospatialUtilsM
         fdp = ForcingDataProcessor(self.config, self.logger)
         ds = fdp.resample_to_frequency(ds, target_freq='D', method='mean')
 
-        # Apply GR-specific unit conversions
-        try:
-            ds = fdp.apply_unit_conversion(ds, 'airtemp', 'temp_k_to_c', 'temp')
-            ds = fdp.apply_unit_conversion(ds, 'pptrate', 'precip_rate_to_mm_day', 'pr')
-        except Exception:
-            pass
+        # Unit conversions already handled by VariableHandler.process_forcing_data()
 
         # Load streamflow observations (at outlet)
         obs_path = self.project_dir / 'observations' / 'streamflow' / 'preprocessed' / f"{self.domain_name}_streamflow_processed.csv"
@@ -316,19 +357,19 @@ class GRPreProcessor(BaseModelPreProcessor, PETCalculatorMixin, GeospatialUtilsM
         # Ensure catchment has proper CRS
         if catchment.crs is None:
             catchment.set_crs(epsg=4326, inplace=True)
-        
+
         # Get centroids for each HRU avoiding geographic CRS warning
         if catchment.crs.is_geographic:
             hru_centroids = catchment.to_crs(epsg=3857).geometry.centroid.to_crs(epsg=4326)
         else:
             hru_centroids = catchment.geometry.centroid.to_crs(epsg=4326)
-            
+
         hru_lats = hru_centroids.y.values
 
-        # Calculate PET for each HRU
+        # Calculate PET for each HRU using GR variable name 'T'
         pet_data = []
         for i, lat in enumerate(hru_lats):
-            temp_hru = ds['temp'].isel(hru=i)
+            temp_hru = ds['T'].isel(hru=i)
             pet_hru = self.calculate_pet_oudin(temp_hru, lat)
             pet_data.append(pet_hru.values)
 
@@ -365,10 +406,10 @@ class GRPreProcessor(BaseModelPreProcessor, PETCalculatorMixin, GeospatialUtilsM
         # Save distributed forcing as NetCDF (one file with all HRUs)
         output_file = self.forcing_gr_path / f"{self.domain_name}_input_distributed.nc"
 
-        # Create output dataset
+        # Create output dataset using GR variable names (P, T after VariableHandler processing)
         gr_forcing = xr.Dataset({
-            'pr': ds['pr'],
-            'temp': ds['temp'],
+            'pr': ds['P'],  # GR uses 'P' for precipitation
+            'temp': ds['T'],  # GR uses 'T' for temperature
             'pet': pet
         })
 

@@ -9,14 +9,12 @@ Uses shared utilities from symfluence.models.utilities for common operations.
 """
 
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any
 import numpy as np
-import pandas as pd
 import xarray as xr
 import geopandas as gpd
 
-from symfluence.data.utilities.variable_utils import VariableHandler
-from symfluence.core.constants import UnitConversion
+from symfluence.data.utils.variable_utils import VariableHandler
 from ..utilities import ForcingDataProcessor, DataQualityHandler, BaseForcingProcessor
 
 
@@ -114,8 +112,8 @@ class FuseForcingProcessor(BaseForcingProcessor):
             self.logger.debug(f"Using {ts_config['time_label']} timestep (resample freq: {ts_config['resample_freq']})")
 
             # Get spatial mode configuration
-            spatial_mode = self.config.get('FUSE_SPATIAL_MODE', 'lumped')
-            subcatchment_dim = self.config.get('FUSE_SUBCATCHMENT_DIM', 'longitude')
+            spatial_mode = self._get_config_value(lambda: self.config.model.fuse.spatial_mode, default='lumped', dict_key='FUSE_SPATIAL_MODE')
+            subcatchment_dim = self._get_config_value(lambda: self.config.model.fuse.subcatchment_dim, default='longitude', dict_key='FUSE_SUBCATCHMENT_DIM')
 
             self.logger.debug(f"Preparing FUSE forcing data in {spatial_mode} mode")
 
@@ -127,7 +125,7 @@ class FuseForcingProcessor(BaseForcingProcessor):
             variable_handler = VariableHandler(
                 config=self.config,
                 logger=self.logger,
-                dataset=self.config.get('FORCING_DATASET'),
+                dataset=self._get_config_value(lambda: self.config.forcing.dataset, dict_key='FORCING_DATASET'),
                 model='FUSE'
             )
             ds = xr.open_mfdataset(forcing_files, data_vars='all', combine='nested', concat_dim='time').sortby('time')
@@ -153,7 +151,8 @@ class FuseForcingProcessor(BaseForcingProcessor):
             try:
                 ds['temp'] = ds['airtemp']
                 ds['pr'] = ds['pptrate']
-            except:
+            except KeyError:
+                # Variables may already have correct names or not exist
                 pass
 
             # Calculate PET for the correct spatial configuration
@@ -205,7 +204,7 @@ class FuseForcingProcessor(BaseForcingProcessor):
     def _prepare_distributed_forcing(self, ds: xr.Dataset) -> xr.Dataset:
         """Prepare fully distributed forcing data"""
         self.logger.info("Preparing distributed forcing data")
-        
+
         # Check target size from available catchment data to ensure alignment
         target_ids = self._load_subcatchment_data()
         n_target = len(target_ids)
@@ -380,11 +379,12 @@ class FuseForcingProcessor(BaseForcingProcessor):
 
         # Add coordinate-specific encoding (FUSE requires float64 for coords)
         for coord in fuse_forcing.coords:
-            if coord == 'time':
-                encoding[coord] = {'dtype': 'float64'}
-            elif coord in ['longitude', 'latitude', 'lon', 'lat']:
-                encoding[coord] = {'dtype': 'float64'}
+            coord_str = str(coord)
+            if coord_str == 'time':
+                encoding[coord_str] = {'dtype': 'float64'}
+            elif coord_str in ['longitude', 'latitude', 'lon', 'lat']:
+                encoding[coord_str] = {'dtype': 'float64'}
             else:
-                encoding[coord] = {'dtype': 'float32'}
+                encoding[coord_str] = {'dtype': 'float32'}
 
         return encoding

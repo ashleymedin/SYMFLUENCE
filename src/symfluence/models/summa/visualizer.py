@@ -5,7 +5,7 @@ Provides model-specific visualization registration for SUMMA.
 """
 
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 import logging
 
 from symfluence.models.registry import ModelRegistry
@@ -17,9 +17,9 @@ def visualize_summa(reporting_manager: Any, config: Dict[str, Any], project_dir:
     """
     logger = logging.getLogger(__name__)
     logger.info(f"Running SUMMA visualizer for experiment {experiment_id}")
-    
+
     domain_name = config.get('DOMAIN_NAME')
-    
+
     reporting_manager.visualize_summa_outputs(experiment_id)
     obs_files = [('Observed', str(project_dir / "observations" / "streamflow" / "preprocessed" / f"{domain_name}_streamflow_processed.csv"))]
 

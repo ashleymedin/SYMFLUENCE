@@ -5,7 +5,7 @@ Handles output extraction, processing, and analysis for HYPE model outputs.
 """
 
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Optional
 import pandas as pd  # type: ignore
 
 from ..registry import ModelRegistry
@@ -41,11 +41,16 @@ class HYPEPostProcessor(BaseModelPostProcessor):
             Dict[str, Path]: Paths to processed result files
         """
         self.logger.info("Extracting HYPE results")
+        results = {}
 
         try:
             # Process streamflow
-            self.extract_streamflow()
-            self.logger.info("Streamflow extracted successfully")
+            streamflow_path = self.extract_streamflow()
+            if streamflow_path:
+                results['streamflow'] = streamflow_path
+                self.logger.info("Streamflow extracted successfully")
+
+            return results
 
         except Exception as e:
             self.logger.error(f"Error extracting HYPE results: {str(e)}")
@@ -83,7 +88,6 @@ class HYPEPostProcessor(BaseModelPostProcessor):
 
             if outlet_id not in cout.columns:
                 # Auto-select outlet: column with highest mean flow (downstream outlet)
-                import numpy as np
                 col_means = cout.mean()
                 outlet_col = col_means.idxmax()
                 self.logger.warning(
@@ -104,5 +108,3 @@ class HYPEPostProcessor(BaseModelPostProcessor):
             self.logger.error(f"Error extracting streamflow: {str(e)}")
             self.logger.exception("Full traceback:")
             return None
-
-

@@ -17,28 +17,91 @@ from typing import List, Tuple, Dict, Any, Optional
 from symfluence.evaluation.structure_ensemble import BaseStructureEnsembleAnalyzer
 from symfluence.evaluation.metrics import kge, kge_prime, nse, mae, rmse
 from symfluence.models.summa.runner import SummaRunner
+# Import MizuRouteRunner at module level for test mocking,
+# but still use lazy loading in the property to avoid circular imports
 from symfluence.models.mizuroute.runner import MizuRouteRunner
 
 class SummaStructureAnalyzer(BaseStructureEnsembleAnalyzer):
     """
     Structure Ensemble Analyzer for SUMMA and mizuRoute.
-    
+
     Coordinates multiple runs of SUMMA with different model decisions,
-    followed by mizuRoute routing, and evaluates the performance of each
-    structural configuration.
+    optionally followed by mizuRoute routing, and evaluates the performance
+    of each structural configuration.
+
+    Note: MizuRoute runner is lazily loaded only when routing is needed,
+    preventing unnecessary dependencies and circular import risks.
     """
-    
+
     def __init__(self, config: Any, logger: Any, reporting_manager: Optional[Any] = None):
         """
         Initialize the SUMMA structure analyzer.
         """
         super().__init__(config, logger, reporting_manager)
-        
-        # Initialize runners
+
+        # Initialize SUMMA runner
         self.summa_runner = SummaRunner(config, logger)
-        self.mizuroute_runner = MizuRouteRunner(config, logger)
-        
+
+        # MizuRoute runner lazily loaded via property (see below)
+        self._mizuroute_runner = None
+        self._routing_needed = None
+
         self.model_decisions_path = self.project_dir / "settings" / "SUMMA" / "modelDecisions.txt"
+
+    def _needs_routing(self) -> bool:
+        """
+        Determine if routing (mizuRoute) is needed for this analysis.
+
+        Uses RoutingDecider to check configuration and spatial setup.
+        Result is cached for performance.
+
+        Returns:
+            True if routing is needed, False otherwise
+        """
+        if self._routing_needed is None:
+            from symfluence.models.utilities.routing_decider import RoutingDecider
+            decider = RoutingDecider()
+            settings_dir = self.project_dir / "settings" / "SUMMA"
+            self._routing_needed = decider.needs_routing(
+                self.config_dict,
+                'SUMMA',
+                settings_dir
+            )
+
+            if self._routing_needed:
+                self.logger.info("Routing (mizuRoute) is enabled for SUMMA structure analysis")
+            else:
+                self.logger.info("Routing (mizuRoute) is disabled for SUMMA structure analysis")
+
+        assert self._routing_needed is not None
+        return self._routing_needed
+
+    @property
+    def mizuroute_runner(self):
+        """
+        Lazy-load MizuRoute runner only when routing is needed.
+
+        This prevents circular dependencies and unnecessary imports when
+        routing is disabled via configuration.
+
+        Returns:
+            MizuRouteRunner instance if routing is needed, None otherwise
+
+        Raises:
+            RuntimeError: If routing is not configured but mizuroute_runner is accessed
+        """
+        if not self._needs_routing():
+            raise RuntimeError(
+                "MizuRoute runner requested but routing is not configured. "
+                "Check ROUTING_MODEL, DOMAIN_DEFINITION_METHOD, and ROUTING_DELINEATION settings."
+            )
+
+        if self._mizuroute_runner is None:
+            # Lazy instantiation (import is at module level for test mocking)
+            self._mizuroute_runner = MizuRouteRunner(self.config, self.logger)
+            self.logger.debug("MizuRoute runner initialized (lazy loading)")
+
+        return self._mizuroute_runner
 
     def _initialize_decision_options(self) -> Dict[str, List[str]]:
         """Initialize SUMMA decision options from configuration."""
@@ -55,7 +118,7 @@ class SummaStructureAnalyzer(BaseStructureEnsembleAnalyzer):
     def update_model_decisions(self, combination: Tuple[str, ...]):
         """
         Update the SUMMA modelDecisions.txt file with a new combination.
-        
+
         Args:
             combination (Tuple[str, ...]): Tuple of decision values to use.
         """
@@ -66,30 +129,37 @@ class SummaStructureAnalyzer(BaseStructureEnsembleAnalyzer):
         decision_keys = list(self.decision_options.keys())
         with open(self.model_decisions_path, 'r') as f:
             lines = f.readlines()
-        
+
         option_map = dict(zip(decision_keys, combination))
-        
+
         for i, line in enumerate(lines):
             for option, value in option_map.items():
                 if line.strip().startswith(option):
                     # Maintain format: DecisionName  Value  ! Comment
                     lines[i] = f"{option.ljust(30)} {value.ljust(15)} ! {line.split('!')[-1].strip()}\n"
-        
+
         with open(self.model_decisions_path, 'w') as f:
             f.writelines(lines)
 
     def run_model(self):
-        """Execute SUMMA followed by mizuRoute."""
+        """
+        Execute SUMMA, optionally followed by mizuRoute routing.
+
+        Routing is only executed if configured via ROUTING_MODEL or spatial settings.
+        """
         self.logger.info("Executing SUMMA model run")
         self.summa_runner.run_summa()
-        
-        self.logger.info("Executing mizuRoute routing")
-        self.mizuroute_runner.run_mizuroute()
+
+        if self._needs_routing():
+            self.logger.info("Executing mizuRoute routing")
+            self.mizuroute_runner.run_mizuroute()
+        else:
+            self.logger.info("Skipping mizuRoute routing (not configured)")
 
     def calculate_performance_metrics(self) -> Dict[str, float]:
         """
         Calculate performance metrics comparing simulated routed runoff to observations.
-        
+
         Returns:
             Dict: Dictionary containing KGE, NSE, MAE, and RMSE.
         """
@@ -107,7 +177,7 @@ class SummaStructureAnalyzer(BaseStructureEnsembleAnalyzer):
         # Load simulation results (mizuRoute output)
         sim_reach_ID = self.config_dict.get('SIM_REACH_ID')
         sim_path_config = self.config_dict.get('SIMULATIONS_PATH')
-        
+
         if sim_path_config == 'default' or not sim_path_config:
             # Construct default mizuRoute output path
             start_year = self.config_dict.get('EXPERIMENT_TIME_START', '1990').split('-')[0]
@@ -140,13 +210,13 @@ class SummaStructureAnalyzer(BaseStructureEnsembleAnalyzer):
                 ds_sel = ds.sel(seg=segment_index)
             else:
                 ds_sel = ds.isel(seg=0)
-            
+
             # Extract routed runoff
             var_name = 'IRFroutedRunoff' if 'IRFroutedRunoff' in ds_sel.variables else 'KWTroutedRunoff'
             if var_name not in ds_sel.variables:
                 # Fallback to any routed runoff variable
                 var_name = [v for v in ds_sel.variables if 'routedRunoff' in v][0]
-                
+
             sim_df = ds_sel[var_name].to_dataframe().reset_index()
             sim_df.set_index('time', inplace=True)
             sim_df.index = sim_df.index.round(freq='h')
@@ -155,10 +225,10 @@ class SummaStructureAnalyzer(BaseStructureEnsembleAnalyzer):
         # Align series
         obs_aligned = obs_series.reindex(sim_series.index).dropna()
         sim_aligned = sim_series.reindex(obs_aligned.index).dropna()
-        
+
         obs_vals = obs_aligned.values
         sim_vals = sim_aligned.values
-        
+
         if len(obs_vals) == 0:
             self.logger.warning("No overlapping data between observations and simulations")
             return {'kge': np.nan, 'kgep': np.nan, 'nse': np.nan, 'mae': np.nan, 'rmse': np.nan}

@@ -6,14 +6,16 @@ of elevation bands for both lumped and distributed spatial configurations.
 """
 
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 import numpy as np
 import pandas as pd
 import xarray as xr
 import geopandas as gpd
 
+from symfluence.core.mixins import ConfigMixin
 
-class FuseElevationBandManager:
+
+class FuseElevationBandManager(ConfigMixin):
     """
     Manager for FUSE elevation band creation in lumped and distributed modes.
 
@@ -54,7 +56,29 @@ class FuseElevationBandManager:
             domain_name: Domain name for file naming
             calculate_catchment_centroid_callback: Callback to parent's calculate_catchment_centroid method
         """
-        self.config = config
+        # Import here to avoid circular imports
+
+        from symfluence.core.config.models import SymfluenceConfig
+
+
+
+        # Auto-convert dict to typed config for backward compatibility
+
+        if isinstance(config, dict):
+
+            try:
+
+                self._config = SymfluenceConfig(**config)
+
+            except Exception:
+
+                # Fallback for partial configs (e.g., in tests)
+
+                self._config = config
+
+        else:
+
+            self._config = config
         self.logger = logger
         self.project_dir = Path(project_dir)
         self.forcing_fuse_path = Path(forcing_fuse_path)
@@ -72,7 +96,7 @@ class FuseElevationBandManager:
         Raises:
             ValueError: If unknown spatial mode specified
         """
-        spatial_mode = self.config.get('FUSE_SPATIAL_MODE', 'lumped')
+        spatial_mode = self._get_config_value(lambda: self.config.model.fuse.spatial_mode, default='lumped', dict_key='FUSE_SPATIAL_MODE')
 
         self.logger.info(f"Creating elevation bands for {spatial_mode} mode")
 
@@ -93,13 +117,20 @@ class FuseElevationBandManager:
                 data_var = next(iter(ds.data_vars.values()), None)
                 if data_var is None:
                     return None
-                spatial_dims = [dim for dim in data_var.dims if dim != 'time']
-                spatial_coords = {}
-                for dim in spatial_dims:
+
+                spatial_dims: List[Any] = []
+                spatial_coords: Dict[str, np.ndarray] = {}
+
+                for dim in data_var.dims:
+                    if dim == 'time':
+                        continue
+                    dim_str = str(dim)
+                    spatial_dims.append(dim_str)
                     if dim in ds.coords:
-                        spatial_coords[dim] = ds[dim].values
+                        spatial_coords[dim_str] = ds[dim].values
                     else:
-                        spatial_coords[dim] = np.arange(ds.sizes[dim])
+                        spatial_coords[dim_str] = np.arange(ds.sizes[dim])
+
                 return spatial_dims, spatial_coords
         except Exception as e:
             self.logger.warning(f"Unable to read spatial info from {forcing_file}: {e}")
@@ -149,7 +180,7 @@ class FuseElevationBandManager:
                 }
 
             # Create simple elevation bands (e.g., 5 bands)
-            n_bands = self.config.get('FUSE_N_ELEVATION_BANDS', 5)
+            n_bands = self._get_config_value(lambda: self.config.model.fuse.n_elevation_bands, default=5, dict_key='FUSE_N_ELEVATION_BANDS')
             elevations = np.linspace(elev_min, elev_max, n_bands)
 
             # Equal area fractions for each band
@@ -167,8 +198,8 @@ class FuseElevationBandManager:
             })
 
             # Use xarray broadcasting for cleaner and more efficient array creation
-            area_da = xr.DataArray(area_fractions, dims=['elevation_band'])
-            elev_da = xr.DataArray(elevations, dims=['elevation_band'])
+            xr.DataArray(area_fractions, dims=['elevation_band'])
+            xr.DataArray(elevations, dims=['elevation_band'])
 
             band_shape = (n_bands,) + tuple(len(spatial_coords[dim]) for dim in spatial_dims)
             band_dims = ['elevation_band'] + spatial_dims
@@ -182,7 +213,7 @@ class FuseElevationBandManager:
                     'units': '-'
                 }
             ).astype('float32')
-            
+
             ds['mean_elev'] = xr.DataArray(
                 np.broadcast_to(elevations.reshape(broadcast_shape), band_shape),
                 dims=band_dims,
@@ -192,7 +223,7 @@ class FuseElevationBandManager:
                     'standard_name': 'height_above_reference_ellipsoid'
                 }
             ).astype('float32')
-            
+
             ds['prec_frac'] = xr.DataArray(
                 np.broadcast_to(area_fractions.reshape(broadcast_shape), band_shape),
                 dims=band_dims,
@@ -204,7 +235,7 @@ class FuseElevationBandManager:
 
             # Save to file
             output_file = self.forcing_fuse_path / f"{self.domain_name}_elev_bands.nc"
-            
+
             # Use strict encoding for FUSE compatibility
             encoding = {
                 'area_frac': {'dtype': 'float32', '_FillValue': -9999.0, 'zlib': False},
@@ -214,7 +245,7 @@ class FuseElevationBandManager:
             }
             for dim in spatial_dims:
                 encoding[dim] = {'dtype': 'float64', '_FillValue': None}
-            
+
             ds.to_netcdf(output_file, encoding=encoding)
 
             self.logger.info(f"Created lumped elevation bands file with {n_bands} bands: {output_file}")
@@ -243,7 +274,7 @@ class FuseElevationBandManager:
             # Get elevation data per HRU
             if 'elev_mean' in catchment.columns:
                 elevations = catchment['elev_mean'].values
-                self.logger.info(f"Using HRU-specific elevation data from shapefile")
+                self.logger.info("Using HRU-specific elevation data from shapefile")
             else:
                 # Use uniform elevation if not available
                 elevations = np.full(n_hrus, 1000.0)
@@ -278,7 +309,7 @@ class FuseElevationBandManager:
                 else:
                     # Already projected, calculate centroid then convert to WGS84
                     centroids = catchment.geometry.centroid.to_crs(epsg=4326)
-                
+
                 latitudes = centroids.y.values
                 longitudes = centroids.x.values
 
@@ -292,7 +323,7 @@ class FuseElevationBandManager:
                     'longitude': np.array([longitudes.mean()])
                 }
 
-            n_bands = self.config.get('FUSE_N_ELEVATION_BANDS', 5)
+            n_bands = self._get_config_value(lambda: self.config.model.fuse.n_elevation_bands, default=5, dict_key='FUSE_N_ELEVATION_BANDS')
             elevations = np.linspace(elevations.min(), elevations.max(), n_bands)
             area_fractions = np.ones(n_bands) / n_bands
 
@@ -318,7 +349,7 @@ class FuseElevationBandManager:
                     'units': '-'
                 }
             ).astype('float32')
-            
+
             ds['mean_elev'] = xr.DataArray(
                 np.broadcast_to(elevations.reshape(broadcast_shape), band_shape),
                 dims=band_dims,
@@ -328,7 +359,7 @@ class FuseElevationBandManager:
                     'standard_name': 'height_above_reference_ellipsoid'
                 }
             ).astype('float32')
-            
+
             ds['prec_frac'] = xr.DataArray(
                 np.broadcast_to(area_fractions.reshape(broadcast_shape), band_shape),
                 dims=band_dims,
@@ -340,7 +371,7 @@ class FuseElevationBandManager:
 
             # Save to file
             output_file = self.forcing_fuse_path / f"{self.domain_name}_elev_bands.nc"
-            
+
             # Use strict encoding for FUSE compatibility
             encoding = {
                 'area_frac': {'dtype': 'float32', '_FillValue': -9999.0, 'zlib': False},
@@ -350,7 +381,7 @@ class FuseElevationBandManager:
             }
             for dim in spatial_dims:
                 encoding[dim] = {'dtype': 'float64', '_FillValue': None}
-            
+
             ds.to_netcdf(output_file, encoding=encoding)
 
             self.logger.info(f"Created distributed elevation bands file with {n_hrus} HRUs: {output_file}")

@@ -1,3 +1,10 @@
+"""
+Radiation-based domain discretization for solar energy classification.
+
+Creates HRUs based on annual solar radiation patterns derived from terrain
+geometry, enabling energy-aware hydrological response unit delineation.
+"""
+
 from __future__ import annotations
 
 from typing import Optional, TYPE_CHECKING
@@ -21,21 +28,21 @@ def discretize(discretizer: "DomainDiscretizer") -> Optional[object]:
         default_subpath="shapefiles/river_basins",
         default_name=f"{discretizer.domain_name}_riverBasins_{discretizer.delineation_suffix}.shp",
     )
-    
+
     dem_raster = discretizer._get_file_path(
-        path_key="DEM_PATH", 
+        path_key="DEM_PATH",
         name_key="DEM_NAME",
-        default_subpath="attributes/elevation/dem", 
-        default_name=f"domain_{discretizer.config.get('DOMAIN_NAME')}_elv.tif"
+        default_subpath="attributes/elevation/dem",
+        default_name=f"domain_{discretizer.domain_name}_elv.tif"
     )
-    
+
     radiation_raster = discretizer._get_file_path(
         path_key="RADIATION_PATH",
         name_key="RADIATION_NAME",
         default_subpath="attributes/radiation",
         default_name="annual_radiation.tif",
     )
-    
+
     output_shapefile = discretizer._get_file_path(
         path_key="CATCHMENT_PATH",
         name_key="CATCHMENT_SHP_NAME",
@@ -43,7 +50,10 @@ def discretize(discretizer: "DomainDiscretizer") -> Optional[object]:
         default_name=f"{discretizer.domain_name}_HRUs_radiation.shp",
     )
 
-    radiation_class_number = int(discretizer.config.get("RADIATION_CLASS_NUMBER"))
+    radiation_class_number = int(discretizer._get_config_value(
+        lambda: discretizer.config.domain.radiation_class_number,
+        default=1
+    ))
 
     if not radiation_raster.exists():
         discretizer.logger.info(

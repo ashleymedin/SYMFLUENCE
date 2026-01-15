@@ -1,21 +1,61 @@
+"""
+Parameter transformation adapters for model-specific calibration.
+
+Provides transformers that apply calibration parameters to model-specific
+formats (e.g., soil depth multipliers for SUMMA NetCDF files).
+"""
+
 import numpy as np
 import netCDF4 as nc
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 import logging
 
-class ParameterTransformer:
+from symfluence.core.mixins import ConfigMixin
+
+class ParameterTransformer(ConfigMixin):
     """Base class for parameter transformers."""
     def __init__(self, config: Dict[str, Any], logger: logging.Logger):
-        self.config = config
+        # Import here to avoid circular imports
+
+        from symfluence.core.config.models import SymfluenceConfig
+
+
+
+        # Auto-convert dict to typed config for backward compatibility
+
+        if isinstance(config, dict):
+
+            try:
+
+                self._config = SymfluenceConfig(**config)
+
+            except Exception:
+
+                # Fallback for partial configs (e.g., in tests)
+
+                self._config = config
+
+        else:
+
+            self._config = config
         self.logger = logger
 
     def apply(self, params: Dict[str, Any], settings_dir: Path) -> bool:
+        """Apply parameter transformations to model configuration files.
+
+        Args:
+            params: Dictionary of parameter names and their calibrated values.
+            settings_dir: Path to the model settings directory containing files to modify.
+
+        Returns:
+            True if transformation succeeded, False otherwise.
+        """
         raise NotImplementedError
 
 class SoilDepthTransformer(ParameterTransformer):
     """Handles transformation of soil depth parameters."""
-    
+
     SPECIAL_PARAMS = ['total_soil_depth_multiplier', 'total_mult', 'shape_factor']
 
     def __init__(self, config: Dict[str, Any], logger: logging.Logger):
@@ -23,12 +63,27 @@ class SoilDepthTransformer(ParameterTransformer):
         self.original_depths = None
 
     def apply(self, params: Dict[str, Any], settings_dir: Path) -> bool:
+        """Apply soil depth multiplier transformations to SUMMA coldState.nc.
+
+        Modifies mLayerDepth and iLayerHeight variables in the NetCDF file
+        based on total_soil_depth_multiplier and shape_factor parameters.
+        Shape factor controls exponential stretching of layer depths.
+
+        Args:
+            params: Parameter dict, may contain 'total_soil_depth_multiplier',
+                'total_mult', and/or 'shape_factor' keys.
+            settings_dir: Path containing coldState.nc file.
+
+        Returns:
+            True if transformation succeeded or no special params present,
+            False if coldState.nc missing or NetCDF update failed.
+        """
         # Check if any special parameters are present
         if not any(p in params for p in self.SPECIAL_PARAMS):
             return True
-            
+
         try:
-            coldstate_path = settings_dir / self.config.get('SETTINGS_SUMMA_COLDSTATE', 'coldState.nc')
+            coldstate_path = settings_dir / self._get_config_value(lambda: self.config.model.summa.coldstate, default='coldState.nc', dict_key='SETTINGS_SUMMA_COLDSTATE')
             if not coldstate_path.exists():
                 self.logger.error(f"coldState.nc not found at {coldstate_path}")
                 return False
@@ -36,7 +91,7 @@ class SoilDepthTransformer(ParameterTransformer):
             # Load original depths if not already loaded
             if self.original_depths is None:
                 self.original_depths = self._get_original_depths(coldstate_path)
-            
+
             if self.original_depths is None:
                 return False
 
@@ -44,15 +99,15 @@ class SoilDepthTransformer(ParameterTransformer):
             total_mult = params.get('total_soil_depth_multiplier')
             if total_mult is None:
                 total_mult = params.get('total_mult', 1.0)
-            
+
             shape_factor = params.get('shape_factor', 1.0)
-            
+
             if isinstance(total_mult, np.ndarray): total_mult = total_mult[0]
             if isinstance(shape_factor, np.ndarray): shape_factor = shape_factor[0]
 
             # Calculate new depths
             new_depths = self._calculate_new_depths(self.original_depths, total_mult, shape_factor)
-            
+
             # Calculate layer heights (cumulative sum)
             heights = np.zeros(len(new_depths) + 1)
             for i in range(len(new_depths)):
@@ -68,7 +123,7 @@ class SoilDepthTransformer(ParameterTransformer):
                 else:
                     self.logger.error("Required variables not found in coldState.nc")
                     return False
-            
+
             return True
 
         except Exception as e:
@@ -79,13 +134,14 @@ class SoilDepthTransformer(ParameterTransformer):
         try:
             with nc.Dataset(path, 'r') as ds:
                 return ds.variables['mLayerDepth'][:, 0].copy()
-        except:
+        except (OSError, IOError, KeyError) as e:
+            self.logger.debug(f"Could not read mLayerDepth from {path}: {e}")
             return None
 
     def _calculate_new_depths(self, original: np.ndarray, total_mult: float, shape_factor: float) -> np.ndarray:
         n = len(original)
         idx = np.arange(n)
-        
+
         # Calculate shape weights (exponential stretching)
         if shape_factor > 1:
             w = np.exp(idx / (n - 1) * np.log(shape_factor))
@@ -93,14 +149,14 @@ class SoilDepthTransformer(ParameterTransformer):
             w = np.exp((n - 1 - idx) / (n - 1) * np.log(1 / shape_factor))
         else:
             w = np.ones(n)
-        
+
         # Normalize weights so they average to 1.0
         w /= w.mean()
-        
+
         # Apply multipliers
         return original * w * total_mult
 
-class TransformationManager:
+class TransformationManager(ConfigMixin):
     """Orchestrates all parameter transformations."""
     def __init__(self, config: Dict[str, Any], logger: logging.Logger):
         self.config = config
@@ -110,6 +166,18 @@ class TransformationManager:
         ]
 
     def transform(self, params: Dict[str, Any], settings_dir: Path) -> bool:
+        """Apply all registered transformations to model settings.
+
+        Iterates through all registered transformers and applies each
+        in sequence. Stops on first failure.
+
+        Args:
+            params: Calibration parameter dictionary.
+            settings_dir: Path to model settings directory.
+
+        Returns:
+            True if all transformations succeeded, False if any failed.
+        """
         for transformer in self.transformers:
             if not transformer.apply(params, settings_dir):
                 return False

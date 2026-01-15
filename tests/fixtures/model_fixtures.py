@@ -5,7 +5,6 @@ Provides fixtures for model execution and validation.
 """
 
 import pytest
-from pathlib import Path
 
 
 @pytest.fixture(scope="session")
@@ -43,10 +42,10 @@ def summa_config(tmp_path, symfluence_code_dir):
 
     # Convert back to SymfluenceConfig, ensuring paths are handled correctly
     config_obj = SymfluenceConfig(**config)
-    
+
     cfg_path = tmp_path / "config_summa.yaml"
     # Use write_config to serialize it for potential later loading
-    from ..utils.helpers import write_config
+    from ..test_helpers.helpers import write_config
     write_config(config_obj, cfg_path)
 
     return config_obj
@@ -76,7 +75,7 @@ def fuse_config(tmp_path, symfluence_code_dir):
     config_obj = SymfluenceConfig(**config)
 
     cfg_path = tmp_path / "config_fuse.yaml"
-    from ..utils.helpers import write_config
+    from ..test_helpers.helpers import write_config
     write_config(config_obj, cfg_path)
 
     return config_obj
@@ -106,7 +105,7 @@ def ngen_config(tmp_path, symfluence_code_dir):
     config_obj = SymfluenceConfig(**config)
 
     cfg_path = tmp_path / "config_ngen.yaml"
-    from ..utils.helpers import write_config
+    from ..test_helpers.helpers import write_config
     write_config(config_obj, cfg_path)
 
     return config_obj

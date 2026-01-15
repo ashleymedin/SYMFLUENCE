@@ -32,6 +32,13 @@ def hype_config(temp_dir):
         'DOMAIN_NAME': 'test_domain',
         'EXPERIMENT_ID': 'test_exp',
         'SYMFLUENCE_DATA_DIR': str(temp_dir),
+        'SYMFLUENCE_CODE_DIR': str(temp_dir),
+        'DOMAIN_DEFINITION_METHOD': 'lumped',
+        'DOMAIN_DISCRETIZATION': 'lumped',
+        'EXPERIMENT_TIME_START': '2010-01-01 00:00',
+        'EXPERIMENT_TIME_END': '2010-12-31 23:00',
+        'FORCING_DATASET': 'ERA5',
+        'HYDROLOGICAL_MODEL': 'HYPE',
         'HYPE_PARAMS_TO_CALIBRATE': 'ttmp,cmlt,cevp',
         'OPTIMIZATION_TARGET': 'streamflow',
         'OPTIMIZATION_METRIC': 'kge',
@@ -45,6 +52,13 @@ def mesh_config(temp_dir):
         'DOMAIN_NAME': 'test_domain',
         'EXPERIMENT_ID': 'test_exp',
         'SYMFLUENCE_DATA_DIR': str(temp_dir),
+        'SYMFLUENCE_CODE_DIR': str(temp_dir),
+        'DOMAIN_DEFINITION_METHOD': 'lumped',
+        'DOMAIN_DISCRETIZATION': 'lumped',
+        'EXPERIMENT_TIME_START': '2010-01-01 00:00',
+        'EXPERIMENT_TIME_END': '2010-12-31 23:00',
+        'FORCING_DATASET': 'ERA5',
+        'HYDROLOGICAL_MODEL': 'MESH',
         'MESH_PARAMS_TO_CALIBRATE': 'ZSNL,MANN',
         'OPTIMIZATION_TARGET': 'streamflow',
         'OPTIMIZATION_METRIC': 'kge',
@@ -98,7 +112,6 @@ class TestMESHRegistration:
     def test_mesh_optimizer_registered(self):
         """Test that MESH optimizer is registered."""
         # Import to trigger registration
-        from symfluence.optimization.model_optimizers.mesh_model_optimizer import MESHModelOptimizer
 
         optimizer_cls = OptimizerRegistry.get_optimizer('MESH')
         assert optimizer_cls is not None
@@ -107,7 +120,6 @@ class TestMESHRegistration:
     def test_mesh_worker_registered(self):
         """Test that MESH worker is registered."""
         # Import to trigger registration
-        from symfluence.optimization.workers.mesh_worker import MESHWorker
 
         worker_cls = OptimizerRegistry.get_worker('MESH')
         assert worker_cls is not None

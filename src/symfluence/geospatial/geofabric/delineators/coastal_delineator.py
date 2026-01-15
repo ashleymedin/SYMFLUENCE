@@ -8,7 +8,7 @@ Extracted from geofabric_utils.py (2026-01-01)
 """
 
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional, Tuple
 import numpy as np
 import geopandas as gpd
 import pandas as pd
@@ -69,7 +69,7 @@ class CoastalWatershedDelineator(BaseGeofabricDelineator):
 
             # Load existing delineation
             river_basins = GeofabricIOUtils.load_geopandas(river_basins_path, self.logger)
-            river_network = GeofabricIOUtils.load_geopandas(river_network_path, self.logger)
+            GeofabricIOUtils.load_geopandas(river_network_path, self.logger)
 
             # Create interim directory for coastal delineation
             coastal_interim_dir = self.project_dir / "taudem-interim-files" / "coastal"
@@ -205,7 +205,7 @@ class CoastalWatershedDelineator(BaseGeofabricDelineator):
             self.logger.info(f"Combined river basins saved to: {combined_basins_path}")
 
             # Cleanup if requested
-            if self.config.get('CLEANUP_INTERMEDIATE_FILES', True):
+            if self._get_config_value(lambda: self.config.domain.delineation.cleanup_intermediate_files, default=True, dict_key='CLEANUP_INTERMEDIATE_FILES'):
                 shutil.rmtree(coastal_interim_dir, ignore_errors=True)
                 self.logger.info(f"Cleaned up coastal interim files: {coastal_interim_dir}")
 
@@ -232,20 +232,20 @@ class CoastalWatershedDelineator(BaseGeofabricDelineator):
             self.logger.info(f"Creating point buffer shape for point-scale simulation at {self.domain_name}")
 
             # Get pour point coordinates
-            pour_point_coords = self.config.get('POUR_POINT_COORDS', '').split('/')
+            pour_point_coords = self._get_config_value(lambda: self.config.domain.pour_point_coords, default='', dict_key='POUR_POINT_COORDS').split('/')
             if len(pour_point_coords) != 2:
-                self.logger.error(f"Invalid pour point coordinates: {self.config.get('POUR_POINT_COORDS')}")
+                self.logger.error(f"Invalid pour point coordinates: {self._get_config_value(lambda: self.config.domain.pour_point_coords, dict_key='POUR_POINT_COORDS')}")
                 return None, None
 
             # Convert to floats
             try:
                 lat, lon = float(pour_point_coords[0]), float(pour_point_coords[1])
             except ValueError:
-                self.logger.error(f"Invalid pour point coordinates format: {self.config.get('POUR_POINT_COORDS')}")
+                self.logger.error(f"Invalid pour point coordinates format: {self._get_config_value(lambda: self.config.domain.pour_point_coords, dict_key='POUR_POINT_COORDS')}")
                 return None, None
 
             # Define buffer distance (0.01 degrees, approximately 1km at the equator)
-            buffer_dist = self.config.get('POINT_BUFFER_DISTANCE')
+            buffer_dist = self.config_dict.get('POINT_BUFFER_DISTANCE')
 
             # Create a square buffer around the point
             min_lon = lon - buffer_dist
@@ -303,7 +303,7 @@ class CoastalWatershedDelineator(BaseGeofabricDelineator):
             gdf.to_file(catchment_path)
             river_gdf.to_file(river_network_path)
 
-            self.logger.info(f"Point buffer shapefiles created successfully at:")
+            self.logger.info("Point buffer shapefiles created successfully at:")
             self.logger.info(f"  - River basins: {river_basins_path}")
             self.logger.info(f"  - Catchment: {catchment_path}")
             self.logger.info(f"  - River network: {river_network_path}")
@@ -402,7 +402,7 @@ class CoastalWatershedDelineator(BaseGeofabricDelineator):
             # Create polygons from Voronoi regions
             regions = []
             for region in vor.regions:
-                if not -1 in region and len(region) > 0:  # Valid regions
+                if -1 not in region and len(region) > 0:  # Valid regions
                     polygon = [vor.vertices[i] for i in region]
                     if len(polygon) > 2:  # Valid polygon needs at least 3 points
                         regions.append(shapely.geometry.Polygon(polygon))
@@ -467,7 +467,7 @@ class CoastalWatershedDelineator(BaseGeofabricDelineator):
             # Create a convex hull around all basins and extend it outward
             convex_hull = river_basins.unary_union.convex_hull
             ext_distance = 0.1  # ~10km in decimal degrees
-            extended_hull = shapely.geometry.Polygon(convex_hull).buffer(ext_distance)
+            shapely.geometry.Polygon(convex_hull).buffer(ext_distance)
 
             # Use a buffer-based approach to divide the coastal strip
             coastal_geom = coastal_strip.geometry.unary_union
@@ -584,8 +584,8 @@ class CoastalWatershedDelineator(BaseGeofabricDelineator):
                 try:
                     # For newer geopandas versions
                     remaining_gdf = remaining_gdf.explode(index_parts=True).reset_index(drop=True)
-                except:
-                    # For older geopandas versions
+                except TypeError:
+                    # For older geopandas versions that don't support index_parts
                     remaining_gdf = remaining_gdf.explode().reset_index(drop=True)
 
                 # For each remaining polygon, find the nearest basin
@@ -749,7 +749,7 @@ class CoastalWatershedDelineator(BaseGeofabricDelineator):
         # Convert back to original CRS
         gru_gdf_merged = gru_gdf_utm.to_crs(gru_gdf.crs)
 
-        self.logger.info(f"GRU merging statistics:")
+        self.logger.info("GRU merging statistics:")
         self.logger.info(f"- Initial GRUs: {initial_count}")
         self.logger.info(f"- Merged {merged_count} small GRUs")
         self.logger.info(f"- Final GRUs: {len(gru_gdf_merged)}")

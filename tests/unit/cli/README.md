@@ -117,7 +117,6 @@ CLI-specific fixtures are defined in `conftest.py`:
 
 ### Component Fixtures
 
-- **`cli_manager`** - CLIArgumentManager with mocked submanagers
 - **`binary_manager`** - BinaryManager with mock tools
 - **`job_scheduler`** - JobScheduler instance
 - **`notebook_service`** - NotebookService instance
@@ -157,7 +156,7 @@ pytest tests/unit/cli/test_cli_argument_manager.py::TestCoordinateValidation::te
 ### Run with Coverage
 
 ```bash
-pytest tests/unit/cli/ --cov=src/symfluence/utils/cli --cov-report=term-missing
+pytest tests/unit/cli/ --cov=src/symfluence/cli --cov-report=term-missing
 ```
 
 ### Run with Markers

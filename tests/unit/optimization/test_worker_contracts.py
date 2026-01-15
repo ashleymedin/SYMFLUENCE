@@ -11,13 +11,11 @@ Workers are responsible for:
 """
 
 import pytest
-import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 import logging
-from unittest.mock import Mock, patch, MagicMock
-import time
+from unittest.mock import Mock
 
 # Mark all tests in this module
 pytestmark = [pytest.mark.unit, pytest.mark.optimization]
@@ -500,12 +498,13 @@ class TestFUSEWorkerContract:
 
     def test_fuse_worker_inherits_from_base(self):
         """Test that FUSEWorker inherits from BaseWorker."""
-        from symfluence.optimization.workers import FUSEWorker, BaseWorker
+        from symfluence.optimization.workers.fuse_worker import FUSEWorker
+        from symfluence.optimization.workers import BaseWorker
         assert issubclass(FUSEWorker, BaseWorker)
 
     def test_fuse_worker_has_required_methods(self):
         """Test that FUSEWorker has all required abstract methods."""
-        from symfluence.optimization.workers import FUSEWorker
+        from symfluence.optimization.workers.fuse_worker import FUSEWorker
         required_methods = ['apply_parameters', 'run_model', 'calculate_metrics']
         for method in required_methods:
             assert hasattr(FUSEWorker, method)

@@ -1,19 +1,33 @@
 """Unit tests for InitializationManager."""
 
 import pytest
-from unittest.mock import patch, MagicMock, mock_open, call
-from pathlib import Path
+from unittest.mock import patch
 import yaml
 
-from symfluence.cli.initialization_manager import InitializationManager
+from symfluence.cli.services import InitializationManager
 
 pytestmark = [pytest.mark.unit, pytest.mark.cli, pytest.mark.quick]
 
 
 @pytest.fixture
 def init_manager():
-    """Create InitializationManager instance for testing."""
-    return InitializationManager()
+    """Create InitializationManager instance for testing.
+
+    Injects a capture-friendly Console instance.
+    """
+    import sys
+    from symfluence.cli.console import Console, ConsoleConfig
+
+    # Configure console to use stdout/stderr which capsys captures
+    console_config = ConsoleConfig(
+        output_stream=sys.stdout,
+        error_stream=sys.stderr,
+        use_colors=False,
+        show_progress=False
+    )
+    console = Console(console_config)
+
+    return InitializationManager(console=console)
 
 
 @pytest.fixture
@@ -80,10 +94,19 @@ class TestListPresets:
 
     def test_list_presets_prints_output(self, init_manager, capsys):
         """Test list_presets prints preset information."""
+        import sys
+        from symfluence.cli.console import Console, ConsoleConfig
+
+        init_manager._console = Console(ConsoleConfig(
+            output_stream=sys.stdout,
+            error_stream=sys.stderr,
+            use_colors=False
+        ))
+
         init_manager.list_presets()
         captured = capsys.readouterr()
 
-        assert '📋 Available Presets:' in captured.out
+        assert 'Available Presets:' in captured.out
         assert 'fuse-provo' in captured.out
         assert 'summa-basic' in captured.out
 
@@ -93,20 +116,40 @@ class TestShowPreset:
 
     def test_show_preset_valid_name(self, init_manager, capsys):
         """Test show_preset displays preset information."""
+        import sys
+        from symfluence.cli.console import Console, ConsoleConfig
+
+        init_manager._console = Console(ConsoleConfig(
+            output_stream=sys.stdout,
+            error_stream=sys.stderr,
+            use_colors=False
+        ))
+
         init_manager.show_preset('fuse-provo')
         captured = capsys.readouterr()
 
-        assert '📄 Preset: fuse-provo' in captured.out
+        assert 'Preset: fuse-provo' in captured.out
         assert 'Description:' in captured.out
         assert 'Key Settings:' in captured.out
 
     def test_show_preset_invalid_name(self, init_manager, capsys):
         """Test show_preset handles invalid preset name."""
+        import sys
+        from symfluence.cli.console import Console, ConsoleConfig
+
+        init_manager._console = Console(ConsoleConfig(
+            output_stream=sys.stdout,
+            error_stream=sys.stderr,
+            use_colors=False
+        ))
+
         init_manager.show_preset('nonexistent')
         captured = capsys.readouterr()
 
-        assert '❌' in captured.out
-        assert 'Unknown preset' in captured.out
+        # The manager writes errors to its error_console which defaults to stderr
+        # Since we redirected error_stream to sys.stderr (captured by capsys),
+        # we check captured.err
+        assert 'Unknown preset' in captured.err or 'Unknown preset' in captured.out
 
 
 class TestParseCliOverrides:
@@ -342,7 +385,7 @@ class TestGenerateConfig:
         """Test generating minimal config."""
         config = init_manager.generate_config(
             preset_name=None,
-            cli_overrides={'domain': 'test', 'model': 'FUSE'},
+            cli_overrides={'domain': 'test', 'model': 'FUSE', 'forcing': 'ERA5'},
             minimal=True,
             comprehensive=False
         )

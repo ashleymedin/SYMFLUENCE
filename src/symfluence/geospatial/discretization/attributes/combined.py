@@ -1,3 +1,10 @@
+"""
+Combined multi-attribute discretization for HRU creation.
+
+Enables domain discretization using combinations of attributes such as
+elevation, soil class, land cover, aspect, and radiation simultaneously.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -30,9 +37,13 @@ def discretize(discretizer: "DomainDiscretizer", attributes: List[str]):
 
     # Get GRU shapefile
     default_name = f"{discretizer.domain_name}_riverBasins_{discretizer.delineation_suffix}.shp"
-    if discretizer.config.get("DELINEATE_COASTAL_WATERSHEDS") == True:
+    delineate_coastal = discretizer._get_config_value(
+        lambda: discretizer.config.domain.delineation.delineate_coastal_watersheds,
+        default=False
+    )
+    if delineate_coastal:
         default_name = f"{discretizer.domain_name}_riverBasins_with_coastal.shp"
-        
+
     gru_shapefile = discretizer._get_file_path(
         path_key="RIVER_BASINS_PATH",
         name_key="RIVER_BASINS_NAME",
@@ -94,12 +105,15 @@ def _get_raster_info_for_attributes(
 
         if attr_lower == "elevation":
             raster_path = discretizer._get_file_path(
-                path_key="DEM_PATH", 
+                path_key="DEM_PATH",
                 name_key="DEM_NAME",
-                default_subpath="attributes/elevation/dem", 
-                default_name=f"domain_{discretizer.config.get('DOMAIN_NAME')}_elv.tif"
+                default_subpath="attributes/elevation/dem",
+                default_name=f"domain_{discretizer.domain_name}_elv.tif"
             )
-            band_size = float(discretizer.config.get("ELEVATION_BAND_SIZE"))
+            band_size = float(discretizer._get_config_value(
+                lambda: discretizer.config.domain.elevation_band_size,
+                default=200.0
+            ))
 
             raster_info[attr] = {
                 "path": raster_path,
@@ -113,7 +127,7 @@ def _get_raster_info_for_attributes(
                 path_key="SOIL_CLASS_PATH",
                 name_key="SOIL_CLASS_NAME",
                 default_subpath="attributes/soilclass",
-                default_name=f"domain_{discretizer.config.get('DOMAIN_NAME')}_soil_classes.tif",
+                default_name=f"domain_{discretizer.domain_name}_soil_classes.tif",
             )
             raster_info[attr] = {
                 "path": raster_path,
@@ -126,7 +140,7 @@ def _get_raster_info_for_attributes(
                 path_key="LAND_CLASS_PATH",
                 name_key="LAND_CLASS_NAME",
                 default_subpath="attributes/landclass",
-                default_name=f"domain_{discretizer.config.get('DOMAIN_NAME')}_land_classes.tif",
+                default_name=f"domain_{discretizer.domain_name}_land_classes.tif",
             )
             raster_info[attr] = {
                 "path": raster_path,
@@ -148,10 +162,10 @@ def _get_raster_info_for_attributes(
                     "Annual radiation raster not found. Calculating radiation..."
                 )
                 dem_raster = discretizer._get_file_path(
-                    path_key="DEM_PATH", 
+                    path_key="DEM_PATH",
                     name_key="DEM_NAME",
-                    default_subpath="attributes/elevation/dem", 
-                    default_name=f"domain_{discretizer.config.get('DOMAIN_NAME')}_elv.tif"
+                    default_subpath="attributes/elevation/dem",
+                    default_name=f"domain_{discretizer.domain_name}_elv.tif"
                 )
                 radiation_raster = calculate_annual_radiation(
                     dem_raster, radiation_raster, discretizer.logger
@@ -159,9 +173,10 @@ def _get_raster_info_for_attributes(
                 if radiation_raster is None:
                     raise ValueError("Failed to calculate annual radiation")
 
-            radiation_class_number = int(
-                discretizer.config.get("RADIATION_CLASS_NUMBER")
-            )
+            radiation_class_number = int(discretizer._get_config_value(
+                lambda: discretizer.config.domain.radiation_class_number,
+                default=1
+            ))
 
             raster_info[attr] = {
                 "path": radiation_raster,
@@ -171,9 +186,9 @@ def _get_raster_info_for_attributes(
             }
         elif attr_lower == "aspect":
             aspect_raster = discretizer._get_file_path(
-                path_key="ASPECT_PATH", 
+                path_key="ASPECT_PATH",
                 name_key="ASPECT_NAME",
-                default_subpath="attributes/aspect", 
+                default_subpath="attributes/aspect",
                 default_name="aspect.tif"
             )
 
@@ -181,15 +196,19 @@ def _get_raster_info_for_attributes(
             if not aspect_raster.exists():
                 discretizer.logger.info("Aspect raster not found. Calculating aspect...")
                 dem_raster = discretizer._get_file_path(
-                    path_key="DEM_PATH", 
+                    path_key="DEM_PATH",
                     name_key="DEM_NAME",
-                    default_subpath="attributes/elevation/dem", 
-                    default_name=f"domain_{discretizer.config.get('DOMAIN_NAME')}_elv.tif"
+                    default_subpath="attributes/elevation/dem",
+                    default_name=f"domain_{discretizer.domain_name}_elv.tif"
                 )
+                aspect_class_number = int(discretizer._get_config_value(
+                    lambda: discretizer.config.domain.aspect_class_number,
+                    default=8
+                ))
                 aspect_raster = calculate_aspect(
                     dem_raster,
                     aspect_raster,
-                    int(discretizer.config.get("ASPECT_CLASS_NUMBER", 8)),
+                    aspect_class_number,
                     discretizer.logger,
                 )
                 if aspect_raster is None:
@@ -282,7 +301,7 @@ def _create_combined_attribute_hrus(
             continue
 
         # Create combined valid mask (pixels that are valid in all rasters)
-        combined_valid_mask = np.ones(common_shape, dtype=bool)
+        combined_valid_mask = np.full(common_shape, True, dtype=bool)  # type: ignore[type-var]
         for attr, data in raster_data.items():
             raster_array = data["data"]
             nodata_value = data["nodata"]
@@ -292,11 +311,11 @@ def _create_combined_attribute_hrus(
             else:
                 valid_mask = (
                     ~np.isnan(raster_array)
-                    if raster_array.dtype == np.float64
+                    if raster_array.dtype == np.float64 or raster_array.dtype == np.float32
                     else np.ones_like(raster_array, dtype=bool)
                 )
 
-            combined_valid_mask &= valid_mask
+            combined_valid_mask = np.logical_and(combined_valid_mask, valid_mask)
 
         if not np.any(combined_valid_mask):
             discretizer.logger.warning(f"No valid pixels found in GRU {gru_id}")

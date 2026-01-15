@@ -77,14 +77,14 @@ class ToolExecutor:
             SYMFLUENCE instance
         """
         config_key = str(Path(config_path).absolute())
-        
+
         # Check cache (ignore debug_mode for cache hits, but update if requested)
         if config_key in self._sf_cache:
             sf = self._sf_cache[config_key]
             if debug_mode:
                 sf.debug_mode = True
             return sf
-            
+
         # Create new instance
         from symfluence.core import SYMFLUENCE
         sf = SYMFLUENCE(config_path, debug_mode=debug_mode)
@@ -103,7 +103,7 @@ class ToolExecutor:
             ToolResult with execution status and output
         """
         from symfluence.cli.commands.workflow_commands import WorkflowCommands
-        
+
         try:
             # Workflow step execution
             if tool_name in WorkflowCommands.WORKFLOW_STEPS:
@@ -124,6 +124,10 @@ class ToolExecutor:
             # Pour point setup
             elif tool_name == 'setup_pour_point_workflow':
                 return self._execute_pour_point_setup(arguments)
+
+            # Code operations
+            elif tool_name in ['read_file', 'list_directory', 'analyze_codebase', 'propose_code_change', 'show_staged_changes', 'run_tests', 'create_pr_proposal']:
+                return self._execute_code_operations(tool_name, arguments)
 
             # SLURM operations
             elif tool_name in ['submit_slurm_job', 'monitor_slurm_job']:
@@ -162,7 +166,7 @@ class ToolExecutor:
         """
         from symfluence.cli.commands.workflow_commands import WorkflowCommands
         from argparse import Namespace
-        
+
         try:
             config_path = arguments.get('config_path')
             if not config_path:
@@ -185,7 +189,7 @@ class ToolExecutor:
                     visualise=arguments.get('visualise', False),
                     force_rerun=arguments.get('force_rerun', False)
                 )
-                
+
                 exit_code = WorkflowCommands.run_step(args)
 
                 output = captured_output.getvalue()
@@ -220,7 +224,7 @@ class ToolExecutor:
         """
         from symfluence.cli.commands.binary_commands import BinaryCommands
         from argparse import Namespace
-        
+
         try:
             old_stdout = sys.stdout
             sys.stdout = captured_output = io.StringIO()
@@ -230,7 +234,7 @@ class ToolExecutor:
                     debug=arguments.get('debug', False),
                     verbose=arguments.get('verbose', True)
                 )
-                
+
                 exit_code = 1
                 if operation == 'install_executables':
                     args.tools = arguments.get('tools', [])
@@ -275,7 +279,7 @@ class ToolExecutor:
         """
         from symfluence.cli.commands.config_commands import ConfigCommands
         from argparse import Namespace
-        
+
         try:
             old_stdout = sys.stdout
             sys.stdout = captured_output = io.StringIO()
@@ -284,7 +288,7 @@ class ToolExecutor:
                 args = Namespace(
                     debug=arguments.get('debug', False)
                 )
-                
+
                 exit_code = 1
                 if operation == 'list_config_templates':
                     exit_code = ConfigCommands.list_templates(args)
@@ -330,7 +334,7 @@ class ToolExecutor:
         """
         from symfluence.cli.commands.workflow_commands import WorkflowCommands
         from argparse import Namespace
-        
+
         try:
             old_stdout = sys.stdout
             sys.stdout = captured_output = io.StringIO()
@@ -341,7 +345,7 @@ class ToolExecutor:
                     config=arguments.get('config_path'),
                     visualise=False
                 )
-                
+
                 exit_code = 1
                 if operation == 'list_workflow_steps':
                     exit_code = WorkflowCommands.list_steps(args)
@@ -387,7 +391,7 @@ class ToolExecutor:
         """
         from symfluence.cli.commands.project_commands import ProjectCommands
         from argparse import Namespace
-        
+
         try:
             old_stdout = sys.stdout
             sys.stdout = captured_output = io.StringIO()
@@ -398,7 +402,7 @@ class ToolExecutor:
                 if arguments.get('bounding_box'):
                     b = arguments['bounding_box']
                     bbox = f"{b['lat_max']}/{b['lon_min']}/{b['lat_min']}/{b['lon_max']}"
-                
+
                 args = Namespace(
                     debug=arguments.get('debug', False),
                     coordinates=coords,
@@ -407,7 +411,7 @@ class ToolExecutor:
                     bounding_box_coords=bbox,
                     experiment_id=arguments.get('experiment_id')
                 )
-                
+
                 exit_code = ProjectCommands.pour_point(args)
 
                 output = captured_output.getvalue()
@@ -426,6 +430,133 @@ class ToolExecutor:
                 success=False,
                 output="",
                 error=str(e),
+                exit_code=1
+            )
+
+    def _execute_code_operations(self, operation: str, arguments: Dict[str, Any]) -> ToolResult:
+        """
+        Execute code operation tools for agent self-awareness.
+
+        Args:
+            operation: Operation name (read_file, list_directory, analyze_codebase, propose_code_change, etc.)
+            arguments: Operation-specific arguments
+
+        Returns:
+            ToolResult with execution status
+        """
+        from symfluence.agent.file_operations import FileOperations
+        from symfluence.agent.code_analyzer import CodeAnalyzer
+        from symfluence.agent.pr_manager import PRManager
+        from symfluence.agent.test_runner import TestRunner
+
+        try:
+            if operation == 'read_file':
+                file_ops = FileOperations()
+                success, output = file_ops.read_file(
+                    arguments.get('file_path'),
+                    start_line=arguments.get('start_line'),
+                    end_line=arguments.get('end_line')
+                )
+                return ToolResult(
+                    success=success,
+                    output=output,
+                    error=None if success else output,
+                    exit_code=0 if success else 1
+                )
+
+            elif operation == 'list_directory':
+                file_ops = FileOperations()
+                success, output = file_ops.list_directory(
+                    directory=arguments.get('directory', '.'),
+                    recursive=arguments.get('recursive', False),
+                    pattern=arguments.get('pattern')
+                )
+                return ToolResult(
+                    success=success,
+                    output=output,
+                    error=None if success else output,
+                    exit_code=0 if success else 1
+                )
+
+            elif operation == 'analyze_codebase':
+                analyzer = CodeAnalyzer()
+                success, output = analyzer.analyze_project_structure(
+                    depth=arguments.get('depth', 'quick')
+                )
+                return ToolResult(
+                    success=success,
+                    output=output,
+                    error=None if success else output,
+                    exit_code=0 if success else 1
+                )
+
+            elif operation == 'propose_code_change':
+                pr_mgr = PRManager()
+                success, output = pr_mgr.propose_code_change(
+                    file_path=arguments.get('file_path'),
+                    old_code=arguments.get('old_code'),
+                    new_code=arguments.get('new_code'),
+                    description=arguments.get('description'),
+                    reason=arguments.get('reason', 'improvement')
+                )
+                return ToolResult(
+                    success=success,
+                    output=output,
+                    error=None if success else output,
+                    exit_code=0 if success else 1
+                )
+
+            elif operation == 'show_staged_changes':
+                pr_mgr = PRManager()
+                success, output = pr_mgr.show_staged_changes()
+                return ToolResult(
+                    success=success,
+                    output=output,
+                    error=None if success else output,
+                    exit_code=0 if success else 1
+                )
+
+            elif operation == 'run_tests':
+                test_runner = TestRunner()
+                success, output = test_runner.run_tests(
+                    test_pattern=arguments.get('test_pattern'),
+                    files=arguments.get('files'),
+                    verbose=arguments.get('verbose', False)
+                )
+                return ToolResult(
+                    success=success,
+                    output=output,
+                    error=None if success else output,
+                    exit_code=0 if success else 1
+                )
+
+            elif operation == 'create_pr_proposal':
+                pr_mgr = PRManager()
+                success, output = pr_mgr.create_pr_proposal(
+                    title=arguments.get('title'),
+                    description=arguments.get('description'),
+                    reason=arguments.get('reason', 'improvement')
+                )
+                return ToolResult(
+                    success=success,
+                    output=output,
+                    error=None if success else output,
+                    exit_code=0 if success else 1
+                )
+
+            else:
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Unknown code operation: {operation}",
+                    exit_code=1
+                )
+
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Code operation failed: {str(e)}",
                 exit_code=1
             )
 
@@ -476,10 +607,10 @@ class ToolExecutor:
                         error="Tool registry not available",
                         exit_code=1
                     )
-                
+
                 tools_by_category = self.tool_registry.get_tools_by_category()
                 tools_info = "Available Tools:\n\n"
-                
+
                 for category, tools in tools_by_category.items():
                     tools_info += f"{category}:\n"
                     for tool in tools:
@@ -524,6 +655,13 @@ Optional steps:
                     error=None,
                     exit_code=0
                 )
+
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Unknown meta operation: {operation}",
+                exit_code=1
+            )
 
         except Exception as e:
             return ToolResult(

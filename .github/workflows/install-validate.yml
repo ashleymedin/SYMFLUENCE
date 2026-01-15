@@ -75,10 +75,14 @@ jobs:
       - name: Install system build deps
         run: |
           set -e
+          # Add the UbuntuGIS PPA to get a stable, compatible suite of geospatial libraries
           sudo apt-get update
           sudo apt-get install -y software-properties-common
           sudo add-apt-repository -y ppa:ubuntugis/ppa
           sudo apt-get update
+
+          # Now install all dependencies.
+          # The GDAL and other related packages will now be pulled from the stable PPA.
           sudo apt-get install -y \
             build-essential gfortran cmake make pkg-config \
             ninja-build autoconf automake libtool \
@@ -87,6 +91,8 @@ jobs:
             gdal-bin libgdal-dev libproj-dev \
             libnetcdf-dev libnetcdff-dev \
             libhdf5-dev hdf5-tools libudunits2-dev \
+            libfl-dev libbsd-dev \
+            r-base libcurl4-openssl-dev \
             python3-dev python3-pip python3-numpy python3-gdal cdo
           mpicc --version
           mpirun --version
@@ -154,14 +160,18 @@ jobs:
           CC: mpicc
           CXX: mpicxx
           FC: gfortran
+          PYTHONIOENCODING: utf-8
         run: |
           set -e
           chmod +x ./symfluence
           ./symfluence --install
-          
+
           # Install CPU-only torch to save space (Linux only)
           source venv/bin/activate
           pip install torch --index-url https://download.pytorch.org/whl/cpu --force-reinstall
+
+          # Install test dependencies (pytest moved to optional deps)
+          pip install -e ".[test]"
 
 
       - name: Add external tools to PATH
@@ -224,8 +234,7 @@ jobs:
           echo "Running test level: ${TEST_LEVEL}"
 
       - name: Run validation tests
-        env:
-          PYTHONPATH: ${{ env.SYMFLUENCE_CODE }}:${{ env.SYMFLUENCE_CODE }}/tests
+        # Note: PYTHONPATH removed - editable install handles imports
         run: |
           set -e
 
@@ -417,3 +426,251 @@ jobs:
             pytest*.log
             .pytest_cache/
           if-no-files-found: ignore
+      # Note: Workflow status API validation is performed in step_tests job
+      # which creates a proper test config file first
+
+  step_tests:
+    needs: install-validate
+    runs-on: ubuntu-22.04
+    env:
+      TZ: UTC
+      CI: "1"
+      NONINTERACTIVE: "1"
+      SYMFLUENCE_CODE: ${{ github.workspace }}
+      # Put CI working data outside the repo tree
+      SYMFLUENCE_DATA: ${{ github.workspace }}/.sym_data
+      DOMAIN: Bow_at_Banff
+      DOMAIN_DEF: delineate
+    steps:
+      - name: Free up disk space
+        run: |
+          # Remove unnecessary pre-installed software to free ~20GB
+          echo "Disk space before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /usr/share/swift
+          sudo docker image prune --all --force || true
+          sudo apt-get clean
+          echo "Disk space after cleanup:"
+          df -h
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system dependencies
+        run: |
+          set -e
+          # Add the UbuntuGIS PPA to get a stable, compatible suite of geospatial libraries
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:ubuntugis/ppa
+          sudo apt-get update
+
+          # Install all build dependencies needed for tool compilation
+          sudo apt-get install -y \
+            build-essential gfortran cmake make pkg-config \
+            ninja-build autoconf automake libtool \
+            git wget curl unzip tar \
+            openmpi-bin libopenmpi-dev \
+            gdal-bin libgdal-dev libproj-dev \
+            libnetcdf-dev libnetcdff-dev \
+            libhdf5-dev hdf5-tools libudunits2-dev \
+            libfl-dev libbsd-dev \
+            r-base libcurl4-openssl-dev \
+            python3-dev python3-pip python3-numpy python3-gdal cdo
+
+      - name: Configure compiler and library env
+        run: |
+          set -e
+          echo "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig:${PKG_CONFIG_PATH}" >> $GITHUB_ENV
+          NETCDF_PREFIX=$(nc-config --prefix 2>/dev/null || echo /usr)
+          NETCDF_LIBDIR=$(nc-config --libdir 2>/dev/null || echo /usr/lib/x86_64-linux-gnu)
+          NETCDF_INC=$(nc-config --includedir 2>/dev/null || echo /usr/include)
+          echo "NETCDF=${NETCDF_PREFIX}" >> $GITHUB_ENV
+          echo "NETCDF_FORTRAN=$(nf-config --prefix 2>/dev/null || echo ${NETCDF_PREFIX})" >> $GITHUB_ENV
+          echo "NETCDF_DIR=${NETCDF_PREFIX}" >> $GITHUB_ENV
+          echo "NETCDF_LIBDIR=${NETCDF_LIBDIR}" >> $GITHUB_ENV
+          echo "NETCDF_INCLUDE=${NETCDF_INC}" >> $GITHUB_ENV
+          echo "HDF5_ROOT=/usr/lib/x86_64-linux-gnu/hdf5/serial" >> $GITHUB_ENV
+          echo "HDF5_LIBDIR=/usr/lib/x86_64-linux-gnu/hdf5/serial" >> $GITHUB_ENV
+          echo "HDF5_INCLUDE_DIR=/usr/include/hdf5/serial" >> $GITHUB_ENV
+          echo "UDUNITS2_DIR=$(pkg-config --variable=prefix udunits2 2>/dev/null || echo /usr)" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=${NETCDF_LIBDIR}:${HDF5_LIBDIR}:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+          echo "LIBRARY_PATH=${NETCDF_LIBDIR}:${HDF5_LIBDIR}:${LIBRARY_PATH}" >> $GITHUB_ENV
+          echo "CC=mpicc"  >> $GITHUB_ENV
+          echo "CXX=mpicxx" >> $GITHUB_ENV
+          NF_FLIBS="$(nf-config --flibs 2>/dev/null || echo "-L${NETCDF_LIBDIR} -lnetcdff")"
+          NC_LIBS="$(nc-config --libs  2>/dev/null || echo "-L${NETCDF_LIBDIR} -lnetcdf")"
+          H5_LIBS="$(pkg-config --libs hdf5_hl hdf5 2>/dev/null || echo "-L${HDF5_LIBDIR} -lhdf5_hl -lhdf5")"
+          echo "FUSE_LIBRARIES=${NF_FLIBS} ${NC_LIBS} ${H5_LIBS}" >> $GITHUB_ENV
+          NF_FFLAGS="$(nf-config --fflags 2>/dev/null || true)"
+          NC_CFLAGS="$(nc-config --cflags 2>/dev/null || true)"
+          H5_CFLAGS="$(pkg-config --cflags hdf5 2>/dev/null || echo "-I${HDF5_INCLUDE_DIR}")"
+          echo "FUSE_INCLUDE=${NC_CFLAGS} ${NF_FFLAGS} ${H5_CFLAGS} -I${NETCDF_INCLUDE}" >> $GITHUB_ENV
+          echo "FUSE_FFLAGS_EXTRA=-fallow-argument-mismatch -std=legacy -ffree-line-length-none -fmax-errors=0" >> $GITHUB_ENV
+
+      - name: Create /usr/lib64 symlinks for legacy builds (HDF5/NetCDF)
+        run: |
+          set -e
+          sudo mkdir -p /usr/lib64
+          for so in /usr/lib/x86_64-linux-gnu/libnetcdf.so* /usr/lib/x86_64-linux-gnu/libnetcdff.so*; do
+            [ -e "$so" ] || continue; base=$(basename "$so")
+            [ -e "/usr/lib64/${base}" ] || sudo ln -s "$so" "/usr/lib64/${base}" || true
+          done
+          for so in /usr/lib/x86_64-linux-gnu/hdf5/serial/libhdf5.so* \
+                    /usr/lib/x86_64-linux-gnu/hdf5/serial/libhdf5_hl.so* \
+                    /usr/lib/x86_64-linux-gnu/hdf5/serial/libhdf5_fortran.so* \
+                    /usr/lib/x86_64-linux-gnu/hdf5/serial/libhdf5hl_fortran.so*; do
+            [ -e "$so" ] || continue; base=$(basename "$so")
+            [ -e "/usr/lib64/${base}" ] || sudo ln -s "$so" "/usr/lib64/${base}" || true
+          done
+
+      # Reuse your existing install procedure
+      - name: Install SYMFLUENCE (wrapper)
+        env:
+          CC: mpicc
+          CXX: mpicxx
+          FC: gfortran
+          PYTHONIOENCODING: utf-8
+        run: |
+          set -e
+          chmod +x ./symfluence
+          ./symfluence --install
+
+          # Install test dependencies (pytest moved to optional deps)
+          source venv/bin/activate
+          pip install -e ".[test]"
+
+      - name: Add external tools to PATH
+        run: |
+          set -e
+          # Add SUMMA
+          echo "${{ env.SYMFLUENCE_DATA }}/installs/summa/bin" >> $GITHUB_PATH
+          # Add mizuRoute
+          echo "${{ env.SYMFLUENCE_DATA }}/installs/mizuRoute/route/bin" >> $GITHUB_PATH
+          # Add TauDEM
+          echo "${{ env.SYMFLUENCE_DATA }}/installs/TauDEM/bin" >> $GITHUB_PATH
+
+          # Add SUNDIALS library path for SUMMA runtime dependencies
+          SUNDIALS_LIB="${{ env.SYMFLUENCE_DATA }}/installs/sundials/install/sundials/lib"
+          if [ -d "$SUNDIALS_LIB" ]; then
+            echo "LD_LIBRARY_PATH=$SUNDIALS_LIB:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+            echo "✓ Added SUNDIALS library path: $SUNDIALS_LIB"
+          else
+            echo "⚠ SUNDIALS library directory not found at: $SUNDIALS_LIB"
+            ls -la "${{ env.SYMFLUENCE_DATA }}/installs/sundials/" || true
+          fi
+
+      - name: Activate venv for subsequent steps
+        run: |
+          set -e
+          echo "VIRTUAL_ENV=${{ env.SYMFLUENCE_CODE }}/venv" >> $GITHUB_ENV
+          echo "${{ env.SYMFLUENCE_CODE }}/venv/bin" >> $GITHUB_PATH
+
+      - name: Create CI config for Bow at Banff
+        run: |
+          set -e
+          mkdir -p 0_config_files "${SYMFLUENCE_DATA}"
+          cat > 0_config_files/config_ci_bow.yaml <<'YAML'
+          SYMFLUENCE_CODE_DIR: "${{ env.SYMFLUENCE_CODE }}"
+          SYMFLUENCE_DATA_DIR: "${{ env.SYMFLUENCE_DATA }}"
+          DOMAIN_NAME: "${{ env.DOMAIN }}"
+          DOMAIN_DEFINITION_METHOD: "${{ env.DOMAIN_DEF }}"
+          DOMAIN_DISCRETIZATION: lumped
+          EXPERIMENT_ID: ci_test_001
+          EXPERIMENT_TIME_START: 2004-01-01 01:00
+          EXPERIMENT_TIME_END: 2004-01-31 23:00
+          HYDROLOGICAL_MODEL: SUMMA
+          FORCING_DATASET: ERA5
+          LOG_LEVEL: "INFO"
+          YAML
+
+      - name: Step 1 — setup_project (creates domain scaffolding)
+        run: |
+          set -e
+          ./symfluence workflow step setup_project --config 0_config_files/config_ci_bow.yaml
+
+      - name: Step 2 — copy repo data into created domain folder
+        run: |
+          set -e
+          # Try both old (src/data) and new (tests/data) locations
+          SRC=""
+          if [ -d "./tests/data/domain_${DOMAIN}" ]; then
+            SRC="./tests/data/domain_${DOMAIN}"
+          elif [ -d "./src/data/domain_${DOMAIN}" ]; then
+            SRC="./src/data/domain_${DOMAIN}"
+          else
+            echo "⚠️  Test data not found for domain: ${DOMAIN}"
+            echo "   Checked: ./tests/data/domain_${DOMAIN} and ./src/data/domain_${DOMAIN}"
+            echo "   Skipping data copy step"
+            SRC=""
+          fi
+
+          if [ -n "${SRC}" ]; then
+            DEST="${SYMFLUENCE_DATA}/domain_${DOMAIN}"
+            mkdir -p "${DEST}"
+            # Copy everything (shapefiles, any sidecars, etc.)
+            cp -a "${SRC}/." "${DEST}/" || true
+            echo "Copied data into ${DEST}"
+            ls -R "${DEST}" || true
+          fi
+
+      - name: Step 3 — run define_domain using CLI (if pour_point data available)
+        run: |
+          set -e
+          DOMAIN_DIR="${SYMFLUENCE_DATA}/domain_${DOMAIN}"
+          POUR_POINT_FILE="${DOMAIN_DIR}/shapefiles/pour_point/${DOMAIN}_pourPoint.shp"
+
+          if [ -f "${POUR_POINT_FILE}" ]; then
+            echo "✅ Pour point shapefile found, running define_domain..."
+            ./symfluence workflow step define_domain --config 0_config_files/config_ci_bow.yaml
+          else
+            echo "⚠️  Pour point shapefile not found at: ${POUR_POINT_FILE}"
+            echo "   Skipping define_domain step (test data not available)"
+            echo "   To enable this step, provide pour_point shapefiles in tests/data/domain_${DOMAIN}/shapefiles/pour_point/"
+          fi
+
+      - name: Assertions — check outputs (if available)
+        run: |
+          set -e
+          DOMAIN_DIR="${SYMFLUENCE_DATA}/domain_${DOMAIN}"
+
+          # Check if workflow logs exist (always created)
+          if ls "_workLog_${DOMAIN}" >/dev/null 2>&1; then
+            echo "✅ Workflow logs found"
+          else
+            echo "⚠️  No workflow logs found (define_domain may have been skipped)"
+          fi
+
+          # Check river basins only if pour_point was available
+          RIV_DIR="${DOMAIN_DIR}/shapefiles/river_basins"
+          if ls "${RIV_DIR}/${DOMAIN}_riverBasins_"*.shp >/dev/null 2>&1; then
+            echo "✅ River basins shapefile found"
+          else
+            echo "⚠️  River basins shapefile not found (define_domain may have been skipped)"
+          fi
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: domain-define-minimal-logs
+          path: |
+            _workLog_${{ env.DOMAIN }}/**
+            ${{ env.SYMFLUENCE_DATA }}/domain_${{ env.DOMAIN }}/**/*
+          if-no-files-found: warn

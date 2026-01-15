@@ -7,7 +7,6 @@ and river network characteristics.
 
 import numpy as np
 import pandas as pd
-from pathlib import Path
 from typing import Dict, Any
 
 from .base import BaseAttributeProcessor
@@ -23,7 +22,7 @@ class HydrologyProcessor(BaseAttributeProcessor):
         Returns:
             Dictionary of water balance metrics
         """
-        results = {}
+        results: Dict[str, Any] = {}
 
         # Look for required data
         precip_path = self.project_dir / "forcing" / f"{self.domain_name}_precipitation.csv"
@@ -133,8 +132,8 @@ class HydrologyProcessor(BaseAttributeProcessor):
                             result = minimize(objective, [2.6], bounds=[(0.5, 10.0)])
                             if result.success:
                                 results["budyko_w_parameter"] = result.x[0]
-                        except:
-                            pass
+                        except (ValueError, RuntimeError):
+                            pass  # Optimization may fail for certain data, non-critical
 
         except Exception as e:
             self.logger.error(f"Error calculating water balance: {str(e)}")
@@ -148,7 +147,7 @@ class HydrologyProcessor(BaseAttributeProcessor):
         Returns:
             Dictionary of streamflow signature metrics
         """
-        results = {}
+        results: Dict[str, Any] = {}
 
         streamflow_path = self.project_dir / "observations" / "streamflow" / "preprocessed" / f"{self.domain_name}_streamflow_processed.csv"
 
@@ -158,7 +157,7 @@ class HydrologyProcessor(BaseAttributeProcessor):
         try:
             streamflow_df = pd.read_csv(streamflow_path, parse_dates=['date'])
             flow_col = 'flow_cms' if 'flow_cms' in streamflow_df.columns else 'flow'
-            flow = streamflow_df[flow_col].dropna().values
+            flow = np.asarray(streamflow_df[flow_col].dropna().values)
 
             if len(flow) == 0:
                 return results
@@ -202,7 +201,7 @@ class HydrologyProcessor(BaseAttributeProcessor):
         Returns:
             Dictionary of baseflow metrics
         """
-        results = {}
+        results: Dict[str, Any] = {}
 
         try:
             import baseflow
@@ -261,7 +260,7 @@ class HydrologyProcessor(BaseAttributeProcessor):
         Returns:
             Enhanced results with network metrics
         """
-        results = {}
+        results: Dict[str, Any] = {}
 
         # Calculate bifurcation ratio from stream orders
         stream_orders = {k: v for k, v in current_results.items() if 'stream_order_' in k and '_count' in k}
@@ -302,7 +301,7 @@ class HydrologyProcessor(BaseAttributeProcessor):
         Returns:
             Dictionary of hydrological attributes
         """
-        results = {}
+        results: Dict[str, Any] = {}
 
         # Water balance
         wb_results = self.calculate_water_balance()

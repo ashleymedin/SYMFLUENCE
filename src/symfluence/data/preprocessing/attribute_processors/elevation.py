@@ -167,10 +167,10 @@ class ElevationProcessor(BaseAttributeProcessor):
                 'circmean': calc_circmean
             }
 
-            try:
-                from scipy.stats import circstd
+            from importlib.util import find_spec
+            if find_spec("scipy"):
                 custom_stats['circstd'] = calc_circstd
-            except ImportError:
+            else:
                 self.logger.warning("scipy.stats.circstd not available, skipping circular std")
 
             zonal_out = zonal_stats(
@@ -194,10 +194,10 @@ class ElevationProcessor(BaseAttributeProcessor):
         if zonal_out:
             for i, zonal_result in enumerate(zonal_out):
                 # Use HRU ID as key if available, otherwise use index
-                is_lumped = self.config.get('DOMAIN_DEFINITION_METHOD') == 'lumped'
+                is_lumped = self._get_config_value(lambda: self.config.domain.definition_method, dict_key='DOMAIN_DEFINITION_METHOD') == 'lumped'
                 if not is_lumped:
                     catchment = gpd.read_file(self.catchment_path)
-                    hru_id_field = self.config.get('CATCHMENT_SHP_HRUID', 'HRU_ID')
+                    hru_id_field = self._get_config_value(lambda: self.config.paths.catchment_hruid, default='HRU_ID', dict_key='CATCHMENT_SHP_HRUID')
                     hru_id = catchment.iloc[i][hru_id_field]
                     key_prefix = f"HRU_{hru_id}_"
                 else:

@@ -23,10 +23,17 @@ from .system import SystemConfig
 from .domain import DomainConfig, DelineationConfig
 
 # Data configs
-from .data import DataConfig
+from .data import (
+    DataConfig,
+    GeospatialConfig,
+    SoilGridsConfig,
+    MODISLandcoverConfig,
+    NLCDConfig,
+    NASADEMConfig,
+)
 
 # Forcing configs
-from .forcing import ForcingConfig, NexConfig, EMEarthConfig
+from .forcing import ForcingConfig, NexConfig, EMEarthConfig, ERA5Config
 
 # Model configs
 from .model_configs import (
@@ -39,6 +46,8 @@ from .model_configs import (
     MESHConfig,
     MizuRouteConfig,
     LSTMConfig,
+    RHESSysConfig,
+    GNNConfig,
 )
 
 # Optimization configs
@@ -50,7 +59,6 @@ from .optimization import (
     SCEUAConfig,
     NSGA2Config,
     DPEConfig,
-    LargeDomainConfig,
     EmulationConfig,
 )
 
@@ -62,8 +70,10 @@ from .evaluation import (
     FluxNetConfig,
     USGSGWConfig,
     SMAPConfig,
+    ISMNConfig,
     GRACEConfig,
     MODISSnowConfig,
+    MODISETConfig,
     AttributesConfig,
 )
 
@@ -81,10 +91,16 @@ __all__ = [
     "DelineationConfig",
     # Data
     "DataConfig",
+    "GeospatialConfig",
+    "SoilGridsConfig",
+    "MODISLandcoverConfig",
+    "NLCDConfig",
+    "NASADEMConfig",
     # Forcing
     "ForcingConfig",
     "NexConfig",
     "EMEarthConfig",
+    "ERA5Config",
     # Models
     "ModelConfig",
     "SUMMAConfig",
@@ -95,6 +111,8 @@ __all__ = [
     "MESHConfig",
     "MizuRouteConfig",
     "LSTMConfig",
+    "RHESSysConfig",
+    "GNNConfig",
     # Optimization
     "OptimizationConfig",
     "PSOConfig",
@@ -103,7 +121,6 @@ __all__ = [
     "SCEUAConfig",
     "NSGA2Config",
     "DPEConfig",
-    "LargeDomainConfig",
     "EmulationConfig",
     # Evaluation
     "EvaluationConfig",
@@ -112,8 +129,10 @@ __all__ = [
     "FluxNetConfig",
     "USGSGWConfig",
     "SMAPConfig",
+    "ISMNConfig",
     "GRACEConfig",
     "MODISSnowConfig",
+    "MODISETConfig",
     "AttributesConfig",
     # Paths
     "PathsConfig",

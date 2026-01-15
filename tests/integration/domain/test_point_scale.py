@@ -9,13 +9,12 @@ import pytest
 import requests
 import shutil
 import zipfile
-import yaml
 from pathlib import Path
 
 # Import SYMFLUENCE - this should work now since we added the path
 from symfluence import SYMFLUENCE
-from utils.helpers import load_config_template, write_config
-from utils.geospatial import (
+from test_helpers.helpers import load_config_template, write_config
+from test_helpers.geospatial import (
     assert_shapefile_signature_matches,
     load_shapefile_signature,
 )

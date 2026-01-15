@@ -12,11 +12,9 @@ Tests for the shared model runner infrastructure including:
 """
 
 import pytest
-from pathlib import Path
-from unittest.mock import Mock, MagicMock, patch, mock_open
+from unittest.mock import Mock, patch
 import subprocess
-import tempfile
-import shutil
+import logging
 
 from symfluence.models.base.base_runner import BaseModelRunner
 from symfluence.core.config.models import SymfluenceConfig
@@ -99,7 +97,7 @@ class TestGetInstallPath:
     def test_custom_path(self, runner, temp_dir):
         """Test custom installation path from config."""
         custom_path = (temp_dir / 'custom_install').resolve()
-        
+
         # Re-init runner with custom config
         config = _create_config(temp_dir, {'TEST_INSTALL_PATH': str(custom_path)})
         runner = ConcreteModelRunner(config, runner.logger)
@@ -115,10 +113,10 @@ class TestGetInstallPath:
         """Test that None config value uses default path."""
         # By default the key is missing in base_config, which is effectively None/default behavior
         # But let's be explicit with None if possible, or just rely on absence
-        
+
         # In SymfluenceConfig, if key is not defined, it won't be in config_dict unless it's a model field
         # For TEST_INSTALL_PATH, it's an extra field.
-        
+
         result = runner.get_install_path(
             'TEST_INSTALL_PATH',
             'installs/test_model/bin'
@@ -171,7 +169,7 @@ class TestExecuteModelSubprocess:
             )
 
             assert result.returncode == 0
-            mock_logger.info.assert_called_with("Model execution completed successfully")
+            mock_logger.log.assert_any_call(logging.INFO, "Model execution completed successfully")
 
     def test_custom_success_message(self, runner, temp_dir, mock_logger):
         """Test custom success message."""
@@ -189,7 +187,7 @@ class TestExecuteModelSubprocess:
                 success_message=custom_message
             )
 
-            mock_logger.info.assert_called_with(custom_message)
+            mock_logger.log.assert_any_call(logging.INFO, custom_message)
 
     def test_nonzero_return_code_with_check_false(self, runner, temp_dir, mock_logger):
         """Test non-zero return code when check=False."""
@@ -373,7 +371,7 @@ class TestGetConfigPath:
     def test_custom_path(self, runner, temp_dir):
         """Test config path resolution with custom path."""
         custom_path = (temp_dir / 'custom_settings').resolve()
-        
+
         # Re-init
         config = _create_config(temp_dir, {'TEST_CONFIG_PATH': str(custom_path)})
         runner = ConcreteModelRunner(config, runner.logger)

@@ -1,29 +1,26 @@
 """
-Utility functions for attribute processing.
+Utility functions for attribute processing in SYMFLUENCE.
 
-Helper functions for:
-- Raster clipping
-- Pixel counting
-- Data validation
-- I/O operations
+Provides helper functions for spatial attribute extraction and processing,
+including raster operations, zonal statistics validation, and data quality checks.
+
+Helper Functions:
+    - crop_raster_to_bbox: Clip raster to bounding box (re-exported from spatial_utils)
+    - count_pixels_in_catchment: Count valid pixels within catchment geometry
+    - check_zonal_stats_outcomes: Validate and clean zonal statistics results
+
+These utilities support the attribute processor modules (ElevationProcessor,
+SoilProcessor, LandcoverProcessor, etc.) by providing common spatial operations.
+
+See Also:
+    - symfluence.data.utils.spatial_utils: Core spatial operations
+    - symfluence.data.preprocessing.attribute_processors: Specialized processors
 """
 
 import numpy as np
-from pathlib import Path
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Union
 
-
-def clip_raster_to_bbox(source_raster: Path, output_raster: Path, bbox: Dict[str, float]) -> None:
-    """
-    Clip a raster to a bounding box.
-
-    Args:
-        source_raster: Path to source raster
-        output_raster: Path to output clipped raster
-        bbox: Bounding box dict with lat_min, lat_max, lon_min, lon_max
-    """
-    # Placeholder for implementation
-    pass
+# Re-export from consolidated spatial utilities
 
 
 def count_pixels_in_catchment(raster_src, catchment_geometry) -> int:
@@ -43,14 +40,30 @@ def count_pixels_in_catchment(raster_src, catchment_geometry) -> int:
 
 def check_zonal_stats_outcomes(zonal_out: List[Dict], new_val: Union[float, int] = np.nan) -> List[Dict]:
     """
-    Check and clean zonal statistics outcomes.
+    Validate and clean zonal statistics by replacing None values.
+
+    Processes output from rasterstats.zonal_stats to handle None values that
+    occur when zones don't intersect with valid raster data or contain only
+    NoData values.
 
     Args:
-        zonal_out: List of zonal statistics dictionaries
-        new_val: Value to replace None with
+        zonal_out: List of zonal statistics dictionaries from rasterstats.
+                   Each dict contains keys like 'mean', 'min', 'max', etc.
+        new_val: Replacement value for None entries (default: np.nan)
 
     Returns:
-        Cleaned zonal statistics
+        List of cleaned statistics dictionaries with None values replaced
+
+    Example:
+        >>> stats = [{'mean': 150.5, 'max': 200}, {'mean': None, 'max': None}]
+        >>> cleaned = check_zonal_stats_outcomes(stats, new_val=-9999)
+        >>> cleaned[1]['mean']  # -9999 instead of None
+
+    Note:
+        - Common when HRUs partially overlap raster edges
+        - Using np.nan allows easy filtering with pandas.dropna()
+        - Using -9999 matches common hydrological missing value convention
+        - Preserves dictionary structure and non-None values
     """
     cleaned = []
     for stats in zonal_out:

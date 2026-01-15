@@ -10,8 +10,10 @@ import signal
 import logging
 import time
 import random
-from typing import Callable, Any, Optional, Dict, Type
+from typing import Any, Callable, Optional
 from functools import wraps
+
+from symfluence.core.mixins import ConfigMixin
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,7 @@ def is_transient_error(error: Exception) -> bool:
     return any(te in error_str for te in TRANSIENT_ERRORS)
 
 
-class RetryExecutionMixin:
+class RetryExecutionMixin(ConfigMixin):
     """
     Mixin class providing retry logic with exponential backoff.
 
@@ -63,22 +65,22 @@ class RetryExecutionMixin:
     @property
     def max_retries(self) -> int:
         """Maximum number of retry attempts."""
-        return self.config.get('WORKER_MAX_RETRIES', 3)
+        return self.config_dict.get('WORKER_MAX_RETRIES', 3)
 
     @property
     def base_delay(self) -> float:
         """Base delay for exponential backoff (seconds)."""
-        return self.config.get('WORKER_BASE_DELAY', 0.5)
+        return self.config_dict.get('WORKER_BASE_DELAY', 0.5)
 
     @property
     def max_delay(self) -> float:
         """Maximum delay between retries (seconds)."""
-        return self.config.get('WORKER_MAX_DELAY', 30.0)
+        return self.config_dict.get('WORKER_MAX_DELAY', 30.0)
 
     @property
     def jitter_factor(self) -> float:
         """Jitter factor for randomizing delays (0-1)."""
-        return self.config.get('WORKER_JITTER', 0.1)
+        return self.config_dict.get('WORKER_JITTER', 0.1)
 
     # =========================================================================
     # Retry logic
@@ -146,7 +148,9 @@ class RetryExecutionMixin:
 
                 time.sleep(delay)
 
-        raise last_exception
+        if last_exception is not None:
+            raise last_exception
+        raise Exception(f"Function {func.__name__} failed for unknown reasons")
 
     def _calculate_delay(self, attempt: int) -> float:
         """
@@ -319,7 +323,9 @@ def retry_on_io_error(
             delay = base_delay * (2 ** attempt) + random.uniform(0, 0.1)
             time.sleep(delay)
 
-    raise last_exception
+    if last_exception is not None:
+        raise last_exception
+    raise Exception(f"Function {func.__name__} failed for unknown reasons")
 
 
 def with_staggered_start(func: Callable, max_delay: float = 0.5) -> Callable:

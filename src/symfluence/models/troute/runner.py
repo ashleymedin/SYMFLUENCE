@@ -6,9 +6,9 @@ Refactored to use the Unified Model Execution Framework.
 """
 
 import subprocess
+import sys
 import xarray as xr
-from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
 from symfluence.models.registry import ModelRegistry
 from symfluence.models.base import BaseModelRunner
@@ -52,14 +52,13 @@ class TRouteRunner(BaseModelRunner, ModelExecutor):
         log_file_path = log_path / "troute_run.log"
 
         # 3. Construct and run the command
-        command = f"python -m nwm_routing {config_filepath}"
-        self.logger.info(f'Executing t-route command: {command}')
+        command = [sys.executable, "-m", "nwm_routing", str(config_filepath)]
+        self.logger.info(f'Executing t-route command: {" ".join(command)}')
 
         try:
             self.execute_model_subprocess(
                 command,
                 log_file_path,
-                shell=True,
                 success_message=f"t-route run completed successfully. Log file available at: {log_file_path}"
             )
             self.logger.info("--- t-route Run Finished ---")
@@ -92,7 +91,7 @@ class TRouteRunner(BaseModelRunner, ModelExecutor):
             original_var = 'averageRoutedRunoff'  # SUMMA default for routing
         else:
             original_var = original_var_config
-        
+
         self.logger.debug(f"Checking for variable '{original_var}' in {runoff_filepath}")
 
         ds = xr.open_dataset(runoff_filepath)

@@ -27,16 +27,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]  # Linux, macOS, Windows
-        python-version: ['3.11']  # Focus on latest stable
-        include:
-          # Test older Python versions on Linux only to reduce CI time
-          - os: ubuntu-latest
-            python-version: '3.9'
-          - os: ubuntu-latest
-            python-version: '3.10'
+        os: [ubuntu-22.04, macos-latest, windows-latest]  # Linux, macOS, Windows
+        python-version: ['3.11']  # Focus on latest stable and supported version
 
     steps:
+      - name: Free up disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          sudo apt-get clean
+          df -h
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -60,7 +66,10 @@ jobs:
       - name: Install minimal system dependencies
         shell: bash
         run: |
-          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+          if [[ "${{ matrix.os }}" == "ubuntu-22.04" ]]; then
+            sudo apt-get update
+            sudo apt-get install -y software-properties-common
+            sudo add-apt-repository -y ppa:ubuntugis/ppa
             sudo apt-get update
             sudo apt-get install -y gdal-bin libgdal-dev cdo
           elif [[ "${{ matrix.os }}" == "macos-"* ]]; then
@@ -85,7 +94,7 @@ jobs:
           python -m pip install --upgrade pip
 
           # Install GDAL Python bindings
-          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+          if [[ "${{ matrix.os }}" == "ubuntu-22.04" ]]; then
             GDAL_VERSION=$(gdal-config --version)
             pip install GDAL==$GDAL_VERSION
             # Install CPU-only torch to save space on Linux
@@ -103,21 +112,13 @@ jobs:
             # Install CPU-only torch to save space on Windows
             pip install torch --index-url https://download.pytorch.org/whl/cpu
             # Remove GDAL from pyproject.toml to prevent pip from trying to build it from source
-            sed -i '/"gdal",/d' pyproject.toml
+            # Use Python instead of sed for Windows compatibility
+            python -c "import re; c=open('pyproject.toml').read(); c=re.sub(r'\"[Gg][Dd][Aa][Ll]\",?\s*','',c); open('pyproject.toml','w').write(c); print('Removed GDAL from pyproject.toml')"
           fi
 
-          # Install package with dev dependencies
-          if [ -f requirements.txt ]; then
-            if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-              # Skip GDAL on Windows (already installed via conda)
-              grep -v "^gdal" requirements.txt > requirements_temp.txt || true
-              pip install -r requirements_temp.txt || pip install -r requirements.txt
-              rm -f requirements_temp.txt
-            else
-              pip install -r requirements.txt
-            fi
-          fi
-          pip install -e ".[dev]" || pip install -e .
+          # Install package from pyproject.toml (source of truth for dependencies)
+          # Install with test dependencies for pytest
+          pip install -e ".[test]"
 
           # Install pytest-xdist for parallel test execution
           pip install pytest-xdist
@@ -142,9 +143,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]  # Linux, macOS, Windows
+        os: [ubuntu-22.04, macos-latest, windows-latest]  # Linux, macOS, Windows
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             python-version: '3.11'
           - os: macos-latest  # ARM Mac (M1/M2)
             python-version: '3.11'
@@ -157,6 +158,18 @@ jobs:
       RPY2_CFFI_MODE: ABI  # Skip R requirement for rpy2
 
     steps:
+      - name: Free up disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          sudo apt-get clean
+          df -h
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -171,6 +184,9 @@ jobs:
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:ubuntugis/ppa
           sudo apt-get update
           sudo apt-get install -y \
             build-essential gfortran cmake \
@@ -213,10 +229,13 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           # Remove unnecessary packages to free up disk space
+          # Note: Do NOT remove $AGENT_TOOLSDIRECTORY - it contains setup-python installation
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
           sudo rm -rf /usr/local/share/boost
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
           df -h
 
       - name: Cache external tools
@@ -224,19 +243,65 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.SYMFLUENCE_DATA }}/installs
-          key: symfluence-tools-${{ runner.os }}-${{ runner.arch }}-v4
+          key: symfluence-tools-${{ runner.os }}-${{ runner.arch }}-v5
+
+      - name: Pre-install Python package (needed for build script)
+        if: steps.cache-tools.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          # Install package first so CLI is available for build script
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            source "$CONDA/etc/profile.d/conda.sh"
+            conda activate test-env
+          fi
+          python -m pip install --upgrade pip
+          # Install rich explicitly (required by CLI output)
+          pip install rich pyyaml
+          # Temporarily remove GDAL from pyproject.toml to avoid build-from-source
+          # GDAL will be installed later with matching system version
+          python -c "import re; c=open('pyproject.toml').read(); c=re.sub(r'\"gdal[^\"]*\",?\s*','',c,flags=re.I); open('pyproject.toml','w').write(c); print('Temporarily removed GDAL from pyproject.toml')"
+          # Install the package with remaining dependencies
+          pip install -e . || pip install .  # Fallback to non-editable install
+          # Restore pyproject.toml
+          git checkout pyproject.toml
+          echo "Package pre-installed for build script"
 
       - name: Build external tools
         if: steps.cache-tools.outputs.cache-hit != 'true'
         shell: bash
         env:
-          SYMFLUENCE_NO_VENV: "true"
+          PYTHONIOENCODING: utf-8
         run: |
           # Initialize conda for bash on Windows
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             source "$CONDA/etc/profile.d/conda.sh"
             conda activate test-env
             export PATH="$CONDA/condabin:$PATH"
+            # Windows: use conda Python directly, no venv
+            export SYMFLUENCE_NO_VENV="true"
+            export SYMFLUENCE_PYTHON="python"
+          else
+            # Linux/macOS: use setup-python's Python location
+            if [[ -n "${pythonLocation:-}" ]]; then
+              export PATH="${pythonLocation}:${pythonLocation}/bin:$PATH"
+              # Find Python executable - check bin/ and root directory
+              if [[ -x "${pythonLocation}/bin/python3" ]]; then
+                export SYMFLUENCE_PYTHON="${pythonLocation}/bin/python3"
+              elif [[ -x "${pythonLocation}/bin/python" ]]; then
+                export SYMFLUENCE_PYTHON="${pythonLocation}/bin/python"
+              elif [[ -x "${pythonLocation}/python3" ]]; then
+                export SYMFLUENCE_PYTHON="${pythonLocation}/python3"
+              elif [[ -x "${pythonLocation}/python" ]]; then
+                export SYMFLUENCE_PYTHON="${pythonLocation}/python"
+              else
+                export SYMFLUENCE_PYTHON="python3"
+              fi
+            else
+              export SYMFLUENCE_PYTHON="python3"
+            fi
+            echo "Using Python: $SYMFLUENCE_PYTHON ($($SYMFLUENCE_PYTHON --version))"
           fi
           mkdir -p "${{ env.SYMFLUENCE_DATA }}"
           chmod +x ./symfluence || true  # chmod may not work on Windows
@@ -251,9 +316,44 @@ jobs:
             echo "${{ env.SYMFLUENCE_DATA }}/installs/TauDEM/bin" >> $GITHUB_PATH
           fi
 
-      - name: Validate binaries
+      - name: Install Python dependencies
+        shell: bash
         env:
-          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/tests
+          RPY2_CFFI_MODE: ABI
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            source "$CONDA/etc/profile.d/conda.sh"
+            conda activate test-env
+          fi
+          python -m pip install --upgrade pip
+
+          # Install GDAL Python bindings matching system version
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            GDAL_VERSION=$(gdal-config --version)
+            pip install GDAL==$GDAL_VERSION
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            GDAL_VERSION=$(gdal-config --version)
+            GDAL_MAJOR=$(echo $GDAL_VERSION | cut -d. -f1)
+            GDAL_MINOR=$(echo $GDAL_VERSION | cut -d. -f2)
+            GDAL_PATCH=$(echo $GDAL_VERSION | cut -d. -f3 | cut -d_ -f1)
+            NEXT_PATCH=$((GDAL_PATCH + 1))
+            pip install "GDAL>=${GDAL_MAJOR}.${GDAL_MINOR}.${GDAL_PATCH},<${GDAL_MAJOR}.${GDAL_MINOR}.${NEXT_PATCH}"
+          elif [[ "${{ runner.os }}" == "Windows" ]]; then
+            # GDAL from conda (already installed in previous step)
+            # Ensure gdal-python is installed from conda-forge
+            conda install -c conda-forge gdal-python::gdal -y || true
+          fi
+
+          # Install package from pyproject.toml (source of truth for dependencies)
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            # On Windows, GDAL is from conda. Remove it from pyproject.toml before install
+            python -c "open('pyproject.toml', 'w').write('\n'.join([l for l in open('pyproject.toml').readlines() if 'gdal' not in l.lower()]))"
+            pip install -e ".[test]" || pip install -e . || pip install .
+          else
+            pip install -e ".[test]" || pip install -e .
+          fi
+
+      - name: Validate binaries
         run: |
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             source "$CONDA/etc/profile.d/conda.sh"
@@ -360,7 +460,7 @@ jobs:
       matrix:
         include:
           # Test on Linux with multiple Python versions
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             python-version: '3.11'
           # Test on macOS with latest Python
           - os: macos-latest  # ARM Mac (M1/M2)
@@ -375,6 +475,18 @@ jobs:
       RPY2_CFFI_MODE: ABI  # Skip R requirement for rpy2
 
     steps:
+      - name: Free up disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          sudo apt-get clean
+          df -h
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -387,8 +499,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-22.04'
         run: |
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:ubuntugis/ppa
           sudo apt-get update
           sudo apt-get install -y \
             build-essential gfortran cmake \
@@ -431,10 +546,13 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           # Remove unnecessary packages to free up disk space
+          # Note: Do NOT remove $AGENT_TOOLSDIRECTORY - it contains setup-python installation
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
           sudo rm -rf /usr/local/share/boost
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
           df -h
 
       - name: Cache external tools
@@ -442,7 +560,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.SYMFLUENCE_DATA }}/installs
-          key: symfluence-tools-${{ runner.os }}-${{ runner.arch }}-v4
+          key: symfluence-tools-${{ runner.os }}-${{ runner.arch }}-v5
 
       - name: Cache raw forcing data
         uses: actions/cache@v4
@@ -452,17 +570,63 @@ jobs:
           restore-keys: |
             raw-forcing-v1-
 
+      - name: Pre-install Python package (needed for build script)
+        if: steps.cache-tools.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          # Install package first so CLI is available for build script
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            source "$CONDA/etc/profile.d/conda.sh"
+            conda activate test-env
+          fi
+          python -m pip install --upgrade pip
+          # Install rich explicitly (required by CLI output)
+          pip install rich pyyaml
+          # Temporarily remove GDAL from pyproject.toml to avoid build-from-source
+          # GDAL will be installed later with matching system version
+          python -c "import re; c=open('pyproject.toml').read(); c=re.sub(r'\"gdal[^\"]*\",?\s*','',c,flags=re.I); open('pyproject.toml','w').write(c); print('Temporarily removed GDAL from pyproject.toml')"
+          # Install the package with remaining dependencies
+          pip install -e . || pip install .  # Fallback to non-editable install
+          # Restore pyproject.toml
+          git checkout pyproject.toml
+          echo "Package pre-installed for build script"
+
       - name: Build external tools
         if: steps.cache-tools.outputs.cache-hit != 'true'
         shell: bash
         env:
-          SYMFLUENCE_NO_VENV: "true"
+          PYTHONIOENCODING: utf-8
         run: |
           # Initialize conda for bash on Windows
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             source "$CONDA/etc/profile.d/conda.sh"
             conda activate test-env
             export PATH="$CONDA/condabin:$PATH"
+            # Windows: use conda Python directly, no venv
+            export SYMFLUENCE_NO_VENV="true"
+            export SYMFLUENCE_PYTHON="python"
+          else
+            # Linux/macOS: use setup-python's Python location
+            if [[ -n "${pythonLocation:-}" ]]; then
+              export PATH="${pythonLocation}:${pythonLocation}/bin:$PATH"
+              # Find Python executable - check bin/ and root directory
+              if [[ -x "${pythonLocation}/bin/python3" ]]; then
+                export SYMFLUENCE_PYTHON="${pythonLocation}/bin/python3"
+              elif [[ -x "${pythonLocation}/bin/python" ]]; then
+                export SYMFLUENCE_PYTHON="${pythonLocation}/bin/python"
+              elif [[ -x "${pythonLocation}/python3" ]]; then
+                export SYMFLUENCE_PYTHON="${pythonLocation}/python3"
+              elif [[ -x "${pythonLocation}/python" ]]; then
+                export SYMFLUENCE_PYTHON="${pythonLocation}/python"
+              else
+                export SYMFLUENCE_PYTHON="python3"
+              fi
+            else
+              export SYMFLUENCE_PYTHON="python3"
+            fi
+            echo "Using Python: $SYMFLUENCE_PYTHON ($($SYMFLUENCE_PYTHON --version))"
           fi
           mkdir -p "${{ env.SYMFLUENCE_DATA }}"
           chmod +x ./symfluence || true  # chmod may not work on Windows
@@ -477,17 +641,51 @@ jobs:
             echo "${{ env.SYMFLUENCE_DATA }}/installs/TauDEM/bin" >> $GITHUB_PATH
           fi
 
-      - name: Run integration tests
+      - name: Install Python dependencies
+        shell: bash
         env:
-          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/tests
+          RPY2_CFFI_MODE: ABI
         run: |
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
             source "$CONDA/etc/profile.d/conda.sh"
             conda activate test-env
           fi
+          python -m pip install --upgrade pip
+
+          # Install GDAL Python bindings matching system version
+          if [[ "${{ matrix.os }}" == "ubuntu-22.04" ]]; then
+            GDAL_VERSION=$(gdal-config --version)
+            pip install GDAL==$GDAL_VERSION
+          elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            GDAL_VERSION=$(gdal-config --version)
+            GDAL_MAJOR=$(echo $GDAL_VERSION | cut -d. -f1)
+            GDAL_MINOR=$(echo $GDAL_VERSION | cut -d. -f2)
+            GDAL_PATCH=$(echo $GDAL_VERSION | cut -d. -f3 | cut -d_ -f1)
+            NEXT_PATCH=$((GDAL_PATCH + 1))
+            pip install "GDAL>=${GDAL_MAJOR}.${GDAL_MINOR}.${GDAL_PATCH},<${GDAL_MAJOR}.${GDAL_MINOR}.${NEXT_PATCH}"
+          elif [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            # GDAL from conda (already installed in previous step)
+            # Ensure gdal-python is installed from conda-forge
+            conda install -c conda-forge gdal-python::gdal -y || true
+          fi
+
+          # Install package from pyproject.toml (source of truth for dependencies)
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            # On Windows, GDAL is from conda. Remove it from pyproject.toml before install
+            python -c "open('pyproject.toml', 'w').write('\n'.join([l for l in open('pyproject.toml').readlines() if 'gdal' not in l.lower()]))"
+            pip install -e ".[test]" || pip install -e . || pip install .
+          else
+            pip install -e ".[test]" || pip install -e .
+          fi
           # Install pytest-xdist for parallel execution
           pip install pytest-xdist
 
+      - name: Run integration tests
+        run: |
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            source "$CONDA/etc/profile.d/conda.sh"
+            conda activate test-env
+          fi
           # Run integration tests in parallel (skip slow tests that download large datasets)
           pytest -v --tb=short -m "integration and not slow" -n auto tests/integration/ || echo "Integration tests completed"
 
@@ -507,7 +705,7 @@ jobs:
   cross-platform-summary:
     name: Cross-Platform Test Summary
     needs: [unit-tests-matrix, binary-validation-matrix, integration-tests-matrix]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     if: always()
 
     steps:

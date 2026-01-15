@@ -1,4 +1,9 @@
-# conus404_utils.py
+"""
+CONUS404 WRF reanalysis dataset handler.
+
+Processes CONUS404 high-resolution atmospheric reanalysis data from
+the HyTEST catalog with spatial subsetting and variable mapping.
+"""
 
 from pathlib import Path
 from typing import Dict, Tuple, List
@@ -9,6 +14,7 @@ from shapely.geometry import Polygon
 
 from .base_dataset import BaseDatasetHandler
 from .dataset_registry import DatasetRegistry
+from ...utils import VariableStandardizer
 
 
 @DatasetRegistry.register("conus404")
@@ -42,40 +48,148 @@ class CONUS404Handler(BaseDatasetHandler):
         """
         Map raw CONUS404 variables to standard forcing names expected by SUMMA.
 
-        Note:
-        - We map RAINRATE directly to pptrate (precipitation rate).
-        - If your CONUS404 RAINRATE is in mm/s or kg m-2 s-1, we treat it
-          as equivalent to m s-1 after scaling in process_dataset().
+        Uses centralized VariableStandardizer for consistency across the codebase.
         """
-        return {
-            "T2": "airtemp",
-            "Q2": "spechum",      # may be mixing ratio; we adjust if needed
-            "PSFC": "airpres",
-            "GLW": "LWRadAtm",
-            "SWDOWN": "SWRadAtm",
-            "RAINRATE": "pptrate",
-            "U10": "windspd_u",
-            "V10": "windspd_v",
-        }
+        standardizer = VariableStandardizer(self.logger)
+        return standardizer.get_rename_map('CONUS404')
 
     def process_dataset(self, ds: xr.Dataset) -> xr.Dataset:
         """
-        Process CONUS404 dataset:
-          - rename core meteorological variables
-          - detect SW/LW/precip fields from typical HyTEST/WRF names
-          - convert precip flux/rrate to pptrate [m s-1]
-          - derive wind speed from U10/V10
-          - standardize attributes
+        Process CONUS404 WRF reanalysis with flexible variable detection and unit conversions.
+
+        Transforms raw CONUS404 data from HyTEST catalog into SUMMA-compatible format.
+        Handles multiple variable name conventions (accumulated vs instantaneous), derives
+        wind speed, converts units, and cleans NetCDF attributes.
+
+        Args:
+            ds: Raw CONUS404 xarray Dataset with potential variables:
+                Core meteorology:
+                    - T2: 2m air temperature (K)
+                    - Q2: 2m specific humidity (kg/kg)
+                    - PSFC: Surface pressure (Pa)
+                    - U10: U-component wind at 10m (m/s)
+                    - V10: V-component wind at 10m (m/s)
+
+                Radiation (accumulated OR instantaneous):
+                    - ACSWDNB: Accumulated downward shortwave (W/m²)
+                    - SWDOWN: Instantaneous downward shortwave (W/m²)
+                    - ACLWDNB: Accumulated downward longwave (W/m²)
+                    - LWDOWN: Instantaneous downward longwave (W/m²)
+                    - GLW: Alias for longwave (W/m²)
+
+                Precipitation (multiple formats):
+                    - PREC_ACC_NC: Accumulated non-convective precipitation (mm)
+                    - RAINRATE: Instantaneous rain rate (mm/s or kg/m²/s)
+                    - PRATE: Precipitation rate (mm/s)
+                    - ACDRIPR: Accumulated driving rain (mm)
+
+        Returns:
+            Processed xarray Dataset with SUMMA-compatible variables:
+                - airtemp: Air temperature (K)
+                - spechum: Specific humidity (kg/kg)
+                - airpres: Surface pressure (Pa)
+                - SWRadAtm: Shortwave radiation (W/m²)
+                - LWRadAtm: Longwave radiation (W/m²)
+                - pptrate: Precipitation rate (mm/s)
+                - windspd: Wind speed magnitude (m/s)
+
+        Processing Steps:
+            1. **Core Variable Renaming**: T2/Q2/PSFC/U10/V10 → standard names
+            2. **Shortwave Detection & Conversion**:
+               - Priority: ACSWDNB (accumulated) → flux via _convert_accumulated_to_flux()
+               - Fallback: SWDOWN (instantaneous) → use directly
+            3. **Longwave Detection & Conversion**:
+               - Priority: ACLWDNB (accumulated) → flux conversion
+               - Fallback: LWDOWN or GLW (instantaneous)
+            4. **Precipitation Detection & Conversion**:
+               - Priority order: PREC_ACC_NC, RAINRATE, PRATE, ACDRIPR
+               - Accumulated vars → rate conversion
+               - Instantaneous vars → direct use or unit conversion
+            5. **Wind Speed Derivation**: windspd = sqrt(U10² + V10²)
+            6. **Attribute Cleaning**: Remove conflicting NetCDF attributes
+
+        Variable Detection Strategy:
+            Uses flexible fallback logic to handle different CONUS404 versions:
+            1. Check for accumulated variables first (ACSWDNB, ACLWDNB, PREC_ACC_NC)
+            2. If accumulated: convert to flux/rate using timestep
+            3. If not found: check for instantaneous equivalents
+            4. If neither: skip variable (not critical for all models)
+
+        Accumulated-to-Flux Conversion:
+            For radiation (SW/LW):
+                - Accumulated W/m² over timestep dt
+                - Conversion: flux = accumulated_value / dt
+                - Result units: W/m² (average flux over period)
+
+            For precipitation:
+                - Accumulated mm over timestep dt (seconds)
+                - Conversion: rate = accumulated_mm / dt
+                - Result units: mm/s
+
+        Wind Speed Derivation:
+            Magnitude from WRF wind components:
+            windspd = sqrt(U10² + V10²)
+
+            Where:
+                U10 = eastward wind component (m/s)
+                V10 = northward wind component (m/s)
+
+            Attributes set:
+                units: 'm s-1'
+                long_name: 'wind speed'
+                standard_name: 'wind_speed'
+
+        Precipitation Handling:
+            Multiple CONUS404 precipitation formats handled:
+
+            1. PREC_ACC_NC (accumulated non-convective):
+               - Convert to rate: accum_mm / timestep_s
+               - Units: mm → mm/s
+
+            2. RAINRATE (instantaneous):
+               - May be mm/s or kg/m²/s
+               - Convert kg/m²/s to mm/s if needed
+
+            3. PRATE (rate):
+               - Typically already in mm/s
+               - Use directly or convert units
+
+            4. ACDRIPR (accumulated driving rain):
+               - Convert to rate: accum_mm / timestep_s
+
+        WRF Curvilinear Coordinates:
+            - CONUS404 uses curvilinear lat/lon (2D arrays)
+            - Coordinates preserved from HyTEST download
+            - Projection: Lambert Conformal Conic
+            - Grid spacing: ~4 km
+
+        Example:
+            >>> ds = xr.open_dataset('CONUS404_2015-2016.nc')
+            >>> handler = CONUS404Handler(config, logger, project_dir)
+            >>> ds_processed = handler.process_dataset(ds)
+            >>> print(ds_processed.data_vars)
+            # Variables: airtemp, spechum, airpres, SWRadAtm, LWRadAtm, pptrate, windspd
+            >>> print(ds_processed['SWRadAtm'].attrs)
+            # {'units': 'W m-2', 'long_name': 'downward shortwave radiation'}
+
+        Notes:
+            - Variable availability depends on HyTEST catalog version
+            - Fallback logic ensures robustness to catalog changes
+            - Radiation variables require accumulation period knowledge
+            - Precipitation unit consistency critical for water balance
+            - U10/V10 components retained alongside derived windspd
+
+        See Also:
+            - _convert_accumulated_to_flux(): Accumulation-to-flux conversion helper
+            - data.utils.VariableStandardizer: Centralized variable mapping
+            - data.preprocessing.dataset_handlers.base_dataset: Base handler
         """
-        # --- Core met variables ---
-        core_map = {
-            "T2": "airtemp",
-            "Q2": "spechum",
-            "PSFC": "airpres",
-            "U10": "windspd_u",
-            "V10": "windspd_v",
-        }
-        rename_map = {old: new for old, new in core_map.items() if old in ds.data_vars}
+        # --- Core met variables using VariableStandardizer ---
+        standardizer = VariableStandardizer(self.logger)
+        core_vars = {'T2', 'Q2', 'PSFC', 'U10', 'V10'}
+        full_rename_map = standardizer.get_rename_map('CONUS404')
+        rename_map = {old: new for old, new in full_rename_map.items()
+                      if old in ds.data_vars and old in core_vars}
         ds = ds.rename(rename_map)
 
         # ============================
@@ -87,7 +201,7 @@ class CONUS404Handler(BaseDatasetHandler):
             sw_flux.name = "SWRadAtm"
             ds["SWRadAtm"] = sw_flux
         else:
-            sw = ds["SWRadAtm"]
+            ds["SWRadAtm"]
 
         ds["SWRadAtm"].attrs.update({
             "units": "W m-2",
@@ -103,7 +217,7 @@ class CONUS404Handler(BaseDatasetHandler):
             lw_flux.name = "LWRadAtm"
             ds["LWRadAtm"] = lw_flux
         else:
-            lw = ds["LWRadAtm"]
+            ds["LWRadAtm"]
 
 
         ds["LWRadAtm"].attrs.update({
@@ -112,18 +226,41 @@ class CONUS404Handler(BaseDatasetHandler):
         })
 
         # ============================
-        # Precipitation rate → pptrate [m s-1]
+        # Precipitation rate → pptrate [kg m-2 s-1] (mm/s)
         # ============================
         if "ACDRIPR" in ds:
-            pr_rate = self._convert_accumulated_to_flux(ds["ACDRIPR"])  # 
+            pr_rate = self._convert_accumulated_to_flux(ds["ACDRIPR"])  # mm/s
+            pr_rate.name = "pptrate"
+            ds["pptrate"] = pr_rate
+
+        elif "PREC_ACC_NC" in ds:
+            # Accumulated total precip in mm
+            pr_rate = self._convert_accumulated_to_flux(ds["PREC_ACC_NC"])  # mm/s
             pr_rate.name = "pptrate"
             ds["pptrate"] = pr_rate
 
         elif "RAINRATE" in ds:
-            ds["pptrate"] = ds["RAINRATE"]  #
+            ds["pptrate"] = ds["RAINRATE"] # mm/s
+
+        elif "pptrate" in ds:
+            # Handle case where pptrate is already present but in mm (accumulated per step)
+            attrs = ds["pptrate"].attrs
+            units = attrs.get("units", "")
+            desc = attrs.get("description", "").lower()
+            long_name = attrs.get("long_name", "").lower()
+
+            if units == "mm" and ("accumulated" in desc or "accumulated" in long_name):
+                 self.logger.warning("Found 'pptrate' in mm (interval accumulated). Converting to rate mm/s.")
+                 # Calculate dt
+                 time_coord = "time"
+                 dt = (ds[time_coord].diff(time_coord) / np.timedelta64(1, "s")).astype("float32")
+                 dt = dt.reindex({time_coord: ds[time_coord]}, method="bfill")
+
+                 # Convert mm/step -> mm/s
+                 ds["pptrate"] = ds["pptrate"] / dt
 
         ds["pptrate"].attrs.update({
-            "units": "mm s-1",  # 
+            "units": "kg m-2 s-1",  # SUMMA standard mass flux unit (equal to mm/s)
             "long_name": "precipitation rate",
             "standard_name": "precipitation_rate"
         })
@@ -366,14 +503,14 @@ class CONUS404Handler(BaseDatasetHandler):
 
         # Parse bounding box if available to filter grid
         bbox = None
-        bbox_str = self.config.get("BOUNDING_BOX_COORDS")
+        bbox_str = self.config.get('BOUNDING_BOX_COORDS')
         if isinstance(bbox_str, str) and "/" in bbox_str:
             try:
                 # Format: lat_max/lon_min/lat_min/lon_max
                 parts = [float(v) for v in bbox_str.split("/")]
                 lat_min, lat_max = sorted([parts[0], parts[2]])
                 lon_min, lon_max = sorted([parts[1], parts[3]])
-                
+
                 # Add a small buffer (approx 10km) to ensure we cover the domain
                 # CONUS404 is ~4km resolution
                 buffer = 0.1  # degrees
@@ -381,7 +518,7 @@ class CONUS404Handler(BaseDatasetHandler):
                 lat_max += buffer
                 lon_min -= buffer
                 lon_max += buffer
-                
+
                 bbox = (lat_min, lat_max, lon_min, lon_max)
                 self.logger.info(f"Filtering CONUS404 grid by bbox (with buffer): {bbox}")
             except Exception as e:
@@ -401,12 +538,12 @@ class CONUS404Handler(BaseDatasetHandler):
                 # Optimization: Skip longitudes outside bbox
                 if bbox and not (bbox[2] <= float(center_lon) <= bbox[3]):
                     continue
-                    
+
                 for j, center_lat in enumerate(lat):
                     # Optimization: Skip latitudes outside bbox
                     if bbox and not (bbox[0] <= float(center_lat) <= bbox[1]):
                         continue
-                        
+
                     verts = [
                         [float(center_lon) - half_dlon, float(center_lat) - half_dlat],
                         [float(center_lon) - half_dlon, float(center_lat) + half_dlat],
@@ -426,7 +563,7 @@ class CONUS404Handler(BaseDatasetHandler):
 
             cell_count = 0
             filtered_count = 0
-            
+
             # Pre-calculate approximate grid spacing to speed up loop
             # Check center of domain or use a default if small
             mid_y, mid_x = ny // 2, nx // 2
@@ -441,12 +578,12 @@ class CONUS404Handler(BaseDatasetHandler):
                 for j in range(nx):
                     center_lat = float(lat[i, j])
                     center_lon = float(lon[i, j])
-                    
+
                     # Optimization: Skip cells outside bbox
                     if bbox and not (bbox[0] <= center_lat <= bbox[1] and bbox[2] <= center_lon <= bbox[3]):
                         filtered_count += 1
                         continue
-                    
+
                     # Robust local spacing calculation
                     # Try to use next neighbor, else previous neighbor, else default
                     if i < ny - 1:
@@ -455,7 +592,7 @@ class CONUS404Handler(BaseDatasetHandler):
                         dlat = abs(lat[i, j] - lat[i-1, j])
                     else:
                         dlat = default_dlat
-                    
+
                     if j < nx - 1:
                         dlon = abs(lon[i, j+1] - lon[i, j])
                     elif j > 0:
@@ -488,7 +625,7 @@ class CONUS404Handler(BaseDatasetHandler):
                     cell_count += 1
                     if cell_count % 5000 == 0:
                         self.logger.info(f"Created {cell_count} geometries (filtered {filtered_count} so far)")
-            
+
             self.logger.info(f"Finished grid processing. Created {len(geometries)} cells, skipped {filtered_count} cells.")
 
         if not geometries:
@@ -500,8 +637,8 @@ class CONUS404Handler(BaseDatasetHandler):
             {
                 "geometry": geometries,
                 "ID": ids,
-                self.config.get("FORCING_SHAPE_LAT_NAME"): lats,
-                self.config.get("FORCING_SHAPE_LON_NAME"): lons,
+                self.config.get('FORCING_SHAPE_LAT_NAME'): lats,
+                self.config.get('FORCING_SHAPE_LON_NAME'): lons,
             },
             crs="EPSG:4326",
         )

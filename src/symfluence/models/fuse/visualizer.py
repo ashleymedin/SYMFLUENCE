@@ -5,7 +5,7 @@ Provides model-specific visualization registration for FUSE.
 """
 
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 import logging
 
 from symfluence.models.registry import ModelRegistry
@@ -17,9 +17,9 @@ def visualize_fuse(reporting_manager: Any, config: Dict[str, Any], project_dir: 
     """
     logger = logging.getLogger(__name__)
     logger.info(f"Running FUSE visualizer for experiment {experiment_id}")
-    
+
     domain_name = config.get('DOMAIN_NAME')
-    
+
     model_outputs = [("FUSE", str(project_dir / "simulations" / experiment_id / "FUSE" / f"{domain_name}_{experiment_id}_runs_best.nc"))]
     obs_files = [('Observed', str(project_dir / "observations" / "streamflow" / "preprocessed" / f"{domain_name}_streamflow_processed.csv"))]
     reporting_manager.visualize_fuse_outputs(model_outputs, obs_files)

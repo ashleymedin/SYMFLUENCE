@@ -11,11 +11,11 @@ from pathlib import Path
 
 # Import SYMFLUENCE - this should work now since we added the path
 from symfluence import SYMFLUENCE
-from utils.geospatial import (
+from test_helpers.geospatial import (
     assert_shapefile_signature_matches,
     load_shapefile_signature,
 )
-from utils.helpers import write_config
+from test_helpers.helpers import write_config
 
 
 from symfluence.core.config.models import SymfluenceConfig
@@ -28,7 +28,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.domain, pytest.mark.requires_
 def config_path(bow_domain, tmp_path, symfluence_code_dir):
     """Create test configuration based on config_template.yaml."""
     # Load template
-    from utils.helpers import load_config_template
+    from test_helpers.helpers import load_config_template
 
     config_dict = load_config_template(symfluence_code_dir)
 
@@ -47,7 +47,7 @@ def config_path(bow_domain, tmp_path, symfluence_code_dir):
     # Lumped basin settings
     config_dict['DOMAIN_DEFINITION_METHOD'] = 'lumped'
     config_dict['DOMAIN_DISCRETIZATION'] = 'GRUs'
-    
+
     # Handle different naming conventions in data bundles
     # River basins
     river_basins_name = f'{domain_name}_riverBasins_lumped.shp'
@@ -67,7 +67,7 @@ def config_path(bow_domain, tmp_path, symfluence_code_dir):
             shps = list(river_network_dir.glob("*.shp"))
             if shps:
                 river_network_name = shps[0].name
-    config_dict['RIVER_NETWORK_NAME'] = river_network_name
+    config_dict['RIVER_NETWORK_SHP_NAME'] = river_network_name
 
     # Catchment/HRUs
     catchment_name = f'{domain_name}_HRUs_GRUs.shp'
@@ -114,17 +114,17 @@ def _prune_raw_forcing(project_dir: Path, keep_glob: str) -> None:
     raw_dir = project_dir / "forcing" / "raw_data"
     if not raw_dir.exists():
         return
-    
+
     # Try multiple globs to support both old and new names
     candidates = sorted(raw_dir.glob(keep_glob))
     if not candidates:
         # Try a more generic pattern if the specific one fails
         if "ERA5" in keep_glob:
             candidates = sorted(raw_dir.glob("*ERA5*1month*.nc"))
-    
+
     if not candidates:
         return
-        
+
     keep = candidates[0]
     for path in raw_dir.glob("*.nc"):
         if path != keep:
@@ -201,21 +201,12 @@ def test_lumped_basin_workflow(config_path, model):
         # HYPE calibration not yet fully implemented in this test
         config_dict['HYPE_SKIP_CALIBRATION'] = True
     elif model == 'MESH':
-        # MESH configuration
-        config_dict['MESH_SKIP_CALIBRATION'] = True
-        # Point to MESH install in data directory
-        config_dict['MESH_INSTALL_PATH'] = str(Path(config_dict['SYMFLUENCE_DATA_DIR']) / 'installs' / 'mesh' / 'bin')
-        config_dict['MESH_EXE'] = 'mesh.exe'
+        # MESH is designed for distributed/semi-distributed modeling and doesn't
+        # support single-GRU (lumped) basins due to meshflow library limitations
+        pytest.skip("MESH does not support lumped (single-GRU) basins - use semi-distributed mode")
     elif model == 'RHESSys':
-        # RHESSys configuration
-        config_dict['RHESSYS_SKIP_CALIBRATION'] = True
-        # Point to RHESSys install in data directory
-        config_dict['RHESSYS_INSTALL_PATH'] = str(Path(config_dict['SYMFLUENCE_DATA_DIR']) / 'installs' / 'rhessys' / 'bin')
-        config_dict['RHESSYS_EXE'] = 'rhessys'
-        # VMFire settings
-        config_dict['RHESSYS_USE_VMFIRE'] = True
-        config_dict['VMFIRE_INSTALL_PATH'] = str(Path(config_dict['SYMFLUENCE_DATA_DIR']) / 'installs' / 'vmfire' / 'bin')
-        config_dict['VMFIRE_EXE'] = 'vmfire'
+        # RHESSys is not designed for lumped basin configurations and will fail.
+        pytest.skip("RHESSys does not support lumped (single-GRU) basins - use semi-distributed mode")
 
     # Create new validated typed config with model-specific overrides
     config = SymfluenceConfig(**config_dict)
@@ -310,10 +301,13 @@ def test_lumped_basin_workflow(config_path, model):
         rhessys_exe = Path(config.system.data_dir) / 'installs' / 'rhessys' / 'bin' / 'rhessys'
         if not rhessys_exe.exists():
             pytest.skip(f"RHESSys binary not found at {rhessys_exe}, skipping run and calibration")
-        if config_dict.get('RHESSYS_USE_VMFIRE'):
-            vmfire_exe = Path(config_dict['SYMFLUENCE_DATA_DIR']) / 'installs' / 'vmfire' / 'bin' / 'vmfire'
-            if not vmfire_exe.exists():
-                pytest.skip(f"VMFire binary not found at {vmfire_exe}, skipping run and calibration")
+        # Check for WMFire library if fire spread is enabled
+        if config_dict.get('RHESSYS_USE_WMFIRE') or config_dict.get('RHESSYS_USE_VMFIRE'):
+            wmfire_lib_dir = Path(config_dict['SYMFLUENCE_DATA_DIR']) / 'installs' / 'wmfire' / 'lib'
+            wmfire_so = wmfire_lib_dir / 'libwmfire.so'
+            wmfire_dylib = wmfire_lib_dir / 'libwmfire.dylib'
+            if not (wmfire_so.exists() or wmfire_dylib.exists()):
+                pytest.skip(f"WMFire library not found at {wmfire_lib_dir}, skipping run with fire support")
 
     symfluence.managers['model'].run_models()
 

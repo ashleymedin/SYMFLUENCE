@@ -1,6 +1,13 @@
+"""
+NEX-GDDP-CMIP6 climate projection data acquisition via THREDDS.
+
+Provides automated download of NASA NEX-GDDP-CMIP6 downscaled climate model
+outputs with support for multiple models, scenarios, and ensemble members.
+"""
+
 import datetime as dt
 import shutil
-from typing import List, Dict, Any
+from typing import Any
 from pathlib import Path
 import pandas as pd
 import xarray as xr
@@ -11,24 +18,32 @@ from ..registry import AcquisitionRegistry
 
 @AcquisitionRegistry.register('NEX-GDDP-CMIP6')
 class NEXGDDPCHandler(BaseAcquisitionHandler):
+    """
+    Acquires NEX-GDDP-CMIP6 downscaled climate projection data via THREDDS.
+
+    NASA NEX-GDDP-CMIP6 provides bias-corrected, downscaled (0.25°) climate
+    projections from CMIP6 models. Supports multiple models, scenarios
+    (historical, SSP1-2.6, SSP2-4.5, SSP3-7.0, SSP5-8.5), and ensemble members.
+    """
+
     def download(self, output_dir: Path) -> Path:
         exp_start = self.start_date
         exp_end = self.end_date
-        start_date_str = exp_start.strftime("%Y-%m-%d")
-        end_date_str = exp_end.strftime("%Y-%m-%d")
+        exp_start.strftime("%Y-%m-%d")
+        exp_end.strftime("%Y-%m-%d")
         start_dt, end_dt = exp_start.date(), exp_end.date()
         bbox = self.bbox
         lat_min, lat_max = sorted([bbox["lat_min"], bbox["lat_max"]])
         lon_min, lon_max = sorted([bbox["lon_min"], bbox["lon_max"]])
-        cfg_models = self.config.get("NEX_MODELS")
-        cfg_scenarios = self.config.get("NEX_SCENARIOS", ["historical"])
-        variables = self.config.get("NEX_VARIABLES", ["hurs", "huss", "pr", "rlds", "rsds", "sfcWind", "tas", "tasmax", "tasmin"])
-        cfg_members = self.config.get("NEX_ENSEMBLES", ["r1i1p1f1"])
+        cfg_models = self._get_config_value(lambda: self.config.forcing.nex.models, dict_key='NEX_MODELS')
+        cfg_scenarios = self._get_config_value(lambda: self.config.forcing.nex.scenarios, default=["historical"], dict_key='NEX_SCENARIOS')
+        variables = self._get_config_value(lambda: self.config.forcing.nex.variables, default=["hurs", "huss", "pr", "rlds", "rsds", "sfcWind", "tas", "tasmax", "tasmin"], dict_key='NEX_VARIABLES')
+        cfg_members = self._get_config_value(lambda: self.config.forcing.nex.ensembles, default=["r1i1p1f1"], dict_key='NEX_ENSEMBLES')
         if not cfg_models: raise ValueError("NEX_MODELS must be set.")
         ncss_base = "https://ds.nccs.nasa.gov/thredds/ncss/grid"
         cache_root = output_dir / "_nex_ncss_cache"
         cache_root.mkdir(parents=True, exist_ok=True)
-        ensemble_datasets = []
+        ensemble_datasets: list[Any] = []
         for model_name in cfg_models:
             for scenario_name in cfg_scenarios:
                 scenario_end_dt = min(end_dt, dt.date(2014, 12, 31)) if scenario_name == "historical" else end_dt
@@ -72,7 +87,7 @@ class NEXGDDPCHandler(BaseAcquisitionHandler):
             if "time" not in ds_m.dims or ds_m.sizes["time"] == 0: continue
             if "ensemble" in ds_m.dims: ds_m = ds_m.isel(ensemble=0, drop=True)
             if "airpres" not in ds_m:
-                p0, z_mean, H = 101325.0, float(self.config.get("DOMAIN_MEAN_ELEV_M", 0.0)), 8400.0
+                p0, z_mean, H = 101325.0, float(self.config_dict.get('DOMAIN_MEAN_ELEV_M', 0.0)), 8400.0
                 p_surf = p0 * np.exp(-z_mean / H)
                 ds_m["airpres"] = xr.full_like(ds_m["tas"], p_surf, dtype="float32").assign_attrs(long_name="synthetic surface air pressure", units="Pa")
             month_path = output_dir / f"NEXGDDP_all_{ms.year:04d}{ms.month:02d}.nc"

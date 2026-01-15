@@ -1,7 +1,32 @@
-from .registry import AcquisitionRegistry
-from . import handlers
+"""
+Data acquisition module.
 
-# The above 'from . import handlers' is sufficient to trigger registration
-# of all handlers within the handlers directory.
+Provides cloud-based data acquisition handlers for meteorological forcing data,
+remote sensing products, and observational datasets. Handlers are registered
+via the AcquisitionRegistry and support various data sources including:
+
+- ERA5/ERA5-Land (CDS API)
+- AORC, HRRR, CONUS404 (AWS S3)
+- RDRS (ECCC HPFX)
+- MODIS products (AppEEARS API)
+- GRACE/GRACE-FO (PO.DAAC)
+- NEX-GDDP-CMIP6 (NASA THREDDS)
+"""
+
+import sys as _sys
+from typing import Any
+
+# Fail-safe imports
+try:
+    from .registry import AcquisitionRegistry
+except ImportError as _e:
+    AcquisitionRegistry: Any = None  # type: ignore
+    print(f"WARNING: Failed to import AcquisitionRegistry: {_e}", file=_sys.stderr)
+
+try:
+    from . import handlers
+except ImportError as _e:
+    handlers: Any = None  # type: ignore
+    print(f"WARNING: Failed to import acquisition handlers: {_e}", file=_sys.stderr)
 
 __all__ = ["AcquisitionRegistry"]

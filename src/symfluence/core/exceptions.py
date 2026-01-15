@@ -6,7 +6,7 @@ error types for different failure modes throughout the SYMFLUENCE framework.
 """
 
 from contextlib import contextmanager
-from typing import Optional, Any
+from typing import Optional
 import logging
 
 
@@ -109,11 +109,6 @@ class FileOperationError(SYMFLUENCEError):
     pass
 
 
-from symfluence.core.validation import (
-    validate_config_keys,
-    validate_file_exists,
-    validate_directory_exists
-)
 
 
 @contextmanager
@@ -160,5 +155,3 @@ def symfluence_error_handler(
             logger.error(f"Error during {operation}: {e}", exc_info=True)
         if reraise:
             raise error_type(f"Failed during {operation}: {e}") from e
-
-

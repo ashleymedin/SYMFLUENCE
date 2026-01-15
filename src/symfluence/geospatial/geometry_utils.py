@@ -9,8 +9,7 @@ Provides common geometry operations including:
 """
 
 import logging
-from typing import Tuple, Optional, Union, List
-from pathlib import Path
+from typing import Tuple, Optional, Union
 
 from shapely.geometry import Polygon, MultiPolygon, GeometryCollection
 from symfluence.core.mixins import LoggingMixin
@@ -23,16 +22,16 @@ except ImportError:
 
 
 def clean_geometry(
-    geometry: Union[Polygon, MultiPolygon, GeometryCollection], 
+    geometry: Union[Polygon, MultiPolygon, GeometryCollection],
     logger: Optional[logging.Logger] = None
 ) -> Optional[Union[Polygon, MultiPolygon]]:
     """
     Clean and validate geometries, ensuring only Polygon or MultiPolygon.
-    
+
     Args:
         geometry: Shapely geometry object
         logger: Optional logger for debug messages
-        
+
     Returns:
         Cleaned Polygon or MultiPolygon, or None if invalid/empty
     """

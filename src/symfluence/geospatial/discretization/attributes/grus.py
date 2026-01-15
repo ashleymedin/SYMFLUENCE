@@ -1,3 +1,10 @@
+"""
+GRU-based domain discretization using whole watershed units.
+
+Uses Grouped Response Units directly as Hydrologic Response Units without
+further subdivision, suitable for lumped or semi-distributed modeling.
+"""
+
 from __future__ import annotations
 
 from typing import Optional, TYPE_CHECKING
@@ -18,10 +25,15 @@ def discretize(discretizer: "DomainDiscretizer") -> Optional[object]:
         Path: Path to the output HRU shapefile.
     """
     # Determine default name based on method
-    default_name = f"{discretizer.domain_name}_riverBasins_{discretizer.config.get('DOMAIN_DEFINITION_METHOD')}.shp"
-    if discretizer.config.get("DELINEATE_COASTAL_WATERSHEDS") == True:
+    definition_method = discretizer.domain_definition_method
+    default_name = f"{discretizer.domain_name}_riverBasins_{definition_method}.shp"
+    delineate_coastal = discretizer._get_config_value(
+        lambda: discretizer.config.domain.delineation.delineate_coastal_watersheds,
+        default=False
+    )
+    if delineate_coastal:
         default_name = f"{discretizer.domain_name}_riverBasins_with_coastal.shp"
-    elif discretizer.config.get("DOMAIN_DEFINITION_METHOD") == "point":
+    elif definition_method == "point":
         default_name = f"{discretizer.domain_name}_riverBasins_point.shp"
 
     gru_shapefile = discretizer._get_file_path(

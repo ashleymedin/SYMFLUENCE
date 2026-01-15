@@ -26,9 +26,56 @@ TESTS_DIR = Path(__file__).parent.resolve()
 if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
 
-# Import test utilities
-from utils.helpers import load_config_template, write_config
-from utils import helpers, geospatial
+# Import test utilities with robust fallback
+import importlib.util
+
+def _load_test_helpers():
+    """Try to load test_helpers using various methods."""
+    # Try standard import first
+    try:
+        from test_helpers.helpers import load_config_template, write_config, has_cds_credentials
+        from test_helpers import helpers
+        return load_config_template, write_config, has_cds_credentials, helpers, True
+    except (ImportError, ModuleNotFoundError):
+        pass
+
+    # Try direct file load as fallback
+    helpers_path = TESTS_DIR / "test_helpers" / "helpers.py"
+    if helpers_path.exists():
+        try:
+            spec = importlib.util.spec_from_file_location("helpers", helpers_path)
+            helpers_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(helpers_module)
+            return (
+                helpers_module.load_config_template,
+                helpers_module.write_config,
+                helpers_module.has_cds_credentials,
+                helpers_module,
+                True,
+            )
+        except Exception:
+            pass
+
+    # Fallback stubs
+    def load_config_template(code_dir=None):
+        raise NotImplementedError("test_helpers not available")
+
+    def write_config(config, path):
+        raise NotImplementedError("test_helpers not available")
+
+    def has_cds_credentials():
+        return False
+
+    return load_config_template, write_config, has_cds_credentials, None, False
+
+
+load_config_template, write_config, has_cds_credentials, helpers, _test_helpers_available = _load_test_helpers()
+
+# Try to load geospatial module
+try:
+    from test_helpers import geospatial
+except (ImportError, ModuleNotFoundError):
+    geospatial = None
 
 # Load additional fixtures from fixture modules
 pytest_plugins = [
@@ -176,7 +223,7 @@ def forcing_cache_manager(symfluence_data_root):
 
     # Log cache statistics at start of session
     stats = cache.get_cache_stats()
-    print(f"\n=== Raw Forcing Cache Statistics ===")
+    print("\n=== Raw Forcing Cache Statistics ===")
     print(f"Cache root: {stats['cache_root']}")
     print(f"Cache size: {stats['total_size_gb']:.2f}GB / {stats['max_size_gb']:.2f}GB")
     print(f"Cached files: {stats['file_count']}")

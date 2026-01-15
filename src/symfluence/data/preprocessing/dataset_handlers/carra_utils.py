@@ -8,42 +8,30 @@ CARRA uses a polar stereographic projection and requires special coordinate hand
 from pathlib import Path
 from typing import Dict, Tuple
 import xarray as xr
-import geopandas as gpd
 from shapely.geometry import Polygon
-import pyproj
 from pyproj import CRS, Transformer
 
 from .base_dataset import BaseDatasetHandler
 from .dataset_registry import DatasetRegistry
+from ...utils import VariableStandardizer
 
 
 @DatasetRegistry.register('carra')
 class CARRAHandler(BaseDatasetHandler):
     """Handler for CARRA (Copernicus Arctic Regional Reanalysis) dataset."""
-    
+
     def get_variable_mapping(self) -> Dict[str, str]:
         """
         CARRA variable name mapping to standard names.
-        
+
+        Uses centralized VariableStandardizer for consistency across the codebase.
+
         Returns:
             Dictionary mapping CARRA variable names to standard names
         """
-        return {
-            # CARRA typically uses standard names already
-            't2m': 'airtemp',
-            'tp': 'pptrate',
-            'sp': 'airpres',
-            'q': 'spechum',
-            'u10': 'windspd_u',
-            'v10': 'windspd_v',
-            'ws10': 'windspd',
-            'ssrd': 'SWRadAtm',
-            'strd': 'LWRadAtm',
-            # CDS API uses full names
-            'thermal_surface_radiation_downwards': 'LWRadAtm',
-            'surface_solar_radiation_downwards': 'SWRadAtm',
-        }
-    
+        standardizer = VariableStandardizer(self.logger)
+        return standardizer.get_rename_map('CARRA')
+
     def process_dataset(self, ds: xr.Dataset) -> xr.Dataset:
         """
         Process CARRA dataset with variable renaming if needed.
@@ -64,76 +52,70 @@ class CARRAHandler(BaseDatasetHandler):
             ds = ds.rename(existing_vars)
 
         # Apply standard CF-compliant attributes (uses centralized definitions)
-        # CARRA precipitation is in kg m-2 s-1 (equiv to mm/s), override the default
+        # CARRA precipitation is in m/s, override the default
         ds = self.apply_standard_attributes(ds, overrides={
-            'pptrate': {'units': 'kg m-2 s-1', 'standard_name': 'precipitation_rate'}
+            'pptrate': {'units': 'm s-1', 'standard_name': 'precipitation_rate'}
         })
 
         return ds
-    
+
     def get_coordinate_names(self) -> Tuple[str, str]:
         """
         CARRA uses latitude/longitude coordinates.
-        
+
         Returns:
             Tuple of ('latitude', 'longitude')
         """
         return ('latitude', 'longitude')
-    
+
     def needs_merging(self) -> bool:
         """CARRA data typically doesn't require merging."""
         return False
-    
+
     def merge_forcings(self, raw_forcing_path: Path, merged_forcing_path: Path,
                       start_year: int, end_year: int) -> None:
         """
         CARRA typically doesn't require merging.
-        
+
         This method is a no-op for CARRA but is required by the interface.
         """
         self.logger.info("CARRA data does not require merging. Skipping merge step.")
         pass
-    
+
     def create_shapefile(self, shapefile_path: Path, merged_forcing_path: Path,
                         dem_path: Path, elevation_calculator) -> Path:
         """
         Create CARRA grid shapefile.
-        
+
         CARRA uses a polar stereographic projection which requires special handling.
         The grid is defined in stereographic coordinates but must be converted to lat/lon.
-        
+
         Args:
             shapefile_path: Directory where shapefile should be saved
             merged_forcing_path: Path to CARRA data
             dem_path: Path to DEM for elevation calculation
             elevation_calculator: Function to calculate elevation statistics
-            
+
         Returns:
             Path to the created shapefile
         """
         self.logger.info("Creating CARRA grid shapefile")
-        
+
         output_shapefile = shapefile_path / f"forcing_{self.config.get('FORCING_DATASET')}.shp"
-        
+
         try:
             # Find a processed CARRA file
             carra_files = list(merged_forcing_path.glob('*.nc'))
             if not carra_files:
                 raise FileNotFoundError("No processed CARRA files found")
             carra_file = carra_files[0]
-            
+
             self.logger.info(f"Using CARRA file: {carra_file}")
-            
-            import netCDF4 as nc4
-            import gc
-            
-            # Read CARRA coordinates using netCDF4 directly for stability
-            with nc4.Dataset(carra_file, 'r') as ncid:
-                lats = ncid.variables['latitude'][:]
-                lons = ncid.variables['longitude'][:]
-            
-            # Force garbage collection to ensure file handle is closed
-            gc.collect()
+
+            # Read CARRA data
+            with xr.open_dataset(carra_file) as ds:
+                lats = ds.latitude.values
+                lons = ds.longitude.values
 
             self.logger.info(f"CARRA dimensions: {lats.shape}")
 
@@ -163,7 +145,7 @@ class CARRAHandler(BaseDatasetHandler):
                         'lat_min': bbox[1] - buffer,
                         'lat_max': bbox[3] + buffer
                     }
-                    self.logger.info(f"Applying spatial filter based on HRU extent:")
+                    self.logger.info("Applying spatial filter based on HRU extent:")
                     self.logger.info(f"  Lon: {bbox_filter['lon_min']:.2f} to {bbox_filter['lon_max']:.2f}")
                     self.logger.info(f"  Lat: {bbox_filter['lat_min']:.2f} to {bbox_filter['lat_max']:.2f}")
                 except Exception as e:
@@ -180,7 +162,6 @@ class CARRAHandler(BaseDatasetHandler):
 
             if is_regular_grid:
                 # Regular lat/lon grid - create rectangular cells directly
-                import numpy as np
 
                 # Calculate grid spacing
                 lat_spacing = abs(float(lats[1] - lats[0])) if len(lats) > 1 else 0.025
@@ -194,39 +175,37 @@ class CARRAHandler(BaseDatasetHandler):
 
                 for lat_idx, center_lat in enumerate(lats):
                     for lon_idx, center_lon_raw in enumerate(lons):
-                        # Convert longitude from 0-360 to -180/180 range for filtering and vertices
+                        # Convert longitude from 0-360 to -180/180 range
                         if center_lon_raw > 180:
-                            center_lon_normalized = float(center_lon_raw - 360)
+                            center_lon = float(center_lon_raw - 360)
                         else:
-                            center_lon_normalized = float(center_lon_raw)
+                            center_lon = float(center_lon_raw)
 
                         center_lat = float(center_lat)
 
-                        # Apply spatial filter if available (using normalized longitude)
+                        # Apply spatial filter if available
                         if bbox_filter is not None:
-                            if (center_lon_normalized < bbox_filter['lon_min'] or center_lon_normalized > bbox_filter['lon_max'] or
+                            if (center_lon < bbox_filter['lon_min'] or center_lon > bbox_filter['lon_max'] or
                                 center_lat < bbox_filter['lat_min'] or center_lat > bbox_filter['lat_max']):
                                 cell_id += 1
                                 continue
 
-                        # Create rectangular cell (Counter-Clockwise for valid Polygon)
-                        # Use normalized coordinates for geometry
+                        # Create rectangular cell
                         half_dlat = lat_spacing / 2.0
                         half_dlon = lon_spacing / 2.0
 
                         vertices = [
-                            (center_lon_normalized - half_dlon, center_lat - half_dlat), # Bottom-Left
-                            (center_lon_normalized + half_dlon, center_lat - half_dlat), # Bottom-Right
-                            (center_lon_normalized + half_dlon, center_lat + half_dlat), # Top-Right
-                            (center_lon_normalized - half_dlon, center_lat + half_dlat), # Top-Left
-                            (center_lon_normalized - half_dlon, center_lat - half_dlat)  # Bottom-Left
+                            (center_lon - half_dlon, center_lat - half_dlat),
+                            (center_lon - half_dlon, center_lat + half_dlat),
+                            (center_lon + half_dlon, center_lat + half_dlat),
+                            (center_lon + half_dlon, center_lat - half_dlat),
+                            (center_lon - half_dlon, center_lat - half_dlat)
                         ]
 
                         geometries.append(Polygon(vertices))
                         ids.append(cell_id)
                         center_lats.append(center_lat)
-                        # Use raw longitude (0-360) for attribute column to match NetCDF
-                        center_lons.append(float(center_lon_raw))
+                        center_lons.append(center_lon)
                         cells_created += 1
                         cell_id += 1
 
@@ -264,7 +243,7 @@ class CARRAHandler(BaseDatasetHandler):
                         center_lat_raw = float(lats_flat[i])
                         center_lon_raw = float(lons_flat[i])
 
-                        # Convert longitude from 0-360 to -180/180 range for consistency/filtering
+                        # Convert longitude from 0-360 to -180/180 range for consistency
                         if center_lon_raw > 180:
                             center_lon_normalized = center_lon_raw - 360
                         else:
@@ -284,13 +263,12 @@ class CARRAHandler(BaseDatasetHandler):
                         half_dx = 1250  # meters
                         half_dy = 1250  # meters
 
-                        # Create grid cell (Counter-Clockwise for valid Polygon)
                         vertices = [
-                            (x - half_dx, y - half_dy), # Bottom-Left
-                            (x + half_dx, y - half_dy), # Bottom-Right
-                            (x + half_dx, y + half_dy), # Top-Right
-                            (x - half_dx, y + half_dy), # Top-Left
-                            (x - half_dx, y - half_dy)  # Bottom-Left
+                            (x - half_dx, y - half_dy),
+                            (x - half_dx, y + half_dy),
+                            (x + half_dx, y + half_dy),
+                            (x + half_dx, y - half_dy),
+                            (x - half_dx, y - half_dy)
                         ]
 
                         # Convert vertices back to lat/lon
@@ -308,9 +286,14 @@ class CARRAHandler(BaseDatasetHandler):
                         geometries.append(Polygon(lat_lon_vertices))
                         ids.append(i)
 
-                        center_lats.append(center_lat_raw)
-                        # Use raw longitude (0-360) for attribute column to match NetCDF
-                        center_lons.append(center_lon_raw)
+                        center_lon, center_lat = transformer.transform(x, y)
+                        # Extract scalar values if they're arrays
+                        if hasattr(center_lon, 'item'):
+                            center_lon = center_lon.item()
+                        if hasattr(center_lat, 'item'):
+                            center_lat = center_lat.item()
+                        center_lats.append(float(center_lat))
+                        center_lons.append(float(center_lon))
                         cells_created += 1
 
                 if bbox_filter is not None:
@@ -318,28 +301,25 @@ class CARRAHandler(BaseDatasetHandler):
 
             # Create GeoDataFrame
             self.logger.info(f"Creating GeoDataFrame with {cells_created} grid cells")
-            lat_col = self.config.get('FORCING_SHAPE_LAT_NAME', 'lat')
-            lon_col = self.config.get('FORCING_SHAPE_LON_NAME', 'lon')
-            
             gdf = gpd.GeoDataFrame({
                 'geometry': geometries,
                 'ID': ids,
-                lat_col: center_lats,
-                lon_col: center_lons,
+                self.config.get('FORCING_SHAPE_LAT_NAME'): center_lats,
+                self.config.get('FORCING_SHAPE_LON_NAME'): center_lons,
             }, crs='EPSG:4326')
-            
+
             # Calculate elevation using the safe method
             self.logger.info("Calculating elevation values using safe method")
             elevations = elevation_calculator(gdf, dem_path, batch_size=50)
             gdf['elev_m'] = elevations
-            
+
             # Save the shapefile
             self.logger.info(f"Saving CARRA shapefile to {output_shapefile}")
             gdf.to_file(output_shapefile)
             self.logger.info(f"CARRA grid shapefile created and saved to {output_shapefile}")
-            
+
             return output_shapefile
-            
+
         except Exception as e:
             self.logger.error(f"Error in create_carra_shapefile: {str(e)}")
             import traceback

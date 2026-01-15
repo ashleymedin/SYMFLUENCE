@@ -146,7 +146,14 @@ print_info "Staging mizuRoute..."
 
 MIZU_DIR="$INSTALLS_DIR/mizuRoute"
 if [ -d "$MIZU_DIR" ]; then
-    stage_binary "$MIZU_DIR/route/bin/mizuRoute.exe" "mizuroute" "mizuRoute"
+    # Try mizuRoute.exe first (Windows), then mizuRoute (Unix)
+    if [ -f "$MIZU_DIR/route/bin/mizuRoute.exe" ]; then
+        stage_binary "$MIZU_DIR/route/bin/mizuRoute.exe" "mizuroute" "mizuRoute"
+    elif [ -f "$MIZU_DIR/route/bin/mizuRoute" ]; then
+        stage_binary "$MIZU_DIR/route/bin/mizuRoute" "mizuroute" "mizuRoute"
+    else
+        print_warning "mizuRoute binary not found in $MIZU_DIR/route/bin"
+    fi
     stage_license "$MIZU_DIR" "mizuRoute"
 else
     print_warning "mizuRoute not installed"
@@ -223,6 +230,62 @@ if [ -d "$TAUDEM_DIR/bin" ]; then
     stage_license "$TAUDEM_DIR" "TauDEM"
 else
     print_warning "TauDEM not installed"
+fi
+
+# ============================================================================
+# Stage MESH
+# ============================================================================
+print_info "Staging MESH..."
+
+MESH_DIR="$INSTALLS_DIR/mesh"
+if [ -d "$MESH_DIR" ]; then
+    if [ -f "$MESH_DIR/bin/mesh.exe" ]; then
+        stage_binary "$MESH_DIR/bin/mesh.exe" "mesh" "MESH"
+    elif [ -f "$MESH_DIR/bin/mesh" ]; then
+        stage_binary "$MESH_DIR/bin/mesh" "mesh" "MESH"
+    else
+        print_warning "MESH binary not found (may not be built yet)"
+    fi
+    stage_license "$MESH_DIR" "MESH"
+else
+    print_warning "MESH not installed"
+fi
+
+# ============================================================================
+# Stage WMFire
+# ============================================================================
+print_info "Staging WMFire..."
+
+WMFIRE_DIR="$INSTALLS_DIR/wmfire"
+if [ -d "$WMFIRE_DIR" ]; then
+    # WMFire is a shared library, but we'll stage it for completeness
+    if [ "$(uname)" = "Darwin" ] && [ -f "$WMFIRE_DIR/lib/libwmfire.dylib" ]; then
+        stage_binary "$WMFIRE_DIR/lib/libwmfire.dylib" "libwmfire.dylib" "WMFire"
+    elif [ -f "$WMFIRE_DIR/lib/libwmfire.so" ]; then
+        stage_binary "$WMFIRE_DIR/lib/libwmfire.so" "libwmfire.so" "WMFire"
+    else
+        print_warning "WMFire binary not found (may not be built yet)"
+    fi
+    stage_license "$WMFIRE_DIR" "WMFire"
+else
+    print_warning "WMFire not installed"
+fi
+
+# ============================================================================
+# Stage RHESSys
+# ============================================================================
+print_info "Staging RHESSys..."
+
+RHESSYS_DIR="$INSTALLS_DIR/rhessys"
+if [ -d "$RHESSYS_DIR" ]; then
+    if [ -f "$RHESSYS_DIR/bin/rhessys" ]; then
+        stage_binary "$RHESSYS_DIR/bin/rhessys" "rhessys" "RHESSys"
+    else
+        print_warning "RHESSys binary not found (may not be built yet)"
+    fi
+    stage_license "$RHESSYS_DIR" "RHESSys"
+else
+    print_warning "RHESSys not installed"
 fi
 
 # ============================================================================

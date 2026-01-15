@@ -8,19 +8,16 @@ to HYPE-compatible daily observation formats.
 # Standard library imports
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 # Third-party imports
 import cdo
 import numpy as np
 import pandas as pd
 import xarray as xr
-import pint
 from tqdm import tqdm
 
 from ..utilities import BaseForcingProcessor
-
-ureg = pint.UnitRegistry()
 
 
 class HYPEForcingProcessor(BaseForcingProcessor):
@@ -77,14 +74,14 @@ class HYPEForcingProcessor(BaseForcingProcessor):
         """Execute the full HYPE forcing processing workflow."""
         self.logger.info("Merging HYPE forcing files...")
         merged_forcing_path = self._merge_forcing_files()
-        
+
         if not merged_forcing_path or not merged_forcing_path.exists():
             self.logger.error("Forcing merge failed, cannot proceed with daily conversion")
             return
 
         self.logger.info("Converting hourly forcing to HYPE daily observations...")
         self._convert_to_daily_obs(merged_forcing_path)
-        
+
         # Cleanup
         if merged_forcing_path.exists():
             merged_forcing_path.unlink()
@@ -97,22 +94,22 @@ class HYPEForcingProcessor(BaseForcingProcessor):
             return None
 
         merged_forcing_path = self.cache_path / 'merged_forcing.nc'
-        
+
         # Try CDO first (faster for large datasets)
         try:
             cdo_obj = cdo.Cdo()
             # If initialization succeeded, try merging
             self.logger.info("Merging forcing files with CDO...")
-            
+
             # split the files in batches as cdo cannot mergetime long list of file names
             batch_size = 20
             if len(easymore_nc_files) < batch_size:
                 batch_size = len(easymore_nc_files)
-            
-            files_split = np.array_split(easymore_nc_files, batch_size)
+
+            files_split: List[Any] = np.array_split(easymore_nc_files, batch_size)
             intermediate_files = []
 
-            for i in range(batch_size):
+            for i in tqdm(range(batch_size), desc="Merging forcing batches"):
                 batch_files = [str(f) for f in files_split[i].tolist()]
                 batch_output = self.cache_path / f"forcing_batch_{i}.nc"
                 cdo_obj.mergetime(input=batch_files, output=str(batch_output))
@@ -125,14 +122,14 @@ class HYPEForcingProcessor(BaseForcingProcessor):
             for f in intermediate_files:
                 if f.exists():
                     f.unlink()
-            
+
             self.logger.info("CDO merge successful")
 
         except (AttributeError, Exception) as e:
             self.logger.warning(f"CDO merge failed or CDO not available: {e}. Falling back to xarray...")
             try:
                 # Fallback to xarray (more portable but slower for huge files)
-                with xr.open_mfdataset(easymore_nc_files, combine='nested', concat_dim='time') as ds:
+                with xr.open_mfdataset(easymore_nc_files, combine='nested', concat_dim='time', data_vars='all') as ds:
                     ds.sortby('time').to_netcdf(merged_forcing_path)
                 self.logger.info("Xarray merge successful")
             except Exception as xe:
@@ -142,15 +139,15 @@ class HYPEForcingProcessor(BaseForcingProcessor):
         # Handle time shift and calendar
         if not merged_forcing_path.exists():
             return None
-            
+
         with xr.open_dataset(merged_forcing_path) as forcing:
             forcing = forcing.convert_calendar('standard')
             if self.timeshift != 0:
                 forcing['time'] = forcing['time'] + pd.Timedelta(hours=self.timeshift)
-            
+
             tmp_path = merged_forcing_path.with_suffix('.nc.tmp')
             forcing.to_netcdf(tmp_path)
-            
+
         os.replace(tmp_path, merged_forcing_path)
         return merged_forcing_path
 
@@ -158,20 +155,18 @@ class HYPEForcingProcessor(BaseForcingProcessor):
         """Convert hourly merged data to HYPE daily observation files."""
         def get_in_var(key):
             return self.forcing_units[key]['in_varname']
-        
-        def get_units(key):
-            return self.forcing_units[key].get('in_units'), self.forcing_units[key].get('out_units')
+
+        # Get temperature units for conversion (HYPE expects Celsius)
+        temp_units = self.forcing_units.get('temperature', {}).get('in_units', 'K')
 
         # TMAX
-        in_u, out_u = get_units('temperature')
         self._convert_hourly_to_daily(
             merged_forcing_path,
             get_in_var('temperature'),
             'TMAXobs',
             stat='max',
             output_file_name_txt=self.output_path / 'TMAXobs.txt',
-            in_units=in_u,
-            out_units=out_u
+            unit_conversion=temp_units  # Convert K to C if needed
         )
 
         # TMIN
@@ -181,8 +176,7 @@ class HYPEForcingProcessor(BaseForcingProcessor):
             'TMINobs',
             stat='min',
             output_file_name_txt=self.output_path / 'TMINobs.txt',
-            in_units=in_u,
-            out_units=out_u
+            unit_conversion=temp_units  # Convert K to C if needed
         )
 
         # Tobs (Mean)
@@ -192,20 +186,19 @@ class HYPEForcingProcessor(BaseForcingProcessor):
             'Tobs',
             stat='mean',
             output_file_name_txt=self.output_path / 'Tobs.txt',
-            in_units=in_u,
-            out_units=out_u
+            unit_conversion=temp_units  # Convert K to C if needed
         )
 
-        # Pobs (Sum -> Mean, because we convert to mm/day rate first)
-        in_u_p, out_u_p = get_units('precipitation')
+        # Pobs (Sum)
+        # Get precipitation units for conversion
+        precip_units = self.forcing_units.get('precipitation', {}).get('in_units', 'mm/s')
         self._convert_hourly_to_daily(
             merged_forcing_path,
             get_in_var('precipitation'),
             'Pobs',
-            stat='mean', # Changed from sum to mean because we convert to rate (mm/day) first
+            stat='sum',
             output_file_name_txt=self.output_path / 'Pobs.txt',
-            in_units=in_u_p,
-            out_units=out_u_p
+            unit_conversion=precip_units  # Pass units for conversion
         )
 
     def _convert_hourly_to_daily(
@@ -217,52 +210,52 @@ class HYPEForcingProcessor(BaseForcingProcessor):
         var_id: str = 'hruId',
         stat: str = 'max',
         output_file_name_txt: Optional[Path] = None,
-        in_units: Optional[str] = None,
-        out_units: Optional[str] = None
+        unit_conversion: Optional[str] = None
     ) -> xr.Dataset:
-        """Helper to resample hourly NetCDF to daily text file."""
+        """Helper to resample hourly NetCDF to daily text file.
+
+        Args:
+            input_file_name: Path to merged forcing NetCDF
+            variable_in: Input variable name
+            variable_out: Output variable name (for logging)
+            var_time: Time dimension name
+            var_id: HRU/subbasin ID variable name
+            stat: Aggregation statistic ('max', 'min', 'mean', 'sum')
+            output_file_name_txt: Output text file path
+            unit_conversion: Input units for conversion. If 'mm/s' or 'kg/m²/s' or 'kg m-2 s-1',
+                applies conversion factor of 3600 (seconds per hour) for hourly data.
+        """
         with xr.open_dataset(input_file_name) as ds:
             ds = ds.copy()
-            
-            # Robustly handle hruId: ensure it's a coordinate of the data variables
-            actual_id_level = var_id
+
+            # Apply unit conversion
+            if unit_conversion:
+                unit_lower = unit_conversion.lower()
+
+                # Precipitation: convert from rate (per second) to amount (per hour)
+                if unit_lower in ['mm/s', 'mm s-1', 'kg/m²/s', 'kg m-2 s-1', 'kg/m2/s']:
+                    # Multiply by 3600 seconds/hour to convert rate to hourly amount
+                    self.logger.info(f"Converting {variable_in} from {unit_conversion} to mm/hour (multiplying by 3600)")
+                    ds[variable_in] = ds[variable_in] * 3600.0
+
+                # Temperature: convert from Kelvin to Celsius
+                elif unit_lower in ['k', 'kelvin']:
+                    self.logger.info(f"Converting {variable_in} from Kelvin to Celsius (subtracting 273.15)")
+                    ds[variable_in] = ds[variable_in] - 273.15
+
+            # Get the mapping from hru dimension index to actual hruId values
+            # This is needed because hruId is often a data variable, not a coordinate
+            hru_id_mapping = None
             if var_id in ds.data_vars and var_id not in ds.coords:
-                ds = ds.set_coords(var_id)
-            
-            # Cast ID to integer
-            if var_id in ds.coords:
+                # hruId is a data variable - get the mapping from hru index to actual IDs
+                hru_id_values = ds[var_id].values.astype(int)
+                # Find the dimension name for hruId (typically 'hru')
+                hru_dim = ds[var_id].dims[0] if ds[var_id].dims else None
+                if hru_dim:
+                    hru_id_mapping = {i: int(hru_id_values[i]) for i in range(len(hru_id_values))}
+            elif var_id in ds.coords:
+                # hruId is already a coordinate - cast to int
                 ds.coords[var_id] = ds.coords[var_id].astype(int)
-            elif var_id in ds.data_vars:
-                ds[var_id] = ds[var_id].astype(int)
-
-            # If hruId exists as a coordinate but not a dimension, and 'hru' is the dimension,
-            # we need to make sure it's used for unstacking later.
-            if 'hruId' in ds.coords and 'hru' in ds.dims:
-                actual_id_level = 'hruId'
-
-            # Keep only required variables
-            variables_to_keep = [variable_in, var_time]
-            if var_id is not None:
-                variables_to_keep.append(var_id)
-            
-            # Apply Unit Conversion
-            if in_units and out_units and in_units != out_units:
-                try:
-                    # Deduce linear coefficients y = ax + b
-                    val0 = 0.0
-                    q0 = ureg.Quantity(val0, in_units)
-                    res0 = q0.to(out_units).magnitude
-                    b = res0
-                    
-                    val1 = 100.0
-                    q1 = ureg.Quantity(val1, in_units)
-                    res1 = q1.to(out_units).magnitude
-                    a = (res1 - res0) / val1
-                    
-                    ds[variable_in] = ds[variable_in] * a + b
-                    # self.logger.debug(f"Converted {variable_in} from {in_units} to {out_units} (a={a}, b={b})")
-                except Exception as e:
-                    self.logger.warning(f"Unit conversion failed for {variable_in} ({in_units}->{out_units}): {e}")
 
             # Ensure time index is sorted
             ds = ds.sortby('time')
@@ -279,56 +272,41 @@ class HYPEForcingProcessor(BaseForcingProcessor):
             else:
                 raise ValueError(f"Unsupported stat: {stat}")
 
-            # Extract variable
-            da = ds_daily[variable_in]
-            
-            # Use actual HRU IDs for the dimension coordinates to ensure headers match GeoData
-            if 'hruId' in ds.coords and 'hru' in da.dims:
-                da = da.assign_coords(hru=ds.coords['hruId'].values.astype(int))
-                actual_id_level = 'hru'
-            elif 'hru' in da.dims:
-                actual_id_level = 'hru'
-            else:
-                actual_id_level = var_id
+            # Extract variable and convert to dataframe
+            # Use to_series().unstack() to get time as index and IDs as columns
+            series = ds_daily[variable_in].to_series()
 
-            # Ensure no singleton spatial dimensions
-            if 'longitude' in da.dims and da.sizes['longitude'] == 1:
-                da = da.squeeze('longitude')
-            if 'latitude' in da.dims and da.sizes['latitude'] == 1:
-                da = da.squeeze('latitude')
-                
-            # Convert to dataframe and unstack
-            series = da.to_series()
-            
             # Dynamically determine the ID level name
-            if actual_id_level not in series.index.names:
-                for fallback in ['hruId', 'hru', 'id', 'subid']:
+            actual_id_level = var_id
+            if var_id not in series.index.names:
+                for fallback in ['id', 'hru', 'subid']:
                     if fallback in series.index.names:
                         actual_id_level = fallback
                         break
-            
+
             df = series.unstack(level=actual_id_level)
-            
-            # Ensure columns (subids) are integers
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(-1)
-                
-            df.columns = [int(float(c)) for c in df.columns]
-            
-            # HYPE subbasin IDs must start from 1. If 0 is present, shift ALL IDs.
-            # Only do this if it's strictly necessary (min ID is 0)
-            if min(df.columns) == 0:
-                df.columns = [c + 1 for c in df.columns]
-            
+
+            # Map column indices to actual hruId values if we have the mapping
+            if hru_id_mapping is not None:
+                # Columns are currently hru dimension indices (0, 1, 2, ...)
+                # Map them to actual hruId values
+                df.columns = [hru_id_mapping.get(int(c), int(c)) for c in df.columns]
+            else:
+                # Ensure columns (subids) are integers
+                df.columns = df.columns.astype(int)
+                # Shift 0-based IDs if needed (legacy behavior for backwards compatibility)
+                if 0 in df.columns:
+                    df.columns = [c + 1 if c == 0 else c for c in df.columns]
+
             df.columns.name = None
             df.index.name = 'time'
-            
+
             # Ensure time index is formatted as YYYY-MM-DD for HYPE
             df.index = pd.to_datetime(df.index).strftime('%Y-%m-%d')
-            
+
             if output_file_name_txt:
                 # HYPE observation files: header is 'time' then subids
                 # Separated by tabs
                 df.to_csv(output_file_name_txt, sep='\t', na_rep='-9999.0', index=True, float_format='%.3f')
-            
+
             return ds_daily

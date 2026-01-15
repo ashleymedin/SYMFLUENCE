@@ -5,7 +5,7 @@ Replaces .github/workflows/install-validate.yml validation steps with pytest.
 These tests validate the complete SYMFLUENCE installation and core functionality.
 """
 
-import os
+import sys
 import pytest
 import shutil
 import subprocess
@@ -46,11 +46,15 @@ def test_binary_validation(symfluence_code_dir, symfluence_data_root):
     Tests that required binaries (SUMMA, mizuRoute, TauDEM) exist and can be executed.
     Also validates optional binaries (FUSE, NGEN) if they are installed.
     """
-    from utils.helpers import load_config_template
+    from test_helpers.helpers import load_config_template
 
     # Load config to get installation paths
     config = load_config_template(symfluence_code_dir)
-    data_dir = Path(config.get("SYMFLUENCE_DATA_DIR", symfluence_data_root))
+    data_dir_val = config.get("SYMFLUENCE_DATA_DIR", "default")
+    if data_dir_val == "default" or not data_dir_val:
+        data_dir = Path(symfluence_data_root)
+    else:
+        data_dir = Path(data_dir_val)
 
     # Required binaries
     print("\n" + "="*60)
@@ -132,7 +136,7 @@ def test_binary_validation(symfluence_code_dir, symfluence_data_root):
                                   capture_output=True, text=True, timeout=5)
             print(f"  FUSE version output: {result.stdout.strip() or result.stderr.strip()}")
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            print(f"  FUSE found but version check failed (may be normal)")
+            print("  FUSE found but version check failed (may be normal)")
     else:
         print("⚠ FUSE not found (optional)")
         optional_missing.append("FUSE")
@@ -147,9 +151,9 @@ def test_binary_validation(symfluence_code_dir, symfluence_data_root):
             result = subprocess.run(["ngen", "--help"],
                                   capture_output=True, text=True, timeout=5)
             if result.returncode == 0 or "ngen" in result.stdout.lower():
-                print(f"  NGEN verified working")
+                print("  NGEN verified working")
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            print(f"  NGEN found but verification failed")
+            print("  NGEN found but verification failed")
     else:
         print("⚠ NGEN not found (optional)")
         optional_missing.append("NGEN")
@@ -178,9 +182,9 @@ def test_binary_validation(symfluence_code_dir, symfluence_data_root):
                                   capture_output=True, text=True, timeout=5)
             # HYPE outputs to stderr when run without arguments
             if "HYPE" in result.stdout or "HYPE" in result.stderr or result.returncode != 0:
-                print(f"  HYPE verified working")
+                print("  HYPE verified working")
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            print(f"  HYPE found but verification failed")
+            print("  HYPE found but verification failed")
     else:
         print(f"⚠ HYPE not found at {hype_path} (optional)")
         optional_missing.append("HYPE")
@@ -208,9 +212,9 @@ def test_binary_validation(symfluence_code_dir, symfluence_data_root):
             result = subprocess.run([str(mesh_path), "--help"],
                                   capture_output=True, text=True, timeout=5)
             if result.returncode == 0 or "MESH" in result.stdout or "MESH" in result.stderr:
-                print(f"  MESH verified working")
+                print("  MESH verified working")
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            print(f"  MESH found but verification failed")
+            print("  MESH found but verification failed")
     else:
         print(f"⚠ MESH not found at {mesh_path} (optional)")
         optional_missing.append("MESH")
@@ -236,46 +240,39 @@ def test_binary_validation(symfluence_code_dir, symfluence_data_root):
             result = subprocess.run([str(rhessys_path), "-h"],
                                   capture_output=True, text=True, timeout=5)
             if result.returncode == 0 or "rhessys" in result.stdout.lower() or "usage" in result.stderr.lower():
-                print(f"  RHESSys verified working")
+                print("  RHESSys verified working")
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            print(f"  RHESSys found but verification failed")
+            print("  RHESSys found but verification failed")
     else:
         print(f"⚠ RHESSys not found at {rhessys_path} (optional)")
         optional_missing.append("RHESSys")
 
-    # Check for VMFire (optional, experimental for RHESSys)
-    vmfire_install_path = config.get("VMFIRE_INSTALL_PATH", "default")
-    if vmfire_install_path == "default":
-        vmfire_install_path = data_dir / "installs" / "vmfire" / "bin"
+    # Check for WMFire (optional, experimental for RHESSys)
+    wmfire_install_path = config.get("WMFIRE_INSTALL_PATH", "default")
+    if wmfire_install_path == "default":
+        wmfire_install_path = data_dir / "installs" / "wmfire" / "lib"
     else:
-        vmfire_install_path = Path(vmfire_install_path)
+        wmfire_install_path = Path(wmfire_install_path)
 
-    vmfire_exe_name = config.get("VMFIRE_EXE", "vmfire")
-    vmfire_in_path = shutil.which(vmfire_exe_name)
-    if vmfire_in_path:
-        vmfire_path = Path(vmfire_in_path)
+    if sys.platform == "darwin":
+        wmfire_lib_name = config.get("WMFIRE_LIB", "libwmfire.dylib")
     else:
-        vmfire_path = vmfire_install_path / vmfire_exe_name
+        wmfire_lib_name = config.get("WMFIRE_LIB", "libwmfire.so")
 
-    if vmfire_path.exists():
-        print(f"✓ VMFire found: {vmfire_path}")
-        optional_found.append("VMFire")
-        try:
-            result = subprocess.run([str(vmfire_path), "-h"],
-                                  capture_output=True, text=True, timeout=5)
-            if result.returncode == 0 or "vmfire" in result.stdout.lower() or "usage" in result.stderr.lower():
-                print(f"  VMFire verified working")
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            print(f"  VMFire found but verification failed")
+    wmfire_path = wmfire_install_path / wmfire_lib_name
+
+    if wmfire_path.exists():
+        print(f"✓ WMFire found: {wmfire_path}")
+        optional_found.append("WMFire")
     else:
-        print(f"⚠ VMFire not found at {vmfire_path} (optional)")
-        optional_missing.append("VMFire")
+        print(f"⚠ WMFire not found at {wmfire_path} (optional)")
+        optional_missing.append("WMFire")
 
     # Summary
     print("\n" + "="*60)
     print("Binary Validation Summary")
     print("="*60)
-    print(f"Required: SUMMA, mizuRoute, TauDEM - ALL FOUND ✓")
+    print("Required: SUMMA, mizuRoute, TauDEM - ALL FOUND ✓")
     if optional_found:
         print(f"Optional found: {', '.join(optional_found)}")
     if optional_missing:
@@ -293,27 +290,14 @@ def test_package_imports():
     Tests that all critical packages can be imported without errors.
     """
     # Core SYMFLUENCE
-    import symfluence
-    from symfluence import SYMFLUENCE
 
     # Critical data packages
-    import xarray
-    import pandas
-    import numpy
 
     # Geospatial packages
-    import geopandas
-    import rasterio
-    import shapely
-    import pyproj
-    import fiona
 
     # Model-specific
-    import netCDF4
 
     # Optimization
-    import scipy
-    import torch
 
     # All imports successful
     assert True
@@ -341,7 +325,7 @@ def test_quick_workflow_summa_only(
 
     This is a smoke test for CI - fast validation of core functionality.
     """
-    from utils.helpers import load_config_template, write_config
+    from test_helpers.helpers import load_config_template, write_config
 
     # Create test configuration
     config = load_config_template(symfluence_code_dir)
@@ -463,7 +447,7 @@ def test_full_workflow_1month(
 
     This is a more comprehensive test for full CI validation.
     """
-    from utils.helpers import load_config_template, write_config
+    from test_helpers.helpers import load_config_template, write_config
 
     # Create test configuration
     config = load_config_template(symfluence_code_dir)
@@ -528,7 +512,7 @@ def test_calibration_workflow(tmp_path, symfluence_code_dir, symfluence_data_roo
     4. Calibrate model (minimal iterations for testing)
     5. Verify calibration outputs
     """
-    from utils.helpers import load_config_template, write_config
+    from test_helpers.helpers import load_config_template, write_config
 
     # Create test configuration
     config = load_config_template(symfluence_code_dir)

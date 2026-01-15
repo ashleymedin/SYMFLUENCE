@@ -17,7 +17,7 @@ Author: SYMFLUENCE Development Team
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import geopandas as gpd
 import pandas as pd
@@ -25,8 +25,7 @@ import xarray as xr
 
 from ..registry import ModelRegistry
 from ..templates import UnifiedModelRunner, ModelRunResult
-from ..execution import ExecutionResult, SlurmJobConfig, ExecutionMode
-from symfluence.core.exceptions import ModelExecutionError
+from ..execution import ExecutionResult, SlurmJobConfig
 
 
 @ModelRegistry.register_runner('SUMMA', method_name='run_summa')
@@ -330,7 +329,7 @@ class SummaRunner(UnifiedModelRunner):
         if merged_ds is not None:
             encoding = {'time': {'dtype': 'double', '_FillValue': None}}
             for var in merged_ds.data_vars:
-                encoding[var] = {'_FillValue': None}
+                encoding[str(var)] = {'_FillValue': None}
 
             merged_ds.to_netcdf(
                 output_file,
@@ -406,7 +405,7 @@ class SummaRunner(UnifiedModelRunner):
             # Run IC simulation
             ic_log_file = log_path / f"{site_name}_IC.log"
             self.logger.debug(f"Writing IC logs to: {ic_log_file}")
-            
+
             ic_result = self.execute_subprocess(
                 command=[str(self.model_exe), '-m', ic_fm, '-r', 'e'],
                 log_file=ic_log_file,
@@ -430,7 +429,7 @@ class SummaRunner(UnifiedModelRunner):
             # Run main simulation
             main_log_file = log_path / f"{site_name}_main.log"
             self.logger.debug(f"Writing main logs to: {main_log_file}")
-            
+
             main_result = self.execute_subprocess(
                 command=[str(self.model_exe), '-m', main_fm],
                 log_file=main_log_file,

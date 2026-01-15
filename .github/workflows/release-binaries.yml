@@ -61,7 +61,7 @@ jobs:
       # ========================================================================
       - name: Validate version synchronization
         run: |
-          echo "Checking that pyproject.toml and npm/package.json versions match..."
+          echo "Checking that pyproject.toml and tools/npm/package.json versions match..."
           chmod +x scripts/check_version_sync.sh
           ./scripts/check_version_sync.sh
 
@@ -150,12 +150,12 @@ jobs:
           # Install SYMFLUENCE package
           "$PYTHON_CMD" -m pip install -e .
 
-          # Build external tools using Python module directly
-          echo "Running: $PYTHON_CMD -m symfluence.cli --get_executables"
-          "$PYTHON_CMD" -m symfluence.cli --get_executables
+          # Build external tools using symfluence command
+          echo "Running: symfluence binary install"
+          ./symfluence binary install
 
           echo "Build external tools completed successfully"
-          
+
           # Debug: Verify installation directory
           echo "Verifying installation directory:"
           ls -la "${{ env.SYMFLUENCE_DATA }}" || echo "SYMFLUENCE_DATA not found"
@@ -265,7 +265,7 @@ jobs:
   publish-npm:
     name: Publish to npm
     needs: build-and-release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     if: success() && !github.event.release.prerelease
 
     steps:
@@ -300,7 +300,7 @@ jobs:
           if [ "$VERSION" != "$PKG_VERSION" ]; then
             echo "❌ Version mismatch!"
             echo "   package.json has $PKG_VERSION but release tag is $TAG"
-            echo "   Update npm/package.json to version $VERSION and try again"
+            echo "   Update tools/npm/package.json to version $VERSION and try again"
             exit 1
           fi
 
@@ -448,7 +448,7 @@ jobs:
   release-summary:
     name: Release Summary
     needs: [build-and-release, publish-npm, test-npm-install]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     if: always()
 
     steps:

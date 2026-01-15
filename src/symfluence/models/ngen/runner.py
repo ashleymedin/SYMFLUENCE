@@ -9,7 +9,7 @@ import os
 import subprocess
 import re
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
 from symfluence.models.registry import ModelRegistry
 from symfluence.models.base import BaseModelRunner
@@ -53,13 +53,13 @@ class NgenRunner(BaseModelRunner, ModelExecutor):
             ngen_base / "cmake_build" / "ngen",
             ngen_base / "bin" / "ngen"
         ]
-        
+
         self.ngen_exe = None
         for cand in candidates:
             if cand.exists():
                 self.ngen_exe = cand
                 break
-        
+
         if self.ngen_exe is None:
             # Fallback to get_model_executable if none found
             self.ngen_exe = self.get_model_executable(
@@ -112,14 +112,14 @@ class NgenRunner(BaseModelRunner, ModelExecutor):
                 domain_name = self.config.domain.name
             else:
                 domain_name = self.config_dict.get('DOMAIN_NAME')
-            
+
             # Force GeoJSON on macOS due to widespread GPKG/SQLite mismatch issues in ngen builds
             import platform
             use_geojson = getattr(self, "_use_geojson_catchments", False)
             if platform.system() == "Darwin":
                 self.logger.info("Forcing GeoJSON catchments on macOS for stability")
                 use_geojson = True
-            
+
             if use_geojson:
                 catchment_file = self.ngen_setup_dir / f"{domain_name}_catchments.geojson"
             else:
@@ -170,7 +170,7 @@ class NgenRunner(BaseModelRunner, ModelExecutor):
                     install_path = self.config.model.ngen.install_path
                 else:
                     install_path = self.config_dict.get('NGEN_INSTALL_PATH', 'default')
-                
+
                 if install_path == 'default':
                     ngen_base = self.data_dir.parent / 'installs' / 'ngen'
                 else:
@@ -180,21 +180,21 @@ class NgenRunner(BaseModelRunner, ModelExecutor):
 
                 # Try both ngen_base/extern and ngen_base/cmake_build/extern
                 lib_paths = []
-                for sub in ["extern/sloth/cmake_build", "extern/cfe/cmake_build", 
+                for sub in ["extern/sloth/cmake_build", "extern/cfe/cmake_build",
                             "extern/evapotranspiration/evapotranspiration/cmake_build",
                             "extern/noah-owp-modular/cmake_build"]:
                     p1 = ngen_base / sub
                     p2 = ngen_base / "cmake_build" / sub
                     if p1.exists(): lib_paths.append(str(p1.resolve()))
                     elif p2.exists(): lib_paths.append(str(p2.resolve()))
-                
+
                 # Add ngen build dir itself and brew libs
                 lib_paths.append(str(self.ngen_exe.parent.resolve()))
                 lib_paths.append("/opt/homebrew/lib")
 
                 # Set library path based on OS
                 lib_path_str = ':'.join(lib_paths)
-                
+
                 # Set both for safety, though only one might be used by the linker
                 for var in ['DYLD_LIBRARY_PATH', 'LD_LIBRARY_PATH', 'DYLD_FALLBACK_LIBRARY_PATH']:
                     existing_path = env.get(var, '')
@@ -213,19 +213,28 @@ class NgenRunner(BaseModelRunner, ModelExecutor):
                 # Move outputs from build directory to output directory
                 self._move_ngen_outputs(self.ngen_exe.parent, output_dir)
 
+                # Run t-route routing if configured
+                if self.config_dict.get('NGEN_RUN_TROUTE', True):  # Default to True
+                    self.logger.info("Starting t-route routing...")
+                    troute_success = self._run_troute_routing(output_dir)
+                    if not troute_success:
+                        self.logger.warning("T-Route routing failed or not available. Continuing with NGEN outputs only.")
+                else:
+                    self.logger.info("T-Route routing disabled in config")
+
                 return True
 
             except subprocess.CalledProcessError as e:
                 # On macOS, code -6 (SIGABRT) is common for GPKG issues if SQLite is missing/mismatched
                 is_likely_sqlite_issue = (e.returncode == -6)
-                
+
                 if not use_geojson and fallback_catchment_file.exists():
                     try:
                         log_text = log_file.read_text(errors='ignore')
                     except Exception:
                         log_text = ""
                     sqlite_error = "SQLite3 support required to read GeoPackage files"
-                    
+
                     if is_likely_sqlite_issue or sqlite_error in log_text:
                         self.logger.warning(
                             f"NGEN failed (code {e.returncode}); retrying with GeoJSON catchments"
@@ -252,21 +261,21 @@ class NgenRunner(BaseModelRunner, ModelExecutor):
                 self.logger.error(f"NextGen model run failed with error code {e.returncode}")
                 self.logger.error(f"Check log file: {log_file}")
                 return False
-    
+
     def _patch_realization_libraries(self, realization_file: Path):
         """Patch realization config to use absolute paths for libraries and init_configs."""
         import json
         try:
             with open(realization_file, 'r') as f:
                 data = json.load(f)
-            
+
             changed = False
             # Determine absolute ngen base directory
             if self.config and self.config.model.ngen:
                 install_path = self.config.model.ngen.install_path
             else:
                 install_path = self.config_dict.get('NGEN_INSTALL_PATH', 'default')
-            
+
             if install_path == 'default':
                 ngen_base = self.data_dir.parent / 'installs' / 'ngen'
             else:
@@ -279,7 +288,7 @@ class NgenRunner(BaseModelRunner, ModelExecutor):
                     if 'params' in formulation and 'modules' in formulation['params']:
                         for module in formulation['params']['modules']:
                             mod_params = module.get('params', {})
-                            
+
                             # 1. Patch library_file
                             if 'library_file' in mod_params:
                                 lib_path = mod_params['library_file']
@@ -292,14 +301,14 @@ class NgenRunner(BaseModelRunner, ModelExecutor):
                                     target_subpath = "extern/sloth/cmake_build"
                                 elif 'surface' in lib_path.lower() or 'noah' in lib_path.lower():
                                     target_subpath = "extern/noah-owp-modular/cmake_build"
-                                
+
                                 if target_subpath:
                                     filename = Path(lib_path).name
                                     # Try both ngen_base/extern and ngen_base/cmake_build/extern
                                     p1 = ngen_base / target_subpath
                                     p2 = ngen_base / "cmake_build" / target_subpath
                                     lib_dir = p1 if p1.exists() else p2
-                                    
+
                                     actual_lib = None
                                     if (lib_dir / filename).exists():
                                         actual_lib = lib_dir / filename
@@ -307,7 +316,7 @@ class NgenRunner(BaseModelRunner, ModelExecutor):
                                         candidates = list(lib_dir.glob(f"{filename.split('.')[0]}*.dylib"))
                                         if candidates:
                                             actual_lib = candidates[0]
-                                    
+
                                     if actual_lib:
                                         abs_lib_path = str(actual_lib.resolve())
                                         if mod_params['library_file'] != abs_lib_path:
@@ -324,7 +333,7 @@ class NgenRunner(BaseModelRunner, ModelExecutor):
                                     if 'PET' in mod_type_name or 'pet' in old_path.lower(): target_mod = 'PET'
                                     elif 'CFE' in mod_type_name or 'cfe' in old_path.lower(): target_mod = 'CFE'
                                     elif 'NOAH' in mod_type_name or 'noah' in old_path.lower() or '.input' in old_path.lower(): target_mod = 'NOAH'
-                                    
+
                                     if target_mod:
                                         filename = Path(old_path).name
                                         # Replace {{id}} template placeholder with actual catchment ID if present
@@ -346,7 +355,7 @@ class NgenRunner(BaseModelRunner, ModelExecutor):
                                             mod_params['init_config'] = new_path
                                             changed = True
                                             self.logger.debug(f"Patched {target_mod} init_config to {new_path}")
-            
+
             # 3. Patch forcing file pattern
             if 'global' in data and 'forcing' in data['global']:
                 forcing = data['global']['forcing']
@@ -364,43 +373,51 @@ class NgenRunner(BaseModelRunner, ModelExecutor):
                                 forcing['file_pattern'] = pattern
                                 changed = True
                                 self.logger.debug(f"Patched forcing file pattern to {pattern}")
-            
+
+            # 4. Patch output_root for isolated calibration directories
+            if '_ngen_output_dir' in self.config_dict:
+                isolated_output_dir = str(Path(self.config_dict['_ngen_output_dir']).resolve())
+                if data.get('output_root') != isolated_output_dir:
+                    data['output_root'] = isolated_output_dir
+                    changed = True
+                    self.logger.debug(f"Patched output_root to {isolated_output_dir}")
+
             if changed:
                 with open(realization_file, 'w') as f:
                     json.dump(data, f, indent=2)
-                self.logger.info(f"Patched absolute paths in realization config copy")
+                self.logger.info("Patched absolute paths in realization config copy")
         except Exception as e:
             self.logger.warning(f"Failed to patch realization libraries: {e}")
 
     def _move_ngen_outputs(self, build_dir: Path, output_dir: Path):
         """
         Move ngen output files from build directory to output directory.
-        
+
         ngen writes outputs to its working directory, so we need to move them
         to the proper experiment output directory.
-        
+
         Args:
             build_dir: ngen build directory where outputs are written
             output_dir: Target output directory for this experiment
         """
         import shutil
-        
+
         # Common ngen output patterns
         output_patterns = [
             'cat-*.csv',      # Catchment outputs
-            'nex-*.csv',      # Nexus outputs  
+            'nex-*.csv',      # Nexus outputs
             '*.parquet',      # Parquet outputs
             'cfe_output_*.txt',  # CFE specific outputs
             'noah_output_*.txt', # Noah specific outputs
         ]
-        
+
         moved_files = []
         for pattern in output_patterns:
             for file in build_dir.glob(pattern):
                 dest = output_dir / file.name
                 shutil.move(str(file), str(dest))
                 moved_files.append(file.name)
-        
+
         if moved_files:
             self.logger.debug(f"Moved {len(moved_files)} output files to {output_dir}")
             for f in moved_files[:10]:  # Log first 10
@@ -408,10 +425,66 @@ class NgenRunner(BaseModelRunner, ModelExecutor):
             if len(moved_files) > 10:
                 self.logger.debug(f"  ... and {len(moved_files) - 10} more")
         else:
-            existing_outputs = []
+            existing_outputs: list[Any] = []
             for pattern in output_patterns:
                 existing_outputs.extend(output_dir.glob(pattern))
             if not existing_outputs:
                 self.logger.warning(
                     f"No output files found in {build_dir} or {output_dir}. Check if model ran correctly."
                 )
+
+    def _run_troute_routing(self, output_dir: Path) -> bool:
+        """
+        Run t-route routing on NGEN nexus outputs.
+
+        Args:
+            output_dir: Directory containing NGEN outputs (nex-*.csv files)
+
+        Returns:
+            True if routing succeeded, False otherwise
+        """
+        try:
+            # Check if ngen_routing is available
+            from ngen_routing.ngen_main import ngen_main
+        except ImportError:
+            self.logger.info("T-Route (ngen_routing) not installed. Skipping routing.")
+            return False
+
+        # Find t-route config
+        troute_config = self.ngen_setup_dir / "troute_config.yaml"
+        if not troute_config.exists():
+            self.logger.warning(f"T-Route config not found: {troute_config}. Skipping routing.")
+            return False
+
+        # Create troute output directory
+        troute_output_dir = output_dir / "troute_output"
+        troute_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build t-route command arguments
+        troute_args = [
+            "-f", str(troute_config),  # Config file
+            "-V", str(output_dir),      # Nexus output folder (NGEN outputs)
+        ]
+
+        self.logger.info(f"Running t-route with config: {troute_config}")
+        self.logger.debug(f"T-Route args: {troute_args}")
+
+        # Run t-route
+        troute_log = output_dir / "troute_log.txt"
+        try:
+            from contextlib import redirect_stdout, redirect_stderr
+
+            # Capture t-route output to log file
+            with open(troute_log, 'w') as log_f:
+                with redirect_stdout(log_f), redirect_stderr(log_f):
+                    ngen_main(troute_args)
+
+            self.logger.info("T-Route routing completed successfully")
+            self.logger.info(f"T-Route log: {troute_log}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"T-Route routing failed: {e}")
+            if troute_log.exists():
+                self.logger.error(f"Check t-route log: {troute_log}")
+            return False

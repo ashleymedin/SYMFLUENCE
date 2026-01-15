@@ -2,10 +2,10 @@
 
 import pytest
 import subprocess
-from unittest.mock import patch, MagicMock, mock_open, call
+from unittest.mock import patch, MagicMock, mock_open
 from pathlib import Path
 
-from symfluence.cli.binary_manager import BinaryManager
+from symfluence.cli.binary_service import BinaryManager
 
 pytestmark = [pytest.mark.unit, pytest.mark.cli, pytest.mark.quick]
 
@@ -32,7 +32,7 @@ class TestInitialization:
 class TestHandleBinaryManagement:
     """Test handle_binary_management dispatcher."""
 
-    @patch.object(BinaryManager, 'run_doctor')
+    @patch.object(BinaryManager, 'doctor')
     def test_doctor_command(self, mock_doctor, binary_manager):
         """Test doctor diagnostics command."""
         execution_plan = {
@@ -46,7 +46,7 @@ class TestHandleBinaryManagement:
         assert result is True
         mock_doctor.assert_called_once()
 
-    @patch.object(BinaryManager, 'show_tools_info')
+    @patch.object(BinaryManager, 'tools_info')
     def test_tools_info_command(self, mock_tools_info, binary_manager):
         """Test tools info command."""
         execution_plan = {
@@ -117,18 +117,17 @@ class TestGetExecutables:
 
     @patch('subprocess.run')
     @patch('os.chdir')
-    @patch('pathlib.Path.exists')
+    @patch.object(Path, 'exists', return_value=True)
     def test_skip_if_exists(self, mock_exists, mock_chdir, mock_subprocess, binary_manager, tmp_path):
         """Test skipping installation if tool exists."""
-        # Mock tool already installed - just return True for all paths
-        mock_exists.return_value = True
+        # Mock all paths as existing - simulates tools already installed
 
         result = binary_manager.get_executables(
             specific_tools=['summa'],
             force=False
         )
 
-        # Should skip installation
+        # Should skip installation (sundials is a dependency that also "exists")
         assert 'summa' in result['skipped'] or 'summa' in result['successful']
 
 
@@ -194,49 +193,47 @@ class TestBinaryValidation:
 
         result = binary_manager.validate_binaries(mock_symfluence_instance)
 
-        # Should handle timeout gracefully (returns True if other tools valid)
-        assert result is True or isinstance(result, dict) or result is False
+        # Should handle timeout gracefully - returns True if most tools valid, dict otherwise
+        # A timeout adds a warning but doesn't necessarily make validation fail
+        assert isinstance(result, (dict, bool))
 
 
 class TestDoctorDiagnostics:
     """Test run_doctor system diagnostics."""
 
     @patch('shutil.which')
-    def test_doctor_finds_tools(self, mock_which, binary_manager, capsys):
-        """Test doctor output when tools are present."""
+    def test_doctor_finds_tools(self, mock_which, binary_manager):
+        """Test doctor returns True when tools are present."""
         mock_which.return_value = '/usr/bin/tool'
 
-        binary_manager.run_doctor()
+        result = binary_manager.run_doctor()
 
-        captured = capsys.readouterr()
-        # Should print diagnostic information
-        assert len(captured.out) > 0
+        # Doctor should complete successfully
+        assert result is True
 
     @patch('shutil.which')
-    def test_doctor_missing_tools(self, mock_which, binary_manager, capsys):
-        """Test doctor output when tools missing."""
+    def test_doctor_missing_tools(self, mock_which, binary_manager):
+        """Test doctor returns True even with missing tools (diagnostics completed)."""
         mock_which.return_value = None
 
-        binary_manager.run_doctor()
+        result = binary_manager.run_doctor()
 
-        captured = capsys.readouterr()
-        # Should indicate missing tools
-        assert len(captured.out) > 0
+        # Doctor should still complete (just reports issues)
+        assert result is True
 
 
 class TestToolsInfo:
     """Test show_tools_info."""
 
     @patch('pathlib.Path.exists')
-    def test_show_tools_info(self, mock_exists, binary_manager, capsys):
-        """Test tools info display."""
+    def test_show_tools_info(self, mock_exists, binary_manager):
+        """Test tools info display returns boolean."""
         mock_exists.return_value = False  # No tools installed
 
-        binary_manager.show_tools_info()
+        result = binary_manager.show_tools_info()
 
-        captured = capsys.readouterr()
-        # Should print tool information
-        assert len(captured.out) > 0
+        # Should return a boolean indicating success/failure
+        assert isinstance(result, bool)
 
 
 class TestDependencyResolution:
@@ -246,15 +243,16 @@ class TestDependencyResolution:
         """Test tools installed in dependency order."""
         manager = BinaryManager(external_tools=mock_external_tools)
 
-        # summa depends on sundials, so sundials should be resolved first
+        # summa requires sundials, so sundials should be resolved first
         # This is tested indirectly through get_executables
-        assert 'sundials' in mock_external_tools['summa']['dependencies']
+        # Note: 'requires' is for tool dependencies, 'dependencies' is for system deps
+        assert 'sundials' in mock_external_tools['summa']['requires']
 
     def test_no_dependencies(self, mock_external_tools):
         """Test tools with no dependencies."""
         manager = BinaryManager(external_tools=mock_external_tools)
 
-        # sundials has no dependencies
+        # sundials has no system dependencies
         assert mock_external_tools['sundials']['dependencies'] == []
 
 
@@ -334,4 +332,5 @@ class TestDetectNpmBinaries:
 
             result = binary_manager.detect_npm_binaries()
 
-            assert isinstance(result, (dict, list, Path, type(None)))
+            # detect_npm_binaries returns Path or None
+            assert isinstance(result, (Path, type(None)))

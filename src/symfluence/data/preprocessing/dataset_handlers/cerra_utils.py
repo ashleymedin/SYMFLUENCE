@@ -8,12 +8,12 @@ CERRA (Copernicus European Regional Reanalysis) covers Europe at 5.5 km resoluti
 from pathlib import Path
 from typing import Dict, Tuple
 import xarray as xr
-import geopandas as gpd
 from shapely.geometry import Polygon
 import numpy as np
 
 from .base_dataset import BaseDatasetHandler
 from .dataset_registry import DatasetRegistry
+from ...utils import VariableStandardizer
 
 
 @DatasetRegistry.register('cerra')
@@ -24,31 +24,13 @@ class CERRAHandler(BaseDatasetHandler):
         """
         CERRA variable name mapping to standard names.
 
+        Uses centralized VariableStandardizer for consistency across the codebase.
+
         Returns:
             Dictionary mapping CERRA variable names to standard names
         """
-        return {
-            # CERRA variable names from CDS
-            't2m': 'airtemp',               # 2m temperature
-            'r2': 'relhum',                 # 2m relative humidity
-            'tp': 'pptrate',                # total precipitation
-            'sp': 'airpres',                # surface pressure
-            'q': 'spechum',                 # specific humidity (if available)
-            'u10': 'windspd_u',             # 10m U wind component
-            'v10': 'windspd_v',             # 10m V wind component
-            'ws10': 'windspd',              # 10m wind speed
-            'ssrd': 'SWRadAtm',             # surface solar radiation downwards
-            'strd': 'LWRadAtm',             # surface thermal radiation downwards
-            '2m_temperature': 'airtemp',
-            '2m_relative_humidity': 'relhum',
-            'total_precipitation': 'pptrate',
-            'surface_pressure': 'airpres',
-            '10m_u_component_of_wind': 'windspd_u',
-            '10m_v_component_of_wind': 'windspd_v',
-            'surface_solar_radiation_downwards': 'SWRadAtm',
-            'surface_thermal_radiation_downwards': 'LWRadAtm',
-            'thermal_surface_radiation_downwards': 'LWRadAtm',
-        }
+        standardizer = VariableStandardizer(self.logger)
+        return standardizer.get_rename_map('CERRA')
 
     def process_dataset(self, ds: xr.Dataset) -> xr.Dataset:
         """
@@ -230,7 +212,7 @@ class CERRAHandler(BaseDatasetHandler):
                     elif 'lat' in ds.variables:
                         lats = ds['lat'].values
                     else:
-                        raise KeyError(f"Latitude coordinate not found in CERRA file")
+                        raise KeyError("Latitude coordinate not found in CERRA file")
 
                 if var_lon in ds.coords:
                     lons = ds.coords[var_lon].values
@@ -243,7 +225,7 @@ class CERRAHandler(BaseDatasetHandler):
                     elif 'lon' in ds.variables:
                         lons = ds['lon'].values
                     else:
-                        raise KeyError(f"Longitude coordinate not found in CERRA file")
+                        raise KeyError("Longitude coordinate not found in CERRA file")
 
             self.logger.info(f"CERRA grid dimensions: lat={lats.shape}, lon={lons.shape}")
 
@@ -270,7 +252,7 @@ class CERRAHandler(BaseDatasetHandler):
                         'lat_min': bbox[1] - buffer,
                         'lat_max': bbox[3] + buffer
                     }
-                    self.logger.info(f"✓ Applying spatial filter based on HRU extent:")
+                    self.logger.info("✓ Applying spatial filter based on HRU extent:")
                     self.logger.info(f"  Lon: {bbox_filter['lon_min']:.2f} to {bbox_filter['lon_max']:.2f}")
                     self.logger.info(f"  Lat: {bbox_filter['lat_min']:.2f} to {bbox_filter['lat_max']:.2f}")
                 except Exception as e:
@@ -293,7 +275,7 @@ class CERRAHandler(BaseDatasetHandler):
                 # SPECIAL CASE: Single point forcing (1x1 grid)
                 if len(lats) == 1 and len(lons) == 1:
                     self.logger.info("Detected 1x1 CERRA grid. Creating catchment-covering polygon.")
-                    
+
                     # If we have the HRU shapefile, use it to ensure full coverage
                     poly_created = False
                     if hru_shapefile.exists():
@@ -301,12 +283,12 @@ class CERRAHandler(BaseDatasetHandler):
                             # Re-read or use existing if efficient (safest to re-read to be sure)
                             if 'hru_gdf' not in locals():
                                 hru_gdf = gpd.read_file(hru_shapefile)
-                            
+
                             minx, miny, maxx, maxy = hru_gdf.total_bounds
-                            
+
                             # Add a generous buffer (0.1 deg ~ 10km) to ensure full coverage
                             # This forces the single forcing point to map to ALL HRUs
-                            buffer = 0.1 
+                            buffer = 0.1
                             verts = [
                                 [minx - buffer, miny - buffer],
                                 [minx - buffer, maxy + buffer],
@@ -315,11 +297,11 @@ class CERRAHandler(BaseDatasetHandler):
                                 [minx - buffer, miny - buffer],
                             ]
                             geometries.append(Polygon(verts))
-                            self.logger.info(f"Created polygon matching HRU extent for 1x1 forcing.")
+                            self.logger.info("Created polygon matching HRU extent for 1x1 forcing.")
                             poly_created = True
                         except Exception as e:
                             self.logger.warning(f"Failed to use HRU bounds for 1x1 forcing: {e}")
-                    
+
                     if not poly_created:
                         # Fallback to small box around point if HRU shapefile fails
                         self.logger.warning("Using default small box for 1x1 grid (may not intersect catchment)")

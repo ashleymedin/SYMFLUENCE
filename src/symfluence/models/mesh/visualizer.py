@@ -5,7 +5,7 @@ Provides model-specific visualization registration for MESH.
 """
 
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 import logging
 
 from symfluence.models.registry import ModelRegistry
@@ -17,10 +17,10 @@ def visualize_mesh(reporting_manager: Any, config: Dict[str, Any], project_dir: 
     """
     logger = logging.getLogger(__name__)
     logger.info(f"Running MESH visualizer for experiment {experiment_id}")
-    
+
     try:
         # MESH results are consolidated into the main results file by the postprocessor.
         reporting_manager.visualize_timeseries_results()
-        
+
     except Exception as e:
         logger.error(f"Error during MESH visualization: {str(e)}")

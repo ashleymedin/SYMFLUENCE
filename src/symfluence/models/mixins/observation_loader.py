@@ -7,11 +7,9 @@ duplication and provides a consistent interface.
 """
 
 from pathlib import Path
-from typing import Dict, Any, Optional, Union, Literal, Tuple
+from typing import Literal, Optional, Tuple, Union
 import pandas as pd
 import xarray as xr
-import numpy as np
-import logging
 
 from symfluence.core.constants import UnitConversion
 from symfluence.geospatial.geometry_utils import calculate_catchment_area_km2
@@ -308,6 +306,11 @@ class ObservationLoaderMixin:
                 timestep_seconds = getattr(self, 'forcing_time_step_size', 86400)
                 conversion_factor = UnitConversion.mm_per_timestep_to_cms_factor(timestep_seconds)
                 return series * conversion_factor / catchment_area_km2
+
+            else:
+                raise DataAcquisitionError(
+                    f"Unsupported unit conversion: {source_units} → {target_units}"
+                )
 
         elif source_units == 'mm_per_day' and target_units == 'cms':
             return series * catchment_area_km2 / UnitConversion.MM_DAY_TO_CMS

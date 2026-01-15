@@ -8,7 +8,6 @@ Refactored from geofabric_utils.py (2026-01-01)
 """
 
 from typing import Any, Optional
-import shapely.geometry
 from shapely.geometry import Polygon, MultiPolygon
 
 
@@ -36,7 +35,8 @@ class GeometryProcessor:
             return None
         try:
             return geometry.buffer(0)
-        except:
+        except (ValueError, AttributeError, Exception):
+            # Shapely geometry operations can raise various errors
             return None
 
     @staticmethod
@@ -53,7 +53,8 @@ class GeometryProcessor:
         """
         try:
             return geometry.simplify(tolerance, preserve_topology=True)
-        except:
+        except (ValueError, AttributeError, Exception):
+            # Return original geometry if simplification fails
             return geometry
 
     @staticmethod

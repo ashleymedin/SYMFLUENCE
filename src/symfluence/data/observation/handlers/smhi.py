@@ -3,14 +3,12 @@ SMHI Observation Handlers
 
 Provides handlers for Swedish Meteorological and Hydrological Institute (SMHI) streamflow data.
 """
-import logging
 import requests
 import pandas as pd
 from pathlib import Path
-from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Optional, List
 
-from symfluence.core.constants import UnitConversion, ModelDefaults
+from symfluence.core.constants import ModelDefaults
 from symfluence.core.exceptions import DataAcquisitionError
 from ..base import BaseObservationHandler
 from ..registry import ObservationRegistry
@@ -22,8 +20,8 @@ class SMHIStreamflowHandler(BaseObservationHandler):
     """
 
     def acquire(self) -> Path:
-        data_access = self.config.get('DATA_ACCESS', 'cloud').lower()
-        station_id = self.config.get('STATION_ID')
+        data_access = self._get_config_value(lambda: self.config.domain.data_access, default='cloud', dict_key='DATA_ACCESS').lower()
+        station_id = self._get_config_value(lambda: self.config.evaluation.streamflow.station_id, dict_key='STATION_ID')
 
         if not station_id:
             self.logger.error("Missing STATION_ID in configuration for SMHI streamflow")
@@ -35,16 +33,16 @@ class SMHIStreamflowHandler(BaseObservationHandler):
 
         if data_access == 'cloud':
             return self._download_from_smhi(station_id, raw_file)
-        
+
         if raw_file.exists():
             return raw_file
-        
+
         self.logger.warning(f"SMHI raw file not found: {raw_file}")
         return raw_file
 
     def _download_from_smhi(self, station_id: str, output_path: Path) -> Path:
         self.logger.info(f"Downloading SMHI streamflow data for station {station_id}")
-        
+
         # SMHI uses parameter 2 for Discharge (Vattenföring)
         parameter_key = 2
         period = 'corrected-archive'
@@ -64,10 +62,10 @@ class SMHIStreamflowHandler(BaseObservationHandler):
             # SMHI uses milliseconds for date
             df['date'] = pd.to_datetime(df['date'] / 1000, unit='s')
             df = df.rename(columns={'value': 'discharge_m3s', 'quality': 'quality_code'})
-            
+
             # Save to CSV in a format that ObservedDataProcessor can understand or that process() expects
             df.to_csv(output_path, index=False)
-            
+
             self.logger.info(f"Successfully downloaded {len(df)} records to {output_path}")
             return output_path
 
@@ -83,9 +81,9 @@ class SMHIStreamflowHandler(BaseObservationHandler):
             raise FileNotFoundError(f"SMHI raw data file not found: {input_path}")
 
         self.logger.info(f"Processing SMHI streamflow data from {input_path}")
-        
+
         df = pd.read_csv(input_path)
-        
+
         # SMHI download format from _download_from_smhi: date, discharge_m3s, quality_code
         datetime_col = 'date'
         discharge_col = 'discharge_m3s'
@@ -101,7 +99,7 @@ class SMHIStreamflowHandler(BaseObservationHandler):
         df[datetime_col] = pd.to_datetime(df[datetime_col], errors='coerce')
         df[discharge_col] = pd.to_numeric(df[discharge_col], errors='coerce')
         df = df.dropna(subset=[datetime_col, discharge_col])
-        
+
         df.set_index(datetime_col, inplace=True)
         df.sort_index(inplace=True)
 
@@ -117,9 +115,9 @@ class SMHIStreamflowHandler(BaseObservationHandler):
         output_dir = self.project_dir / "observations" / "streamflow" / "preprocessed"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_file = output_dir / f"{self.domain_name}_streamflow_processed.csv"
-        
+
         resampled.to_csv(output_file, header=True, index_label='datetime')
-        
+
         self.logger.info(f"SMHI streamflow processing complete: {output_file}")
         return output_file
 
@@ -130,7 +128,7 @@ class SMHIStreamflowHandler(BaseObservationHandler):
         return None
 
     def _get_resample_freq(self) -> str:
-        timestep_size = int(self.config.get('FORCING_TIME_STEP_SIZE', 3600))
+        timestep_size = int(self._get_config_value(lambda: self.config.forcing.time_step_size, default=3600, dict_key='FORCING_TIME_STEP_SIZE'))
         if timestep_size <= 10800:
             return 'h'
         elif timestep_size == ModelDefaults.DEFAULT_TIMESTEP_DAILY:

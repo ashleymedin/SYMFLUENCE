@@ -34,6 +34,18 @@ class MESHRunner(BaseModelRunner, ModelExecutor):
     """
 
     def __init__(self, config: Dict[str, Any], logger: Any, reporting_manager: Optional[Any] = None):
+        """
+        Initialize the MESH model runner.
+
+        Sets up MESH-specific paths including executable location, forcing
+        directory, and catchment shapefile paths.
+
+        Args:
+            config: Configuration dictionary or SymfluenceConfig object containing
+                MESH installation path, domain settings, and execution parameters.
+            logger: Logger instance for status messages and debugging.
+            reporting_manager: Optional reporting manager for experiment tracking.
+        """
         # Call base class
         super().__init__(config, logger, reporting_manager=reporting_manager)
 
@@ -56,7 +68,10 @@ class MESHRunner(BaseModelRunner, ModelExecutor):
 
         # MESH-specific paths
         self.mesh_setup_dir = self.project_dir / "settings" / "MESH"
-        self.forcing_mesh_path = self.project_dir / 'forcing' / 'MESH_input'
+        self.forcing_dir = self.project_dir / 'forcing' / 'MESH_input'
+
+        # Initialize forcing_mesh_path to forcing_dir (can be overridden for parallel execution)
+        self.forcing_mesh_path = self.forcing_dir
 
     def _get_model_name(self) -> str:
         """Return model name for MESH."""
@@ -80,10 +95,21 @@ class MESHRunner(BaseModelRunner, ModelExecutor):
 
     def run_mesh(self) -> Optional[Path]:
         """
-        Run the MESH model.
+        Run the MESH model simulation.
+
+        Executes MESH in the forcing directory, verifies outputs, and cleans
+        up temporary files on success. MESH requires execution from its input
+        directory due to relative path assumptions in the model.
 
         Returns:
-            Optional[Path]: Path to the output directory if successful, None otherwise
+            Optional[Path]: Path to the output directory if successful, None otherwise.
+
+        Raises:
+            Exception: Re-raised if a non-subprocess error occurs.
+
+        Note:
+            MESH executable is temporarily copied to the forcing directory for
+            execution and removed after successful completion.
         """
         self.logger.info("Starting MESH model run")
 
@@ -143,20 +169,41 @@ class MESHRunner(BaseModelRunner, ModelExecutor):
             raise
 
     def _create_run_command(self) -> List[str]:
-        """Create MESH execution command."""
+        """
+        Create MESH execution command.
+
+        Copies the MESH executable to the forcing directory (required by MESH),
+        ensures it has execute permissions, and creates the results subdirectory
+        that MESH expects for output.
+
+        Returns:
+            List[str]: Command arguments for subprocess execution.
+        """
         # Copy mesh executable to forcing path
         mesh_exe_dest = self.forcing_mesh_path / self.mesh_exe.name
         shutil.copy2(self.mesh_exe, mesh_exe_dest)
         # Make sure it's executable
         mesh_exe_dest.chmod(0o755)
 
+        # Create results directory that MESH expects
+        results_dir = self.forcing_mesh_path / 'results'
+        results_dir.mkdir(parents=True, exist_ok=True)
+
         cmd = [
-            f'./{self.mesh_exe.name}'  # Use relative path since we run in that directory
+            f'./{self.mesh_exe.name}'
         ]
         return cmd
 
     def _verify_outputs(self) -> bool:
-        """Verify MESH output files exist."""
+        """
+        Verify MESH output files exist.
+
+        Checks for required output files in both the output directory and
+        forcing directory (MESH writes outputs to its working directory).
+
+        Returns:
+            bool: True if all required outputs found, False otherwise.
+        """
         required_outputs = [
             'MESH_output_streamflow.csv',
         ]
@@ -180,16 +227,27 @@ class MESHRunner(BaseModelRunner, ModelExecutor):
         return True
 
     def _copy_outputs(self) -> None:
-        """Copy MESH outputs from forcing directory to simulation directory."""
+        """
+        Copy MESH outputs from forcing directory to simulation directory.
+
+        MESH writes outputs to its working directory (forcing_mesh_path).
+        This method copies key output files to the standard simulation
+        output directory for consistency with other models.
+
+        Copied files:
+            - MESH_output_streamflow.csv: Simulated streamflow timeseries
+            - MESH_output_echo_print.txt: Model run summary
+            - MESH_output_echo_results.txt: Detailed results log
+        """
         if not self.output_dir.exists():
             self.output_dir.mkdir(parents=True, exist_ok=True)
-            
+
         outputs_to_copy = [
             'MESH_output_streamflow.csv',
             'MESH_output_echo_print.txt',
             'MESH_output_echo_results.txt'
         ]
-        
+
         for out_file in outputs_to_copy:
             src = self.forcing_mesh_path / out_file
             if src.exists():

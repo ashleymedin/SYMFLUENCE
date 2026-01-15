@@ -10,12 +10,12 @@ Tests the refactored modular attribute processing architecture including:
 
 import pytest
 import pandas as pd
-import numpy as np
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
+import warnings
 
-from src.symfluence.data.preprocessing.attribute_processor import attributeProcessor
-from src.symfluence.data.preprocessing.attribute_processors import (
+from symfluence.data.preprocessing.attribute_processor import attributeProcessor
+from symfluence.data.preprocessing.attribute_processors import (
     ElevationProcessor,
     GeologyProcessor,
     SoilProcessor,
@@ -83,16 +83,29 @@ def setup_test_directories(tmp_path, domain_name):
     return project_dir
 
 
-class TestBackwardCompatibleImport:
-    """Test that backward-compatible imports work."""
+class TestDeprecationWarning:
+    """Test that deprecation warning is raised for original module."""
 
-    def test_attribute_processing_re_exports_refactored(self):
-        """Verify that attribute_processing re-exports from attribute_processor module."""
-        from src.symfluence.data.preprocessing import attribute_processing
-        from src.symfluence.data.preprocessing import attribute_processor
+    def test_original_module_raises_deprecation_warning(self):
+        """Verify that importing the original module raises a deprecation warning."""
+        import importlib
+        from symfluence.data.preprocessing import attribute_processing
 
-        # Both should export the same attributeProcessor class
-        assert attribute_processing.attributeProcessor is attribute_processor.attributeProcessor
+        # Reset warning registry for the module to ensure warning triggers again
+        if hasattr(attribute_processing, '__warningregistry__'):
+            attribute_processing.__warningregistry__.clear()
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+
+            # Force reload to trigger module-level warning code
+            importlib.reload(attribute_processing)
+
+            # Verify deprecation warning was raised
+            assert len(w) >= 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "deprecated" in str(w[0].message).lower()
+            assert "attribute_processing_refactored" in str(w[0].message)
 
 
 class TestIndividualProcessors:
@@ -231,12 +244,12 @@ class TestAttributeProcessorWrapper:
 class TestFullOrchestration:
     """Test full attribute processing orchestration."""
 
-    @patch('src.symfluence.data.preprocessing.attribute_processors.elevation.ElevationProcessor.process')
-    @patch('src.symfluence.data.preprocessing.attribute_processors.geology.GeologyProcessor.process')
-    @patch('src.symfluence.data.preprocessing.attribute_processors.soil.SoilProcessor.process')
-    @patch('src.symfluence.data.preprocessing.attribute_processors.landcover.LandCoverProcessor.process')
-    @patch('src.symfluence.data.preprocessing.attribute_processors.climate.ClimateProcessor.process')
-    @patch('src.symfluence.data.preprocessing.attribute_processors.hydrology.HydrologyProcessor.process')
+    @patch('symfluence.data.preprocessing.attribute_processors.elevation.ElevationProcessor.process')
+    @patch('symfluence.data.preprocessing.attribute_processors.geology.GeologyProcessor.process')
+    @patch('symfluence.data.preprocessing.attribute_processors.soil.SoilProcessor.process')
+    @patch('symfluence.data.preprocessing.attribute_processors.landcover.LandCoverProcessor.process')
+    @patch('symfluence.data.preprocessing.attribute_processors.climate.ClimateProcessor.process')
+    @patch('symfluence.data.preprocessing.attribute_processors.hydrology.HydrologyProcessor.process')
     def test_process_attributes_lumped(self, mock_hydro, mock_climate, mock_landcover,
                                       mock_soil, mock_geology, mock_elevation,
                                       lumped_config, logger, tmp_path):
@@ -274,12 +287,12 @@ class TestFullOrchestration:
         mock_climate.assert_called_once()
         mock_hydro.assert_called_once()
 
-    @patch('src.symfluence.data.preprocessing.attribute_processors.elevation.ElevationProcessor.process')
-    @patch('src.symfluence.data.preprocessing.attribute_processors.geology.GeologyProcessor.process')
-    @patch('src.symfluence.data.preprocessing.attribute_processors.soil.SoilProcessor.process')
-    @patch('src.symfluence.data.preprocessing.attribute_processors.landcover.LandCoverProcessor.process')
-    @patch('src.symfluence.data.preprocessing.attribute_processors.climate.ClimateProcessor.process')
-    @patch('src.symfluence.data.preprocessing.attribute_processors.hydrology.HydrologyProcessor.process')
+    @patch('symfluence.data.preprocessing.attribute_processors.elevation.ElevationProcessor.process')
+    @patch('symfluence.data.preprocessing.attribute_processors.geology.GeologyProcessor.process')
+    @patch('symfluence.data.preprocessing.attribute_processors.soil.SoilProcessor.process')
+    @patch('symfluence.data.preprocessing.attribute_processors.landcover.LandCoverProcessor.process')
+    @patch('symfluence.data.preprocessing.attribute_processors.climate.ClimateProcessor.process')
+    @patch('symfluence.data.preprocessing.attribute_processors.hydrology.HydrologyProcessor.process')
     def test_process_attributes_distributed(self, mock_hydro, mock_climate, mock_landcover,
                                            mock_soil, mock_geology, mock_elevation,
                                            distributed_config, logger, tmp_path):
@@ -363,22 +376,22 @@ class TestErrorHandling:
         """Test that empty results return empty DataFrame gracefully."""
         # Mock all processors to return empty dicts
         with patch.multiple(
-            'src.symfluence.data.preprocessing.attribute_processors.elevation.ElevationProcessor',
+            'symfluence.data.preprocessing.attribute_processors.elevation.ElevationProcessor',
             process=Mock(return_value={})
         ), patch.multiple(
-            'src.symfluence.data.preprocessing.attribute_processors.geology.GeologyProcessor',
+            'symfluence.data.preprocessing.attribute_processors.geology.GeologyProcessor',
             process=Mock(return_value={})
         ), patch.multiple(
-            'src.symfluence.data.preprocessing.attribute_processors.soil.SoilProcessor',
+            'symfluence.data.preprocessing.attribute_processors.soil.SoilProcessor',
             process=Mock(return_value={})
         ), patch.multiple(
-            'src.symfluence.data.preprocessing.attribute_processors.landcover.LandCoverProcessor',
+            'symfluence.data.preprocessing.attribute_processors.landcover.LandCoverProcessor',
             process=Mock(return_value={})
         ), patch.multiple(
-            'src.symfluence.data.preprocessing.attribute_processors.climate.ClimateProcessor',
+            'symfluence.data.preprocessing.attribute_processors.climate.ClimateProcessor',
             process=Mock(return_value={})
         ), patch.multiple(
-            'src.symfluence.data.preprocessing.attribute_processors.hydrology.HydrologyProcessor',
+            'symfluence.data.preprocessing.attribute_processors.hydrology.HydrologyProcessor',
             process=Mock(return_value={})
         ):
             processor = attributeProcessor(lumped_config, logger)

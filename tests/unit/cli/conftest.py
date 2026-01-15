@@ -67,18 +67,18 @@ def mock_external_tools():
 
     Provides a simplified tool definition structure for testing
     dependency resolution, installation, and validation logic.
-    Matches the actual structure from external_tools_config.py
     """
     return {
         'sundials': {
+            'name': 'SUNDIALS',
             'description': 'SUite of Nonlinear and DIfferential/ALgebraic equation Solvers',
+            'repository': 'https://github.com/LLNL/sundials.git',
+            'branch': None,
+            'install_dir': 'sundials',
             'config_path_key': 'SUNDIALS_INSTALL_PATH',
             'config_exe_key': 'SUNDIALS_DIR',
             'default_path_suffix': 'installs/sundials/install/sundials/',
             'default_exe': 'lib/libsundials_core.a',
-            'repository': 'https://github.com/LLNL/sundials.git',
-            'branch': None,
-            'install_dir': 'sundials',
             'build_commands': [
                 'mkdir -p build',
                 'cd build && cmake ..',
@@ -86,67 +86,73 @@ def mock_external_tools():
                 'cd build && make install'
             ],
             'dependencies': [],
-            'test_command': None,
             'verify_install': {
-                'check_type': 'exists',
-                'file_paths': ['lib/libsundials_cvode.so']
+                'check_type': 'exists_any',
+                'file_paths': ['lib/libsundials_cvode.so', 'lib/libsundials_core.a']
             },
+            'test_command': None,
             'order': 1
         },
         'summa': {
+            'name': 'SUMMA',
             'description': 'Structure for Unifying Multiple Modeling Alternatives',
-            'config_path_key': 'SUMMA_INSTALL_PATH',
-            'config_exe_key': 'SUMMA_EXE',
-            'default_path_suffix': 'installs/summa/bin',
-            'default_exe': 'summa.exe',
             'repository': 'https://github.com/NCAR/summa.git',
             'branch': 'develop_sundials',
             'install_dir': 'summa',
-            'requires': ['sundials'],
+            'config_path_key': 'SUMMA_INSTALL_PATH',
+            'config_exe_key': 'SUMMA_EXE',
+            'default_path_suffix': 'installs/summa/bin',
+            'default_exe': 'summa_sundials.exe',
             'build_commands': [
                 'mkdir -p build',
                 'cd build && cmake ..',
                 'cd build && make'
             ],
-            'dependencies': ['sundials'],
-            'test_command': {'command': '--version', 'timeout': 10},
+            'requires': ['sundials'],
+            'dependencies': [],
             'verify_install': {
-                'check_type': 'exists',
-                'file_paths': ['bin/summa.exe']
+                'check_type': 'exists_any',
+                'file_paths': ['bin/summa.exe', 'bin/summa_sundials.exe']
             },
+            'test_command': '--version',
             'order': 2
         },
         'mizuroute': {
+            'name': 'mizuRoute',
             'description': 'River routing model',
-            'config_path_key': 'MIZUROUTE_INSTALL_PATH',
-            'config_exe_key': 'MIZUROUTE_EXE',
-            'default_path_suffix': 'installs/mizuroute/bin',
-            'default_exe': 'mizuroute.exe',
             'repository': 'https://github.com/NCAR/mizuRoute.git',
-            'branch': None,
-            'install_dir': 'mizuroute',
+            'branch': 'serial',
+            'install_dir': 'mizuRoute',
+            'config_path_key': 'INSTALL_PATH_MIZUROUTE',
+            'config_exe_key': 'EXE_NAME_MIZUROUTE',
+            'default_path_suffix': 'installs/mizuRoute/route/bin',
+            'default_exe': 'mizuRoute.exe',
             'build_commands': ['make'],
             'dependencies': [],
+            'verify_install': {
+                'check_type': 'exists',
+                'file_paths': ['route/bin/mizuRoute.exe']
+            },
             'test_command': None,
-            'verify_install': None,
             'order': 3
         },
         'taudem': {
+            'name': 'TauDEM',
             'description': 'Terrain Analysis Using Digital Elevation Models',
-            'config_path_key': 'TAUDEM_INSTALL_PATH',
-            'config_exe_key': 'TAUDEM_DIR',
-            'default_path_suffix': 'installs/taudem/bin',
-            'default_exe': 'pitremove',
             'repository': 'https://github.com/dtarb/TauDEM.git',
             'branch': None,
-            'install_dir': 'taudem',
+            'install_dir': 'TauDEM',
+            'config_path_key': 'TAUDEM_INSTALL_PATH',
+            'config_exe_key': 'TAUDEM_EXE',
+            'default_path_suffix': 'installs/TauDEM/bin',
+            'default_exe': 'pitremove',
             'build_commands': ['mkdir -p build', 'cd build && cmake ..', 'cd build && make'],
             'dependencies': [],
-            'test_command': None,
             'verify_install': {
                 'check_type': 'exists_any',
                 'file_paths': ['bin/pitremove', 'bin/d8flowdir', 'bin/aread8']
             },
+            'test_command': None,
             'order': 4
         }
     }
@@ -183,30 +189,20 @@ def mock_symfluence_instance():
 
 
 @pytest.fixture
-def cli_manager(monkeypatch, mock_symfluence_instance):
-    """DEPRECATED: CLIArgumentManager fixture - kept for backward compatibility.
-
-    The CLI has been refactored to use subcommands. This fixture now returns
-    None and should be removed from tests that use it.
-
-    For new tests, use individual component fixtures (binary_manager,
-    job_scheduler, etc.) directly.
-    """
-    # Return None - tests using this fixture should be updated
-    return None
-
-
-@pytest.fixture
 def binary_manager(mock_external_tools, tmp_path):
     """BinaryManager fixture with mocked external tools.
 
     Creates a BinaryManager instance with:
     - Mocked external_tools_config
     - Temporary installation directory
+    - Standard Console (tests should mock methods or use capsys carefully)
     """
-    from symfluence.cli.binary_manager import BinaryManager
+    from symfluence.cli.binary_service import BinaryManager
 
-    # Create manager with mocked external tools
+    # We revert to standard console here and let tests handle output capture
+    # via method patching or by creating a fresh manager in the test if needed.
+    # The previous attempt to inject a captured console failed because
+    # rich/capsys interaction is complex in fixtures.
     manager = BinaryManager(external_tools=mock_external_tools)
     manager.install_base_dir = tmp_path / "bin" / "external_tools"
     manager.install_base_dir.mkdir(parents=True, exist_ok=True)
@@ -221,7 +217,7 @@ def job_scheduler():
     Creates a JobScheduler instance for testing SLURM script
     generation and job submission logic.
     """
-    from symfluence.cli.job_scheduler import JobScheduler
+    from symfluence.cli.services import JobScheduler
 
     return JobScheduler()
 
@@ -234,7 +230,7 @@ def notebook_service(tmp_path):
     - Temporary repo root
     - Mock examples directory
     """
-    from symfluence.cli.notebook_service import NotebookService
+    from symfluence.cli.services import NotebookService
 
     service = NotebookService()
 

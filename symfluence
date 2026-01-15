@@ -56,7 +56,7 @@ detect_platform
 # Configuration
 # ----------------------------------------------------------------------
 SCRIPT_NAME="symfluence"
-SYMFLUENCE_SCRIPT="run_symfluence.py"
+PROJECT_MARKER="pyproject.toml"  # Used to detect SYMFLUENCE project directory
 MIN_PYTHON_VERSION="3.11"
 REQUIRED_PYTHON_VERSION="3.11"
 
@@ -117,6 +117,38 @@ set_default_symfluence_paths() {
     mkdir -p "$SYMFLUENCE_DATA_DIR"
     { command -v print_info >/dev/null 2>&1 && print_info "Set SYMFLUENCE_DATA_DIR to $SYMFLUENCE_DATA_DIR"; } || echo "Set SYMFLUENCE_DATA_DIR to $SYMFLUENCE_DATA_DIR"
   fi
+}
+
+resolve_python_scripts_path() {
+  local py_bin="${1:-python}"
+  local fallback_prefix="${2:-}"
+  local scripts_dir=""
+
+  scripts_dir=$("$py_bin" - <<'PY'
+import sysconfig
+print(sysconfig.get_path("scripts"))
+PY
+) 2>/dev/null || true
+
+  if [[ -n "$scripts_dir" && -d "$scripts_dir" ]]; then
+      VENV_BIN_PATH="$scripts_dir"
+  elif [[ -n "${CONDA_PREFIX:-}" && -d "${CONDA_PREFIX}/${VENV_BIN}" ]]; then
+      VENV_BIN_PATH="${CONDA_PREFIX}/${VENV_BIN}"
+  elif [[ -n "$fallback_prefix" && -d "${fallback_prefix}/${VENV_BIN}" ]]; then
+      VENV_BIN_PATH="${fallback_prefix}/${VENV_BIN}"
+  fi
+}
+
+find_cli_candidate() {
+    local base="$1"
+    shift || true
+    for candidate in "${base}${EXE_EXT}" "${base}.exe" "${base}.bat" "${base}-script.py" "$base"; do
+        if [[ -x "$candidate" ]]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
 }
 
 
@@ -267,7 +299,7 @@ install_gdal_python() {
     print_info "Installing matching GDAL Python bindings..."
 
     # Try exact version first
-    if pip install "GDAL==$v" 2>/dev/null; then
+    if python -m pip install "GDAL==$v" 2>/dev/null; then
         print_success "Installed GDAL Python bindings $v"
         return 0
     fi
@@ -282,12 +314,12 @@ install_gdal_python() {
     # Try version range that allows same patch + post-releases, but not next patch
     # E.g., for GDAL 3.12.0: allows 3.12.0, 3.12.0.post1, etc. but not 3.12.1
     print_info "Trying GDAL>=${GDAL_MAJOR}.${GDAL_MINOR}.${GDAL_PATCH},<${GDAL_MAJOR}.${GDAL_MINOR}.${NEXT_PATCH}..."
-    if pip install "GDAL>=${GDAL_MAJOR}.${GDAL_MINOR}.${GDAL_PATCH},<${GDAL_MAJOR}.${GDAL_MINOR}.${NEXT_PATCH}"; then
+    if python -m pip install "GDAL>=${GDAL_MAJOR}.${GDAL_MINOR}.${GDAL_PATCH},<${GDAL_MAJOR}.${GDAL_MINOR}.${NEXT_PATCH}"; then
         print_success "Installed GDAL Python bindings compatible with $v"
         return 0
     fi
 
-    print_error "Failed to install GDAL Python bindings. You may try: pip install GDAL==$v"
+    print_error "Failed to install GDAL Python bindings. You may try: python -m pip install GDAL==$v"
     return 1
 }
 
@@ -312,12 +344,12 @@ install_python_requirements() {
     # Try API mode first
     [[ -z "$RPY2_CFFI_MODE" ]] && export RPY2_CFFI_MODE=API
 
-    if pip install -r "$tmp" $pip_flags; then
+    if python -m pip install -r "$tmp" $pip_flags; then
         rm -f "$tmp"
         [[ "$gdal_filtered" == "true" ]] && install_gdal_python || true
         if [[ "$rpy2_filtered" == "true" ]]; then
             print_info "Attempting rpy2 install (RPY2_CFFI_MODE=$RPY2_CFFI_MODE)..."
-            pip install rpy2 $pip_flags || print_warning "rpy2 install failed (continuing)"
+            python -m pip install rpy2 $pip_flags || print_warning "rpy2 install failed (continuing)"
         fi
         command -v gdal-config >/dev/null 2>&1 && install_gdal_python || true
         print_success "Core dependencies installed"
@@ -327,12 +359,12 @@ install_python_requirements() {
     # Retry with ABI mode
     print_warning "Install failed with RPY2_CFFI_MODE=$RPY2_CFFI_MODE; retrying with ABI..."
     export RPY2_CFFI_MODE=ABI
-    if pip install -r "$tmp" $pip_flags; then
+    if python -m pip install -r "$tmp" $pip_flags; then
         rm -f "$tmp"
         [[ "$gdal_filtered" == "true" ]] && install_gdal_python || true
         if [[ "$rpy2_filtered" == "true" ]]; then
             print_info "Attempting rpy2 install in ABI mode..."
-            pip install rpy2 $pip_flags || print_warning "rpy2 install failed (continuing)"
+            python -m pip install rpy2 $pip_flags || print_warning "rpy2 install failed (continuing)"
         fi
         command -v gdal-config >/dev/null 2>&1 && install_gdal_python || true
         print_success "Dependencies installed in ABI mode"
@@ -437,27 +469,28 @@ update_config_paths_in_yaml() {
 }
 
 # ----------------------------------------------------------------------
-# Locate symfluence.py (with legacy env var compat)
+# Locate SYMFLUENCE project directory (looks for pyproject.toml)
 # ----------------------------------------------------------------------
-find_symfluence_script() {
+find_project_dir() {
     local script_dir
     script_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")
 
     local search_paths=(
-        "${script_dir}/${SYMFLUENCE_SCRIPT}"
-        "${script_dir}/../${SYMFLUENCE_SCRIPT}"
-        "./${SYMFLUENCE_SCRIPT}"
-        "${PWD}/${SYMFLUENCE_SCRIPT}"
+        "${script_dir}"
+        "${script_dir}/.."
+        "."
+        "${PWD}"
     )
 
     if [[ -n "${SYMFLUENCE_CODE_DIR}" ]]; then
-        search_paths=("${SYMFLUENCE_CODE_DIR}/${SYMFLUENCE_SCRIPT}" "${search_paths[@]}")
+        search_paths=("${SYMFLUENCE_CODE_DIR}" "${search_paths[@]}")
     fi
 
-    local path
-    for path in "${search_paths[@]}"; do
-        if [[ -f "$path" ]]; then
-            echo "$path"
+    local dir
+    for dir in "${search_paths[@]}"; do
+        if [[ -f "$dir/${PROJECT_MARKER}" ]]; then
+            # Resolve to absolute path
+            echo "$(cd "$dir" && pwd)"
             return 0
         fi
     done
@@ -468,7 +501,15 @@ find_symfluence_script() {
 # Python finder (prefers 3.11–3.13; rejects 3.14+)
 # ----------------------------------------------------------------------
 find_python() {
-    local python_candidates=("python3.11" "python3.12" "python3.13" "python3.10" "python3" "python")
+    # If SYMFLUENCE_PYTHON is set, use it first
+    if [[ -n "${SYMFLUENCE_PYTHON:-}" ]]; then
+        if command -v "$SYMFLUENCE_PYTHON" >/dev/null 2>&1; then
+            echo "$SYMFLUENCE_PYTHON"
+            return 0
+        fi
+    fi
+
+    local python_candidates=("python3.11" "python3.12" "python3.13" "python3" "python")
     local cmd version major minor
     for cmd in "${python_candidates[@]}"; do
         if command -v "$cmd" >/dev/null 2>&1; then
@@ -493,13 +534,12 @@ find_python() {
 # Virtual env activator (clears PYTHONPATH)
 # ----------------------------------------------------------------------
 check_virtual_env() {
-    local symfluence_dir
-    symfluence_dir=$(dirname "$1")
+    local project_dir="$1"
     local venv_paths=(
-        "${symfluence_dir}/venv"
-        "${symfluence_dir}/.venv"
-        "${symfluence_dir}/env"
-        "${symfluence_dir}/.env"
+        "${project_dir}/venv"
+        "${project_dir}/.venv"
+        "${project_dir}/env"
+        "${project_dir}/.env"
     )
 
     if [[ -n "${VIRTUAL_ENV}" ]]; then
@@ -528,9 +568,9 @@ check_virtual_env() {
 # ----------------------------------------------------------------------
 show_symfluence_help() {
     cat << EOF
-${SCRIPT_NAME}: SYMFLUENCE Python script not found
+${SCRIPT_NAME}: SYMFLUENCE project directory not found
 
-This wrapper looks for ${SYMFLUENCE_SCRIPT} in:
+This wrapper looks for ${PROJECT_MARKER} in:
   - Current directory and parent directories
   - \$SYMFLUENCE_CODE_DIR
 
@@ -554,20 +594,20 @@ Wrapper-only options:
   --wrapper-debug    Run wrapper in debug mode
   --install          Set up Python environment and install external tools
 
-All other options are passed to ${SYMFLUENCE_SCRIPT} (see 'symfluence --help').
+All other options are passed to the symfluence CLI (see 'symfluence --help').
 EOF
             exit 0
             ;;
         --wrapper-info)
-            local symfluence_script
-            symfluence_script=$(find_symfluence_script || true)
+            local project_dir
+            project_dir=$(find_project_dir || true)
             local python_cmd
             python_cmd=$(find_python || true)
 
             echo "SYMFLUENCE Wrapper Information"
             echo "=============================="
             echo "Wrapper script: $(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
-            echo "${SYMFLUENCE_SCRIPT}: ${symfluence_script:-'Not found'}"
+            echo "Project directory: ${project_dir:-'Not found'}"
             echo "Python command: ${python_cmd:-'Not found'}"
             echo "Python version: $(${python_cmd} --version 2>/dev/null || echo 'Unknown')"
             echo "Virtual env: ${VIRTUAL_ENV:-'None active'}"
@@ -628,12 +668,13 @@ setup_windows_dependencies() {
     fi
 
     # Install essential Windows dependencies via conda
-    # Install C libraries only - Python packages will be installed in venv via pip
+    # Install C libraries and Python bindings - pip build from source often fails on Windows
     print_info "Installing Windows build dependencies via ${CONDA_CMD}..."
     $CONDA_CMD install -c conda-forge -y \
         cmake \
         ninja \
         libgdal=3.11 \
+        gdal \
         netcdf4 \
         hdf5 \
         || print_warning "Some conda packages may have failed to install"
@@ -680,7 +721,7 @@ main() {
 
     # Set sane defaults for SYMFLUENCE_* based on working dir
     #set_default_symfluence_paths
-    
+
     # Update config.yaml with PWD-based paths if current values are bad/missing (optional)
     local CONFIG_YAML="./config.yaml"
     if [[ -f "$CONFIG_YAML" ]] && declare -f update_config_paths_in_yaml >/dev/null 2>&1; then
@@ -689,10 +730,10 @@ main() {
         }
     fi
 
-    # Find SYMFLUENCE CLI entry script
-    local symfluence_script
-    if ! symfluence_script=$(find_symfluence_script); then
-        print_error "${SYMFLUENCE_SCRIPT} not found"
+    # Find SYMFLUENCE project directory
+    local symfluence_dir
+    if ! symfluence_dir=$(find_project_dir); then
+        print_error "SYMFLUENCE project directory not found"
         echo
         show_symfluence_help
         exit 1
@@ -705,9 +746,6 @@ main() {
         print_info  "Please install or load Python ${MIN_PYTHON_VERSION} or later"
         exit 1
     fi
-
-    local symfluence_dir
-    symfluence_dir=$(dirname "$symfluence_script")
 
     # ---------------- Installation mode (enhanced) ----------------
     if [[ "$run_install" == "true" ]]; then
@@ -770,28 +808,56 @@ EOF
             fi
         fi
 
+        resolve_python_scripts_path "$python_cmd" "$venv_path"
+
         print_info "Upgrading pip and preparing environment..."
-        # Use python -m pip on Windows to avoid file lock issues
-        if [[ "$PLATFORM" == "windows" ]]; then
-            python -m pip install --upgrade pip || print_warning "pip upgrade failed"
-        else
-            pip install --upgrade pip || print_warning "pip upgrade failed"
-        fi
+        # Always use python -m pip to ensure correct Python version is used
+        $python_cmd -m pip install --upgrade pip || print_warning "pip upgrade failed"
 
         setup_r_environment || print_warning "R setup had issues, continuing..."
 
-        if [[ -f "${symfluence_dir}/requirements.txt" ]]; then
+        # Generate requirements.txt from pyproject.toml (source of truth)
+        local req_file="${symfluence_dir}/requirements.txt"
+        local pyproj_path="${symfluence_dir}/pyproject.toml"
+        if [[ "$PLATFORM" == "windows" ]]; then
+            pyproj_path=$(cygpath -w "$pyproj_path")
+        fi
+
+        if [[ -f "${symfluence_dir}/pyproject.toml" ]]; then
+            print_info "Generating requirements.txt from pyproject.toml..."
+            $python_cmd -c "
+import sys
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
+with open('${pyproj_path}', 'rb') as f:
+    data = tomllib.load(f)
+deps = data.get('project', {}).get('dependencies', [])
+if deps:
+    lines = ['# Auto-generated from pyproject.toml', '']
+    lines.extend(deps)
+    with open('${req_file}', 'w') as out:
+        out.write('\n'.join(lines) + '\n')
+    print(f'Generated {len(deps)} dependencies')
+else:
+    sys.exit(1)
+" || print_warning "Could not auto-generate requirements.txt"
+        fi
+
+        if [[ -f "$req_file" ]]; then
             # Use enhanced installer that handles rpy2/GDAL specially
-            install_python_requirements "${symfluence_dir}/requirements.txt" "false" || {
+            install_python_requirements "$req_file" "false" || {
                 print_error "Dependency installation failed"; exit 1;
             }
         else
             print_warning "requirements.txt not found - installing a minimal set..."
-            pip install numpy pandas geopandas rasterio netCDF4 PyYAML shapely rasterstats psutil || {
+            $python_cmd -m pip install numpy pandas geopandas rasterio netCDF4 PyYAML shapely rasterstats psutil || {
                 print_error "Failed to install minimal dependencies"; exit 1;
             }
             print_info "Attempting to install rpy2 (optional)..."
-            pip install rpy2 || print_warning "rpy2 installation failed (continuing)"
+            $python_cmd -m pip install rpy2 || print_warning "rpy2 installation failed (continuing)"
             command -v gdal-config >/dev/null 2>&1 && install_gdal_python || true
         fi
 
@@ -799,21 +865,32 @@ EOF
 
         # Install SYMFLUENCE package in editable mode
         print_info "Installing SYMFLUENCE package..."
-        pip install -e . || {
+        # Use --no-deps because we already installed them from requirements.txt
+        # This prevents pip from trying to build GDAL from source on Windows
+        python -m pip install -e . --no-deps || {
             print_error "SYMFLUENCE package installation failed"
             exit 1
         }
+        # Ensure rich is installed (needed for CLI console output)
+        python -m pip install "rich>=13.0.0" --quiet || true
         print_success "SYMFLUENCE package installed"
 
-        # External tools - use installed symfluence command
+        # External tools - use installed symfluence command with full path
+        # (bash may have cached the wrapper path before pip created the venv CLI)
         cd "$symfluence_dir"
+        local venv_cli_base="${VENV_BIN_PATH}/symfluence"
+        local venv_cli
+        if ! venv_cli=$(find_cli_candidate "$venv_cli_base"); then
+            print_error "CLI not found at expected path: ${venv_cli_base}${EXE_EXT}"
+            exit 1
+        fi
         print_info "Installing external tools..."
-        symfluence binary install || {
+        "$venv_cli" binary install || {
             print_error "External tools installation failed"
             exit 1
         }
         print_info "Validating installation..."
-        symfluence binary validate || {
+        "$venv_cli" binary validate || {
             print_error "Binary validation failed"
             exit 1
         }
@@ -825,31 +902,28 @@ EOF
     fi
 
     # ---------------- Normal execution ----------------
-    # Prefer venv interpreter; fall back to system python
-    local symfluence_dir
-    symfluence_dir=$(dirname "$symfluence_script")
-    
-    if [[ -x "${symfluence_dir}/venv/bin/python" ]]; then
-        python_cmd="${symfluence_dir}/venv/bin/python"
-        print_info "Using venv Python: ${python_cmd}"
-    elif [[ -x "${symfluence_dir}/.venv/bin/python" ]]; then
-        python_cmd="${symfluence_dir}/.venv/bin/python"
-        print_info "Using .venv Python: ${python_cmd}"
-    else
-        if ! python_cmd=$(find_python); then
-            print_error "Python ${MIN_PYTHON_VERSION}+ not found"
-            print_info "Please install Python ${MIN_PYTHON_VERSION}+ or run: ./symfluence --install"
-            exit 1
-        fi
-        print_warning "No venv found, using system Python: ${python_cmd}"
+    # Look for installed symfluence CLI in venv
+    local symfluence_cli=""
+
+    if symfluence_cli=$(find_cli_candidate "${symfluence_dir}/venv/${VENV_BIN}/symfluence"); then
+        print_info "Using venv CLI: ${symfluence_cli}"
+    elif symfluence_cli=$(find_cli_candidate "${symfluence_dir}/.venv/${VENV_BIN}/symfluence"); then
+        print_info "Using .venv CLI: ${symfluence_cli}"
+    elif command -v symfluence >/dev/null 2>&1; then
+        symfluence_cli="$(command -v symfluence)"
+        print_info "Using system CLI: ${symfluence_cli}"
+    fi
+
+    if [[ -z "$symfluence_cli" ]]; then
+        print_error "SYMFLUENCE CLI not found"
+        print_info "Run: ./symfluence --install"
+        exit 1
     fi
 
     # Change to SYMFLUENCE directory
-    local target_dir
-    target_dir=$(dirname "$symfluence_script")
-    if [[ "$target_dir" != "." && -d "$target_dir" ]]; then
-        cd "$target_dir" || {
-            print_error "Failed to change to directory: $target_dir"
+    if [[ "$symfluence_dir" != "." && -d "$symfluence_dir" ]]; then
+        cd "$symfluence_dir" || {
+            print_error "Failed to change to directory: $symfluence_dir"
             exit 1
         }
         print_info "Changed directory to: $(pwd)"
@@ -857,13 +931,12 @@ EOF
 
     # Debug output
     print_info "Launching SYMFLUENCE..."
-    print_info "  Interpreter: ${python_cmd}"
-    print_info "  Script: ${SYMFLUENCE_SCRIPT}"
+    print_info "  CLI: ${symfluence_cli}"
     print_info "  Args: $*"
     print_info "  Working dir: $(pwd)"
 
-    # Execute (replace current process with Python)
-    exec "$python_cmd" "$SYMFLUENCE_SCRIPT" "$@"
+    # Execute (replace current process with CLI)
+    exec "$symfluence_cli" "$@"
 }
 
 # Trap signals and run

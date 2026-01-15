@@ -4,11 +4,10 @@ Binary/tool management command handlers for SYMFLUENCE CLI.
 This module implements handlers for external tool installation and validation.
 """
 
-import sys
 from argparse import Namespace
-from typing import List, Optional
 
 from .base import BaseCommand
+from ..exit_codes import ExitCode
 
 
 class BinaryCommands(BaseCommand):
@@ -26,7 +25,7 @@ class BinaryCommands(BaseCommand):
             Exit code (0 for success, non-zero for failure)
         """
         try:
-            from symfluence.cli.binary_manager import BinaryManager
+            from symfluence.cli.binary_service import BinaryManager
 
             binary_manager = BinaryManager()
 
@@ -34,22 +33,13 @@ class BinaryCommands(BaseCommand):
             tools = args.tools if args.tools else None  # None means install all
             force = args.force
 
-            # Validate tool names
             if tools:
-                from symfluence.cli.argument_parser import EXTERNAL_TOOLS
-                invalid_tools = [t for t in tools if t not in EXTERNAL_TOOLS]
-                if invalid_tools:
-                    BaseCommand.print_error(f"Invalid tool names: {', '.join(invalid_tools)}")
-                    BaseCommand.print_info(f"Available tools: {', '.join(EXTERNAL_TOOLS)}")
-                    return 1
-
-            if tools:
-                BaseCommand.print_info(f"📦 Installing tools: {', '.join(tools)}")
+                BaseCommand._console.info(f"Installing tools: {', '.join(tools)}")
             else:
-                BaseCommand.print_info("📦 Installing all available tools...")
+                BaseCommand._console.info("Installing all available tools...")
 
             if force:
-                BaseCommand.print_info("   (Force reinstall mode)")
+                BaseCommand._console.indent("(Force reinstall mode)")
 
             # Call binary manager to install
             success = binary_manager.get_executables(
@@ -58,18 +48,18 @@ class BinaryCommands(BaseCommand):
             )
 
             if success:
-                BaseCommand.print_success("Tool installation completed successfully")
-                return 0
+                BaseCommand._console.success("Tool installation completed successfully")
+                return ExitCode.SUCCESS
             else:
-                BaseCommand.print_error("Tool installation failed or was incomplete")
-                return 1
+                BaseCommand._console.error("Tool installation failed or was incomplete")
+                return ExitCode.BINARY_ERROR
 
         except Exception as e:
-            BaseCommand.print_error(f"Installation failed: {e}")
+            BaseCommand._console.error(f"Installation failed: {e}")
             if getattr(args, 'debug', False):
                 import traceback
                 traceback.print_exc()
-            return 1
+            return ExitCode.BINARY_ERROR
 
     @staticmethod
     def validate(args: Namespace) -> int:
@@ -83,28 +73,30 @@ class BinaryCommands(BaseCommand):
             Exit code (0 for success, non-zero for failure)
         """
         try:
-            from symfluence.cli.binary_manager import BinaryManager
+            from symfluence.cli.binary_service import BinaryManager
 
             binary_manager = BinaryManager()
 
-            BaseCommand.print_info("🔍 Validating installed binaries...")
+            verbose = getattr(args, 'verbose', False)
+
+            BaseCommand._console.info("Validating installed binaries...")
 
             # Call binary manager validation
-            success = binary_manager.validate_binaries()
+            success = binary_manager.validate_binaries(verbose=verbose)
 
             if success:
-                BaseCommand.print_success("All binaries validated successfully")
-                return 0
+                BaseCommand._console.success("All binaries validated successfully")
+                return ExitCode.SUCCESS
             else:
-                BaseCommand.print_error("Binary validation failed")
-                return 1
+                BaseCommand._console.error("Binary validation failed")
+                return ExitCode.BINARY_ERROR
 
         except Exception as e:
-            BaseCommand.print_error(f"Validation failed: {e}")
+            BaseCommand._console.error(f"Validation failed: {e}")
             if getattr(args, 'debug', False):
                 import traceback
                 traceback.print_exc()
-            return 1
+            return ExitCode.BINARY_ERROR
 
     @staticmethod
     def doctor(args: Namespace) -> int:
@@ -120,31 +112,31 @@ class BinaryCommands(BaseCommand):
             Exit code (0 for success, non-zero for failure)
         """
         try:
-            from symfluence.cli.binary_manager import BinaryManager
+            from symfluence.cli.binary_service import BinaryManager
 
             binary_manager = BinaryManager()
 
-            BaseCommand.print_info("🏥 Running system diagnostics...")
-            BaseCommand.print_info("=" * 70)
+            BaseCommand._console.info("Running system diagnostics...")
+            BaseCommand._console.rule()
 
             # Call doctor function from binary manager
             success = binary_manager.doctor()
 
             if success:
-                BaseCommand.print_info("=" * 70)
-                BaseCommand.print_success("System diagnostics completed")
-                return 0
+                BaseCommand._console.rule()
+                BaseCommand._console.success("System diagnostics completed")
+                return ExitCode.SUCCESS
             else:
-                BaseCommand.print_info("=" * 70)
-                BaseCommand.print_error("System diagnostics found issues")
-                return 1
+                BaseCommand._console.rule()
+                BaseCommand._console.error("System diagnostics found issues")
+                return ExitCode.DEPENDENCY_ERROR
 
         except Exception as e:
-            BaseCommand.print_error(f"Diagnostics failed: {e}")
+            BaseCommand._console.error(f"Diagnostics failed: {e}")
             if getattr(args, 'debug', False):
                 import traceback
                 traceback.print_exc()
-            return 1
+            return ExitCode.GENERAL_ERROR
 
     @staticmethod
     def info(args: Namespace) -> int:
@@ -160,29 +152,29 @@ class BinaryCommands(BaseCommand):
             Exit code (0 for success, non-zero for failure)
         """
         try:
-            from symfluence.cli.binary_manager import BinaryManager
+            from symfluence.cli.binary_service import BinaryManager
 
             binary_manager = BinaryManager()
 
-            BaseCommand.print_info("📋 Installed Tools Information:")
-            BaseCommand.print_info("=" * 70)
+            BaseCommand._console.info("Installed Tools Information:")
+            BaseCommand._console.rule()
 
             # Call info function from binary manager
             success = binary_manager.tools_info()
 
             if success:
-                BaseCommand.print_info("=" * 70)
-                return 0
+                BaseCommand._console.rule()
+                return ExitCode.SUCCESS
             else:
-                BaseCommand.print_error("Failed to retrieve tools information")
-                return 1
+                BaseCommand._console.error("Failed to retrieve tools information")
+                return ExitCode.GENERAL_ERROR
 
         except Exception as e:
-            BaseCommand.print_error(f"Failed to get tools info: {e}")
+            BaseCommand._console.error(f"Failed to get tools info: {e}")
             if getattr(args, 'debug', False):
                 import traceback
                 traceback.print_exc()
-            return 1
+            return ExitCode.GENERAL_ERROR
 
     @staticmethod
     def execute(args: Namespace) -> int:
@@ -198,5 +190,5 @@ class BinaryCommands(BaseCommand):
         if hasattr(args, 'func'):
             return args.func(args)
         else:
-            BaseCommand.print_error("No binary action specified")
-            return 1
+            BaseCommand._console.error("No binary action specified")
+            return ExitCode.USAGE_ERROR

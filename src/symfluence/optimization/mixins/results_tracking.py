@@ -13,10 +13,12 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+from symfluence.core.mixins import ConfigMixin
+
 logger = logging.getLogger(__name__)
 
 
-class ResultsTrackingMixin:
+class ResultsTrackingMixin(ConfigMixin):
     """
     Mixin class providing results tracking and persistence for optimizers.
 
@@ -111,6 +113,21 @@ class ResultsTrackingMixin:
 
         return False
 
+    @property
+    def best_score(self) -> float:
+        """Get the best score found so far."""
+        return self._best_score
+
+    @property
+    def best_params(self) -> Optional[Dict[str, float]]:
+        """Get the best parameters found so far."""
+        return self._best_params
+
+    @property
+    def best_iteration(self) -> int:
+        """Get the iteration where best was found."""
+        return self._best_iteration
+
     def get_best_result(self) -> Dict[str, Any]:
         """
         Get the best result found so far.
@@ -146,7 +163,7 @@ class ResultsTrackingMixin:
         metric_name: str = 'KGE',
         experiment_id: Optional[str] = None,
         standard_filename: bool = False
-    ) -> Path:
+    ) -> Optional[Path]:
         """
         Save optimization results to a CSV file.
 
@@ -154,14 +171,14 @@ class ResultsTrackingMixin:
             algorithm: Algorithm name (e.g., 'PSO', 'DDS')
             metric_name: Name of the optimization metric
             experiment_id: Optional experiment identifier
-            standard_filename: If True, uses the standard SYMFLUENCE naming convention 
+            standard_filename: If True, uses the standard SYMFLUENCE naming convention
                               ({experiment_id}_parallel_iteration_results.csv)
 
         Returns:
             Path to the saved results file
         """
         if experiment_id is None:
-            experiment_id = self.config.get('EXPERIMENT_ID', 'optimization')
+            experiment_id = self._get_config_value(lambda: self.config.domain.experiment_id, default='optimization', dict_key='EXPERIMENT_ID')
 
         # Create results dataframe
         df = self.get_iteration_history()
@@ -175,7 +192,7 @@ class ResultsTrackingMixin:
             filename = f"{experiment_id}_parallel_iteration_results.csv"
         else:
             filename = f"{experiment_id}_{algorithm.lower()}_results.csv"
-            
+
         results_path = self.results_dir / filename
 
         # Save to CSV
@@ -189,7 +206,7 @@ class ResultsTrackingMixin:
         self,
         algorithm: str,
         experiment_id: Optional[str] = None
-    ) -> Path:
+    ) -> Optional[Path]:
         """
         Save best parameters to a JSON file.
 
@@ -201,7 +218,7 @@ class ResultsTrackingMixin:
             Path to the saved parameters file
         """
         if experiment_id is None:
-            experiment_id = self.config.get('EXPERIMENT_ID', 'optimization')
+            experiment_id = self._get_config_value(lambda: self.config.domain.experiment_id, default='optimization', dict_key='EXPERIMENT_ID')
 
         if self._best_params is None:
             self.logger.warning("No best parameters to save")
@@ -319,7 +336,7 @@ class ResultsTrackingMixin:
         self,
         algorithm: str,
         experiment_id: Optional[str] = None
-    ) -> Path:
+    ) -> Optional[Path]:
         """
         Save Pareto front to a CSV file.
 
@@ -331,7 +348,7 @@ class ResultsTrackingMixin:
             Path to the saved Pareto front file
         """
         if experiment_id is None:
-            experiment_id = self.config.get('EXPERIMENT_ID', 'optimization')
+            experiment_id = self._get_config_value(lambda: self.config.domain.experiment_id, default='optimization', dict_key='EXPERIMENT_ID')
 
         pareto_solutions = self.get_pareto_front()
 

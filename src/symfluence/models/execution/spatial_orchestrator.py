@@ -26,16 +26,21 @@ Usage:
 """
 
 import shutil
+import subprocess
 import tempfile
 from abc import ABC
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
-import logging
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import xarray as xr
+
+from symfluence.core.exceptions import (
+    ModelExecutionError,
+    GeospatialError
+)
 
 
 class SpatialMode(Enum):
@@ -238,7 +243,7 @@ class SpatialOrchestrator(ABC):
         # Add topology file if routing is configured
         if routing_model != RoutingModel.NONE:
             topology_file = self.config_dict.get('SETTINGS_MIZU_TOPOLOGY', 'topology.nc')
-            
+
             # Determine settings dir based on model
             if routing_model == RoutingModel.MIZUROUTE:
                 settings_subdir = 'mizuRoute'
@@ -376,8 +381,8 @@ class SpatialOrchestrator(ABC):
                 'basin__TotalRunoff', 'qsim', 'runoff'
             ]
             # Also check for any variable starting with q_ or containing runoff
-            candidates.extend([v for v in source_ds.data_vars if v.lower().startswith('q_')])
-            candidates.extend([v for v in source_ds.data_vars if 'runoff' in v.lower()])
+            candidates.extend([str(v) for v in source_ds.data_vars if str(v).lower().startswith('q_')])
+            candidates.extend([str(v) for v in source_ds.data_vars if 'runoff' in str(v).lower()])
 
             source_var = next((v for v in candidates if v in source_ds.data_vars), None)
             if source_var is None:
@@ -531,8 +536,23 @@ class SpatialOrchestrator(ABC):
                 self.logger.warning(f"Unknown routing model: {routing.model}")
                 return model_output
 
-        except Exception as e:
+        except FileNotFoundError as e:
+            self.logger.error(f"Routing failed - required file not found: {e}")
+            return None
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Routing subprocess failed with exit code {e.returncode}: {e}")
+            return None
+        except (OSError, IOError) as e:
+            self.logger.error(f"Routing failed - I/O error: {e}")
+            return None
+        except ValueError as e:
+            self.logger.error(f"Routing failed - invalid data or configuration: {e}")
+            return None
+        except (ModelExecutionError, GeospatialError) as e:
             self.logger.error(f"Routing failed: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Routing failed with unexpected error ({type(e).__name__}): {e}")
             return None
 
     def _run_mizuroute(
@@ -558,7 +578,7 @@ class SpatialOrchestrator(ABC):
             Path to routed output, or None if routing fails
         """
         try:
-            from symfluence.models.mizuroute import MizuRouteRunner, MizuRoutePreProcessor
+            from symfluence.models.mizuroute import MizuRouteRunner
 
             # Create model-specific control file if requested
             if create_control_file and model_name:
@@ -715,13 +735,28 @@ class SpatialOrchestrator(ABC):
 
         try:
             gdf = gpd.read_file(shapefile_path)
+            if gdf.empty:
+                self.logger.warning(f"Shapefile is empty: {shapefile_path}")
+                return 1
             gru_col = self.config_dict.get('CATCHMENT_SHP_GRUID', 'GRU_ID')
             if gru_col in gdf.columns:
                 return len(gdf[gru_col].unique())
             else:
                 return len(gdf)
+        except FileNotFoundError as e:
+            self.logger.error(f"Shapefile not found: {e}")
+            return 1
+        except (OSError, IOError) as e:
+            self.logger.error(f"Could not read shapefile (I/O error): {e}")
+            return 1
+        except ValueError as e:
+            self.logger.error(f"Invalid shapefile format: {e}")
+            return 1
+        except KeyError as e:
+            self.logger.error(f"Missing expected column in shapefile: {e}")
+            return 1
         except Exception as e:
-            self.logger.error(f"Error reading shapefile: {e}")
+            self.logger.error(f"Unexpected error reading shapefile ({type(e).__name__}): {e}")
             return 1
 
     def normalize_spatial_output(

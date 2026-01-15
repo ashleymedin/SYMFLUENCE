@@ -10,15 +10,11 @@ import os
 from datetime import datetime
 from pathlib import Path
 from shutil import copyfile
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Optional, Tuple, Any, Callable
 
 # Third-party imports
-import geopandas as gpd  # type: ignore
 import netCDF4 as nc4  # type: ignore
 import numpy as np  # type: ignore
-import pandas as pd  # type: ignore
-import rasterio  # type: ignore
-import rasterstats  # type: ignore
 import xarray as xr  # type: ignore
 
 # SYMFLUENCE imports
@@ -32,6 +28,11 @@ class SummaConfigManager(PathResolverMixin):
     This class handles the creation and management of SUMMA configuration files,
     including file managers, initial conditions, trial parameters, and attributes.
     """
+
+    @property
+    def config_dict(self) -> Dict[str, Any]:
+        """Return the config dict for PathResolverMixin compatibility."""
+        return getattr(self, '_config_dict_data', {})
 
     def __init__(
         self,
@@ -50,10 +51,10 @@ class SummaConfigManager(PathResolverMixin):
         parameter_name: str,
         attribute_name: str,
         forcing_measurement_height: float,
-        filter_forcing_hru_ids_callback: Optional[callable] = None,
-        get_base_settings_source_dir_callback: Optional[callable] = None,
-        get_default_path_callback: Optional[callable] = None,
-        get_simulation_times_callback: Optional[callable] = None
+        filter_forcing_hru_ids_callback: Optional[Callable] = None,
+        get_base_settings_source_dir_callback: Optional[Callable] = None,
+        get_default_path_callback: Optional[Callable] = None,
+        get_simulation_times_callback: Optional[Callable] = None
     ):
         """
         Initialize the SUMMA Configuration Manager.
@@ -79,8 +80,9 @@ class SummaConfigManager(PathResolverMixin):
             get_default_path_callback: Callback function to get default paths
             get_simulation_times_callback: Callback function to get simulation times
         """
-        self.config = config
-        self.config_dict = config  # For PathResolverMixin compatibility
+        # Store dict config for PathResolverMixin compatibility
+        # Use private attribute since config_dict is a property in mixins
+        self._config_dict_data = config
         self.logger = logger
         self.project_dir = project_dir
         self.setup_dir = setup_dir
@@ -108,14 +110,14 @@ class SummaConfigManager(PathResolverMixin):
             return self._filter_forcing_hru_ids_callback(forcing_hru_ids)
         return forcing_hru_ids
 
-    def _get_default_path(self, path_key: str, default_subpath: str) -> Path:
+    def _get_default_path(self, path_key: str, default_subpath: str, must_exist: bool = False) -> Path:
         """Get a path from config or use a default based on the project directory."""
         # Use callback if provided (delegates to parent preprocessor's mixin method)
         if self._get_default_path_callback:
             return self._get_default_path_callback(path_key, default_subpath)
 
         # Otherwise use the inherited PathResolverMixin method
-        return super()._get_default_path(path_key, default_subpath)
+        return super()._get_default_path(path_key, default_subpath, must_exist)
 
     def _get_simulation_times(self) -> Tuple[str, str]:
         """Get the simulation start and end times from config or calculate defaults."""
@@ -123,24 +125,8 @@ class SummaConfigManager(PathResolverMixin):
             return self._get_simulation_times_callback()
 
         # Fallback implementation
-        sim_start = self.config_dict.get('EXPERIMENT_TIME_START')
-        sim_end = self.config_dict.get('EXPERIMENT_TIME_END')
-
-        if sim_start == 'default' or sim_end == 'default':
-            start_year = self.config_dict.get('EXPERIMENT_TIME_START').split('-')[0]
-            end_year = self.config_dict.get('EXPERIMENT_TIME_END').split('-')[0]
-            if not start_year or not end_year:
-                raise ValueError("EXPERIMENT_TIME_START or EXPERIMENT_TIME_END is missing from configuration")
-            sim_start = f"{start_year}-01-01 01:00" if sim_start == 'default' else sim_start
-            sim_end = f"{end_year}-12-31 22:00" if sim_end == 'default' else sim_end
-
-        # Validate time format
-        try:
-            datetime.strptime(sim_start, "%Y-%m-%d %H:%M")
-            datetime.strptime(sim_end, "%Y-%m-%d %H:%M")
-        except ValueError:
-            raise ValueError("Invalid time format in configuration. Expected 'YYYY-MM-DD HH:MM'")
-
+        sim_start = str(self.config_dict.get('EXPERIMENT_TIME_START', ''))
+        sim_end = str(self.config_dict.get('EXPERIMENT_TIME_END', ''))
         return sim_start, sim_end
 
     def copy_base_settings(self):
@@ -177,6 +163,43 @@ class SummaConfigManager(PathResolverMixin):
                 dest_file = settings_path / file
                 copyfile(source_file, dest_file)
                 self.logger.debug(f"Copied {source_file} to {dest_file}")
+
+            # Ensure TWS variables are in outputControl if doing TWS optimization
+            # Check both primary and secondary targets for multi-objective calibration
+            target = self.config_dict.get('OPTIMIZATION_TARGET', '').lower()
+            target2 = self.config_dict.get('OPTIMIZATION_TARGET2', '').lower()
+            tws_targets = ['tws', 'grace', 'grace_tws', 'total_storage', 'stor_grace']
+            if target in tws_targets or target2 in tws_targets:
+                output_control_path = settings_path / 'outputControl.txt'
+                if output_control_path.exists():
+                    with open(output_control_path, 'r') as f:
+                        lines = f.readlines()
+
+                    required_vars = ['scalarSWE', 'scalarCanopyWat', 'scalarTotalSoilWat', 'scalarAquiferStorage']
+                    # Get from config if specified
+                    storage_str = self.config_dict.get('TWS_STORAGE_COMPONENTS', '')
+                    if storage_str:
+                        required_vars = [v.strip() for v in storage_str.split(',') if v.strip()]
+
+                    # Filter out existing entries for these variables to avoid duplicates
+                    new_lines = []
+                    for line in lines:
+                        is_required = False
+                        for var in required_vars:
+                            if line.strip().startswith(var):
+                                is_required = True
+                                break
+                        if not is_required:
+                            new_lines.append(line)
+
+                    # Append them cleanly at the end with frequency 1
+                    new_lines.append("\n! TWS Optimization required variables (every timestep)\n")
+                    for v in required_vars:
+                        new_lines.append(f"{v} | 1\n")
+
+                    with open(output_control_path, 'w') as f:
+                        f.writelines(new_lines)
+                    self.logger.info(f"Updated outputControl.txt with TWS variables: {required_vars}")
 
             self.logger.info(f"SUMMA base settings copied to {settings_path}")
         except FileNotFoundError as e:
@@ -221,10 +244,10 @@ class SummaConfigManager(PathResolverMixin):
             filemanager_path = self.setup_dir / filemanager_name
 
             with open(filemanager_path, 'w') as fm:
-                fm.write(f"controlVersion       'SUMMA_FILE_MANAGER_V3.0.0'\n")
+                fm.write("controlVersion       'SUMMA_FILE_MANAGER_V3.0.0'\n")
                 fm.write(f"simStartTime         '{sim_start}'\n")
                 fm.write(f"simEndTime           '{sim_end}'\n")
-                fm.write(f"tmZoneInfo           'utcTime'\n")
+                fm.write("tmZoneInfo           'utcTime'\n")
                 fm.write(f"outFilePrefix        '{experiment_id}'\n")
                 fm.write(f"settingsPath         '{self._get_default_path('SETTINGS_SUMMA_PATH', 'settings/SUMMA')}/'\n")
                 fm.write(f"forcingPath          '{self._get_default_path('FORCING_SUMMA_PATH', 'forcing/SUMMA_input')}/'\n")
@@ -234,14 +257,26 @@ class SummaConfigManager(PathResolverMixin):
                 fm.write(f"attributeFile        '{self.config_dict.get('SETTINGS_SUMMA_ATTRIBUTES')}'\n")
                 fm.write(f"trialParamFile       '{self.config_dict.get('SETTINGS_SUMMA_TRIALPARAMS')}'\n")
                 fm.write(f"forcingListFile      '{self.config_dict.get('SETTINGS_SUMMA_FORCING_LIST')}'\n")
-                fm.write(f"decisionsFile        'modelDecisions.txt'\n")
-                fm.write(f"outputControlFile    'outputControl.txt'\n")
-                fm.write(f"globalHruParamFile   'localParamInfo.txt'\n")
-                fm.write(f"globalGruParamFile   'basinParamInfo.txt'\n")
-                fm.write(f"vegTableFile         'TBL_VEGPARM.TBL'\n")
-                fm.write(f"soilTableFile        'TBL_SOILPARM.TBL'\n")
-                fm.write(f"generalTableFile     'TBL_GENPARM.TBL'\n")
-                fm.write(f"noahmpTableFile      'TBL_MPTABLE.TBL'\n")
+                fm.write("decisionsFile        'modelDecisions.txt'\n")
+                fm.write("outputControlFile    'outputControl.txt'\n")
+                fm.write("globalHruParamFile   'localParamInfo.txt'\n")
+                fm.write("globalGruParamFile   'basinParamInfo.txt'\n")
+                fm.write("vegTableFile         'TBL_VEGPARM.TBL'\n")
+                fm.write("soilTableFile        'TBL_SOILPARM.TBL'\n")
+                fm.write("generalTableFile     'TBL_GENPARM.TBL'\n")
+                fm.write("noahmpTableFile      'TBL_MPTABLE.TBL'\n")
+
+                # Add glacier-specific entries if enabled
+                glacier_mode = self.config_dict.get('SETTINGS_SUMMA_GLACIER_MODE', False)
+                if not glacier_mode and 'glac' in filemanager_name.lower():
+                    glacier_mode = True  # Auto-detect from filename
+
+                if glacier_mode:
+                    init_grid_file = self.config_dict.get('SETTINGS_SUMMA_INIT_GRID_FILE', 'coldState_glacSurfTopo.nc')
+                    attrib_grid_file = self.config_dict.get('SETTINGS_SUMMA_ATTRIB_GRID_FILE', 'attributes_glacBedTopo.nc')
+                    fm.write(f"initGridFile         '{init_grid_file}'\n")
+                    fm.write(f"attribGridFile       '{attrib_grid_file}'\n")
+                    self.logger.info("Glacier mode enabled - added initGridFile and attribGridFile")
 
             self.logger.info(f"SUMMA file manager created at {filemanager_path}")
 
@@ -441,8 +476,8 @@ class SummaConfigManager(PathResolverMixin):
 
             # Create variables for specified trial parameters
             if self.config_dict.get('SETTINGS_SUMMA_TRIALPARAM_N') != 0:
-                for var, val in all_tp.items():
-                    tp_var = tp.createVariable(var, 'f8', 'hru', fill_value=False)
+                for var_name, val in all_tp.items():
+                    tp_var = tp.createVariable(var_name, 'f8', 'hru', fill_value=False)
                     tp_var[:] = val
 
         self.logger.info(f"Trial parameters file created at: {parameter_path}")

@@ -12,8 +12,7 @@ from typing import Dict, Any, Tuple, Optional
 import numpy as np
 import geopandas as gpd
 import rasterio
-from rasterio.features import shapes
-from shapely.geometry import box, shape
+from shapely.geometry import box
 from scipy import stats as scipy_stats
 
 from ..base.base_delineator import BaseGeofabricDelineator
@@ -138,7 +137,7 @@ class GridDelineator(BaseGeofabricDelineator):
         self.logger.info(f"Saved grid network to: {river_network_path}")
 
         # Cleanup intermediate files if requested
-        if self.config.get('CLEANUP_INTERMEDIATE_FILES', True):
+        if self._get_config_value(lambda: self.config.domain.delineation.cleanup_intermediate_files, default=True, dict_key='CLEANUP_INTERMEDIATE_FILES'):
             self.cleanup()
 
         return river_network_path, river_basins_path
@@ -152,7 +151,7 @@ class GridDelineator(BaseGeofabricDelineator):
         """
         try:
             # Parse bounding box (format: lat_max/lon_min/lat_min/lon_max)
-            bbox_coords = self.config.get("BOUNDING_BOX_COORDS", "")
+            bbox_coords = self._get_config_value(lambda: self.config.domain.bounding_box_coords, default="", dict_key='BOUNDING_BOX_COORDS')
             if not bbox_coords:
                 self.logger.error("BOUNDING_BOX_COORDS not found in configuration")
                 return None
@@ -559,7 +558,7 @@ class GridDelineator(BaseGeofabricDelineator):
             segments = []
 
             # Create centroid lookup
-            centroid_lookup = {
+            {
                 int(row['GRU_ID']): row.geometry.centroid
                 for _, row in grid_gdf.iterrows()
             }

@@ -5,7 +5,7 @@ Contains NexConfig, EMEarthConfig, and ForcingConfig for meteorological forcing 
 """
 
 from typing import List, Optional
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from pydantic import BaseModel, Field, field_validator
 
 from .base import FROZEN_CONFIG
 
@@ -42,6 +42,32 @@ class EMEarthConfig(BaseModel):
     data_type: str = Field(default='deterministic', alias='EM_EARTH_DATA_TYPE')
 
 
+class ERA5Config(BaseModel):
+    """ERA5 reanalysis forcing settings"""
+    model_config = FROZEN_CONFIG
+
+    use_cds: Optional[bool] = Field(default=None, alias='ERA5_USE_CDS')
+    zarr_path: str = Field(
+        default='gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3',
+        alias='ERA5_ZARR_PATH'
+    )
+    time_step_hours: int = Field(default=1, alias='ERA5_TIME_STEP_HOURS')
+    variables: Optional[List[str]] = Field(
+        default=None,
+        alias='ERA5_VARS'
+    )
+
+    @field_validator('variables', mode='before')
+    @classmethod
+    def validate_variables(cls, v):
+        """Normalize string lists"""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return [item.strip() for item in v.split(",") if item.strip()]
+        return v
+
+
 class ForcingConfig(BaseModel):
     """Meteorological forcing configuration"""
     model_config = FROZEN_CONFIG
@@ -52,7 +78,7 @@ class ForcingConfig(BaseModel):
     # Forcing settings
     time_step_size: int = Field(default=3600, alias='FORCING_TIME_STEP_SIZE')
     variables: str = Field(default='default', alias='FORCING_VARIABLES')
-    measurement_height: int = Field(default=2, alias='FORCING_MEASUREMENT_HEIGHT')
+    measurement_height: float = Field(default=2.0, alias='FORCING_MEASUREMENT_HEIGHT')
     apply_lapse_rate: bool = Field(default=True, alias='APPLY_LAPSE_RATE')
     lapse_rate: float = Field(default=0.0065, alias='LAPSE_RATE')
     shape_lat_name: str = Field(default='lat', alias='FORCING_SHAPE_LAT_NAME')
@@ -60,12 +86,13 @@ class ForcingConfig(BaseModel):
     pet_method: str = Field(default='oudin', alias='PET_METHOD')
     supplement: bool = Field(default=False, alias='SUPPLEMENT_FORCING')
 
-    # ERA5-specific settings
+    # ERA5-specific settings (legacy, prefer using era5 subsection)
     era5_use_cds: Optional[bool] = Field(default=None, alias='ERA5_USE_CDS')
 
     # Dataset-specific settings
     nex: Optional[NexConfig] = Field(default=None)
     em_earth: Optional[EMEarthConfig] = Field(default=None)
+    era5: Optional[ERA5Config] = Field(default_factory=ERA5Config)
 
     @field_validator('variables', mode='before')
     @classmethod

@@ -16,8 +16,10 @@ import geopandas as gpd
 from pathlib import Path
 from typing import Dict, Any, Optional
 
+from symfluence.core.mixins import ConfigMixin
 
-class NgenConfigGenerator:
+
+class NgenConfigGenerator(ConfigMixin):
     """
     Generator for NGEN model configuration files.
 
@@ -50,7 +52,29 @@ class NgenConfigGenerator:
             setup_dir: Path to NGEN settings directory
             catchment_crs: Coordinate reference system for catchments
         """
-        self.config = config
+        # Import here to avoid circular imports
+
+        from symfluence.core.config.models import SymfluenceConfig
+
+
+
+        # Auto-convert dict to typed config for backward compatibility
+
+        if isinstance(config, dict):
+
+            try:
+
+                self._config = SymfluenceConfig(**config)
+
+            except Exception:
+
+                # Fallback for partial configs (e.g., in tests)
+
+                self._config = config
+
+        else:
+
+            self._config = config
         self.logger = logger
         self.setup_dir = Path(setup_dir)
         self.catchment_crs = catchment_crs
@@ -144,15 +168,15 @@ class NgenConfigGenerator:
         params.update(overrides)
 
         # Calculate num_timesteps
-        start_time = self.config.get('EXPERIMENT_TIME_START', '2000-01-01 00:00:00')
-        end_time = self.config.get('EXPERIMENT_TIME_END', '2000-12-31 23:00:00')
+        start_time = self._get_config_value(lambda: self.config.domain.time_start, default='2000-01-01 00:00:00', dict_key='EXPERIMENT_TIME_START')
+        end_time = self._get_config_value(lambda: self.config.domain.time_end, default='2000-12-31 23:00:00', dict_key='EXPERIMENT_TIME_END')
         if start_time == 'default': start_time = '2000-01-01 00:00:00'
         if end_time == 'default': end_time = '2000-12-31 23:00:00'
-        
+
         try:
             duration = pd.to_datetime(end_time) - pd.to_datetime(start_time)
             num_steps = int(duration.total_seconds() / 3600)
-        except:
+        except (ValueError, TypeError):
             num_steps = 1
 
         config_text = f"""forcing_file=BMI
@@ -171,19 +195,14 @@ expon={params['gw_expon']}[]
 gw_storage={params['gw_storage']}[m/m]
 alpha_fc={params['alpha_fc']}[]
 soil_storage={params['soil_storage']}[m/m]
-surface_runoff_scheme=NASH_CASCADE
-N_nash_surface=2
-K_nash_surface=0.83089
-nsubsteps_nash_surface=10
-nash_storage_surface=0.0,0.0
-K_nash_subsurface={params['k_nash']}[]
+K_nash={params['k_nash']}[]
 K_lf={params['k_lf']}[]
-nash_storage_subsurface=0.0,0.0
-surface_water_partitioning_scheme=Xinanjiang
+nash_storage=0.0,0.0
+giuh_ordinates=0.06,0.51,0.28,0.12,0.03
 num_timesteps={num_steps}
 verbosity=1
-DEBUG=0
-giuh_ordinates=0.65,0.35
+surface_runoff_scheme=GIUH
+surface_water_partitioning_scheme=Schaake
 """
 
         config_file = self.setup_dir / "CFE" / f"cat-{catchment_id}_bmi_config_cfe_pass.txt"
@@ -213,47 +232,93 @@ giuh_ordinates=0.65,0.35
         # Get catchment centroid
         centroid = self._get_wgs84_centroid(catchment_row)
 
-        # Default parameters
+        # Extract elevation from catchment attributes if available
+        catchment_elevation = None
+        for elev_attr in ['elevation_m', 'elevation', 'elev_mean', 'mean_elev', 'elev_m']:
+            if elev_attr in catchment_row.index and pd.notna(catchment_row[elev_attr]):
+                catchment_elevation = float(catchment_row[elev_attr])
+                break
+
+        # Get config-level PET settings
+        ngen_config = self.config_dict.get('NGEN', {})
+        pet_config = ngen_config.get('PET', {})
+
+        # Use config elevation if specified, otherwise catchment attribute, otherwise default
+        elevation = pet_config.get('elevation_m', catchment_elevation if catchment_elevation else 100.0)
+
+        # Set vegetation parameters based on elevation (forest vs grass)
+        # Mountain watersheds (>1000m) typically have forest/mixed vegetation
+        if elevation > 1000:
+            default_veg_height = 15.0  # Forest
+            default_zero_plane = 10.0
+            default_momentum_roughness = 1.5
+        else:
+            default_veg_height = 0.12  # Grass
+            default_zero_plane = 0.0003
+            default_momentum_roughness = 0.0
+
+        # Default parameters with intelligent defaults
+        # Use forcing timestep for PET instead of hardcoded hourly
+        forcing_timestep = self._get_config_value(lambda: self.config.forcing.time_step_size, default=3600, dict_key='FORCING_TIME_STEP_SIZE')
+        try:
+            forcing_timestep = int(forcing_timestep)
+        except (ValueError, TypeError):
+            forcing_timestep = 3600
+
         params = {
-            'wind_height': 10.0,
-            'humidity_height': 2.0,
-            'veg_height': 0.12,
-            'zero_plane_displacement': 0.0003,
-            'momentum_roughness': 0.0,
-            'heat_roughness': 0.0,
-            'emissivity': 1.0,
-            'albedo': 0.23,
-            'elevation': 100.0,
-            'timestep': 3600,
+            'wind_height': pet_config.get('wind_height_m', 10.0),
+            'humidity_height': pet_config.get('humidity_height_m', 2.0),
+            'veg_height': pet_config.get('vegetation_height_m', default_veg_height),
+            'zero_plane_displacement': pet_config.get('zero_plane_displacement_m', default_zero_plane),
+            'momentum_roughness': pet_config.get('momentum_roughness_length_m', default_momentum_roughness),
+            'heat_roughness': pet_config.get('heat_roughness_length_m', 0.0),
+            'emissivity': pet_config.get('emissivity', 1.0),
+            'albedo': pet_config.get('albedo', 0.23),
+            'elevation': elevation,
+            'timestep': forcing_timestep,
         }
         params.update(overrides)
 
+        # Log PET configuration parameters
+        self.logger.info(f"Generating PET config for {catchment_id}:")
+        self.logger.info(f"  Elevation: {params['elevation']:.1f} m" +
+                        (" (from catchment attribute)" if catchment_elevation else " (default)"))
+        self.logger.info(f"  Vegetation height: {params['veg_height']:.2f} m")
+        self.logger.info(f"  Momentum roughness: {params['momentum_roughness']:.2f} m")
+
         # Calculate num_timesteps
-        start_time = self.config.get('EXPERIMENT_TIME_START', '2000-01-01 00:00:00')
-        end_time = self.config.get('EXPERIMENT_TIME_END', '2000-12-31 23:00:00')
+        start_time = self._get_config_value(lambda: self.config.domain.time_start, default='2000-01-01 00:00:00', dict_key='EXPERIMENT_TIME_START')
+        end_time = self._get_config_value(lambda: self.config.domain.time_end, default='2000-12-31 23:00:00', dict_key='EXPERIMENT_TIME_END')
         if start_time == 'default': start_time = '2000-01-01 00:00:00'
         if end_time == 'default': end_time = '2000-12-31 23:00:00'
-        
+
         try:
             duration = pd.to_datetime(end_time) - pd.to_datetime(start_time)
             num_steps = int(duration.total_seconds() / 3600)
-        except:
+        except (ValueError, TypeError):
             num_steps = 1
 
-        config_text = f"""forcing_file=BMI
+        config_text = f"""verbose=0
+pet_method=5
+forcing_file=BMI
+run_unit_tests=0
+yes_aorc=1
+yes_wrf=0
 wind_speed_measurement_height_m={params['wind_height']}
 humidity_measurement_height_m={params['humidity_height']}
 vegetation_height_m={params['veg_height']}
 zero_plane_displacement_height_m={params['zero_plane_displacement']}
-momentum_transfer_roughness_length_m={params['momentum_roughness']}
+momentum_transfer_roughness_length={params['momentum_roughness']}
 heat_transfer_roughness_length_m={params['heat_roughness']}
 surface_longwave_emissivity={params['emissivity']}
 surface_shortwave_albedo={params['albedo']}
+cloud_base_height_known=FALSE
 latitude_degrees={centroid.y}
 longitude_degrees={centroid.x}
 site_elevation_m={params['elevation']}
 time_step_size_s={params['timestep']}
 num_timesteps={num_steps}
+shortwave_radiation_provided=0
 """
 
         config_file = self.setup_dir / "PET" / f"cat-{catchment_id}_pet_config.txt"
@@ -286,8 +351,8 @@ num_timesteps={num_steps}
         centroid = self._get_wgs84_centroid(catchment_row)
 
         # Get simulation timing from config
-        start_time = self.config.get('EXPERIMENT_TIME_START', '2000-01-01 00:00:00')
-        end_time = self.config.get('EXPERIMENT_TIME_END', '2000-12-31 23:00:00')
+        start_time = self._get_config_value(lambda: self.config.domain.time_start, default='2000-01-01 00:00:00', dict_key='EXPERIMENT_TIME_START')
+        end_time = self._get_config_value(lambda: self.config.domain.time_end, default='2000-12-31 23:00:00', dict_key='EXPERIMENT_TIME_END')
 
         # Handle 'default' strings
         if start_time == 'default':
@@ -416,13 +481,13 @@ num_timesteps={num_steps}
 
         lib_ext = ".dylib" if sys.platform == "darwin" else ".so"
 
-        forcing_provider = self.config.get("NGEN_FORCING_PROVIDER")
+        forcing_provider = self.config_dict.get('NGEN_FORCING_PROVIDER')
         if not forcing_provider:
             forcing_provider = "CsvPerFeature" if sys.platform == "darwin" else "NetCDF"
 
         # Handle simulation times
-        sim_start = self.config.get('EXPERIMENT_TIME_START', '2000-01-01 00:00:00')
-        sim_end = self.config.get('EXPERIMENT_TIME_END', '2000-12-31 23:00:00')
+        sim_start = self._get_config_value(lambda: self.config.domain.time_start, default='2000-01-01 00:00:00', dict_key='EXPERIMENT_TIME_START')
+        sim_end = self._get_config_value(lambda: self.config.domain.time_end, default='2000-12-31 23:00:00', dict_key='EXPERIMENT_TIME_END')
 
         if sim_start == 'default':
             sim_start = '2000-01-01 00:00:00'
@@ -431,6 +496,15 @@ num_timesteps={num_steps}
 
         sim_start = pd.to_datetime(sim_start).strftime('%Y-%m-%d %H:%M:%S')
         sim_end = pd.to_datetime(sim_end).strftime('%Y-%m-%d %H:%M:%S')
+
+        # Get forcing timestep from config (default to 3600 if not specified)
+        forcing_timestep = self._get_config_value(lambda: self.config.forcing.time_step_size, default=3600, dict_key='FORCING_TIME_STEP_SIZE')
+        try:
+            forcing_timestep = int(forcing_timestep)
+            self.logger.info(f"Using forcing timestep: {forcing_timestep} seconds ({forcing_timestep/3600:.1f} hours)")
+        except (ValueError, TypeError):
+            self.logger.warning(f"Invalid FORCING_TIME_STEP_SIZE: {forcing_timestep}, using default 3600")
+            forcing_timestep = 3600
 
         # Build forcing config
         if forcing_provider == "CsvPerFeature":
@@ -451,7 +525,7 @@ num_timesteps={num_steps}
             lib_paths=lib_paths
         )
 
-        experiment_id = self.config.get('EXPERIMENT_ID', 'default_run')
+        experiment_id = self._get_config_value(lambda: self.config.domain.experiment_id, default='default_run', dict_key='EXPERIMENT_ID')
         output_root = str((project_dir / "simulations" / experiment_id / "NGEN").resolve())
 
         config = {
@@ -471,7 +545,7 @@ num_timesteps={num_steps}
             "time": {
                 "start_time": sim_start,
                 "end_time": sim_end,
-                "output_interval": 3600
+                "output_interval": forcing_timestep
             },
             "output_root": output_root
         }
@@ -519,7 +593,7 @@ num_timesteps={num_steps}
             modules.append({
                 "name": "bmi_c",
                 "params": {
-                    "model_type_name": "PET",
+                    "model_type_name": "bmi_c_pet",
                     "library_file": lib_file,
                     "forcing_file": "",
                     "init_config": f"{pet_base}/{{{{id}}}}_pet_config.txt",
@@ -584,7 +658,8 @@ num_timesteps={num_steps}
                     "main_output_variable": "Q_OUT",
                     "registration_function": "register_bmi_cfe",
                     "variables_names_map": variables_map,
-                    "uses_forcing_file": False
+                    "uses_forcing_file": False,
+                    "output_variable_units": "m"
                 }
             })
 

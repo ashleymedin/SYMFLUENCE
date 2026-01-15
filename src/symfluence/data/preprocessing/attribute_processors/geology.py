@@ -27,7 +27,7 @@ class GeologyProcessor(BaseAttributeProcessor):
         Returns:
             Dictionary of geological attributes
         """
-        results = {}
+        results: Dict[str, Any] = {}
 
         # Process GLHYMPS data for permeability and porosity
         glhymps_results = self._process_glhymps_data()
@@ -50,7 +50,7 @@ class GeologyProcessor(BaseAttributeProcessor):
         Returns:
             Dict[str, Any]: Dictionary of hydrogeological attributes
         """
-        results = {}
+        results: Dict[str, Any] = {}
 
         # Define path to GLHYMPS data
         glhymps_path = Path("/work/comphyd_lab/data/_to-be-moved/NorthAmerica_geospatial/glhymps/raw/glhymps.shp")
@@ -204,7 +204,7 @@ class GeologyProcessor(BaseAttributeProcessor):
             else:
                 # For distributed catchment, process each HRU
                 catchment = gpd.read_file(self.catchment_path)
-                hru_id_field = self.config.get('CATCHMENT_SHP_HRUID', 'HRU_ID')
+                hru_id_field = self._get_config_value(lambda: self.config.paths.catchment_hruid, default='HRU_ID', dict_key='CATCHMENT_SHP_HRUID')
 
                 # Ensure CRS match
                 if glhymps.crs != catchment.crs:
@@ -326,7 +326,7 @@ class GeologyProcessor(BaseAttributeProcessor):
         Returns:
             Dict[str, Any]: Dictionary of lithology attributes
         """
-        results = {}
+        results: Dict[str, Any] = {}
 
         # Define path to geological map data
         # This could be GMNA (Geological Map of North America) or similar dataset
@@ -439,11 +439,9 @@ class GeologyProcessor(BaseAttributeProcessor):
                         unit_desc = str(unit.get(litho_column, '')).lower()
 
                         # Classify the unit into a category based on keywords
-                        classified = False
                         for category, keywords in rock_categories.items():
                             if any(keyword in unit_desc for keyword in keywords):
                                 litho_by_category[category] += area
-                                classified = True
                                 break
 
                     # Calculate percentages for rock categories
@@ -461,7 +459,7 @@ class GeologyProcessor(BaseAttributeProcessor):
             else:
                 # For distributed catchment, process each HRU
                 catchment = gpd.read_file(self.catchment_path)
-                hru_id_field = self.config.get('CATCHMENT_SHP_HRUID', 'HRU_ID')
+                hru_id_field = self._get_config_value(lambda: self.config.paths.catchment_hruid, default='HRU_ID', dict_key='CATCHMENT_SHP_HRUID')
 
                 # Ensure CRS match
                 if geo_map.crs != catchment.crs:
@@ -522,11 +520,9 @@ class GeologyProcessor(BaseAttributeProcessor):
                                 unit_desc = str(unit.get(litho_column, '')).lower()
 
                                 # Classify the unit into a category based on keywords
-                                classified = False
                                 for category, keywords in rock_categories.items():
                                     if any(keyword in unit_desc for keyword in keywords):
                                         litho_by_category[category] += area
-                                        classified = True
                                         break
 
                             # Calculate percentages for rock categories

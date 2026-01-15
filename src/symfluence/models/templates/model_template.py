@@ -28,7 +28,6 @@ from abc import abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
-import logging
 
 from ..base import BaseModelRunner
 from ..execution import (
@@ -36,14 +35,11 @@ from ..execution import (
     SpatialOrchestrator,
     ExecutionResult,
     SlurmJobConfig,
-    SpatialConfig,
-    SpatialMode,
     ExecutionMode,
 )
 from ..config import (
     ModelConfigSchema,
     get_model_schema,
-    validate_model_config,
 )
 from symfluence.core.exceptions import (
     ModelExecutionError,
@@ -140,11 +136,18 @@ class UnifiedModelRunner(BaseModelRunner, ModelExecutor, SpatialOrchestrator):
         if self.schema is None:
             return
 
-        # Apply defaults
-        self.config_dict = self.schema.apply_defaults(self.config_dict)
+        # Get config dict for validation
+        # For typed config (SymfluenceConfig), defaults are already applied via pydantic
+        # For legacy dict config, we need to apply defaults
+        config_for_validation = self.config_dict
+
+        # Only apply defaults for legacy dict config (not typed SymfluenceConfig)
+        # Typed config handles defaults internally via pydantic
+        if self.config is None or isinstance(self.config, dict):
+            config_for_validation = self.schema.apply_defaults(config_for_validation)
 
         # Validate
-        errors = self.schema.validate(self.config_dict)
+        errors = self.schema.validate(config_for_validation)
         model_errors = self._validate_model_specific()
         errors.extend(model_errors)
 
@@ -317,6 +320,18 @@ class UnifiedModelRunner(BaseModelRunner, ModelExecutor, SpatialOrchestrator):
             # Execute
             log_file = self.get_log_path() / f"{self.model_name.lower()}_run.log"
 
+            # Determine timeout
+            timeout = self.schema.execution.default_timeout if self.schema else 3600
+
+            # Check for override in config
+            timeout_key = f"{self.model_name}_TIMEOUT"
+            if timeout_key in self.config_dict:
+                try:
+                    timeout = int(self.config_dict[timeout_key])
+                    self.logger.debug(f"Using overridden timeout: {timeout}s")
+                except (ValueError, TypeError):
+                    self.logger.warning(f"Invalid timeout value for {timeout_key}, using default: {timeout}s")
+
             result = self.execute_in_mode(
                 mode=mode,
                 command=command,
@@ -324,7 +339,7 @@ class UnifiedModelRunner(BaseModelRunner, ModelExecutor, SpatialOrchestrator):
                 slurm_config=slurm_config,
                 env=self._get_environment(),
                 cwd=getattr(self, 'setup_dir', None),
-                timeout=self.schema.execution.default_timeout if self.schema else 3600,
+                timeout=timeout,
             )
 
             # Post-execution processing

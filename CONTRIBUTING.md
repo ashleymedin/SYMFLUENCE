@@ -17,7 +17,7 @@ We welcome all contributions — from bug fixes and documentation improvements t
    ```bash
    ./symfluence --install
    ```
-   This will create and manage a `.venv` automatically.  
+   This will create and manage a `.venv` automatically.
    If you prefer manual setup:
    ```bash
    python -m venv venv
@@ -96,15 +96,56 @@ git push origin develop
 
 ### Code Style
 - Follow **PEP 8** and use clear, descriptive variable names.
-- Include **type hints** and short, informative **docstrings**.
+- Include **type hints** and informative **docstrings**.
 - Keep functions focused and testable.
+- Prefer explicit over implicit; avoid magic numbers.
 
-Example:
+### Docstring Conventions
+We use NumPy-style docstrings for consistency. Include:
+- A one-line summary
+- Extended description for complex functions
+- Args/Parameters, Returns, Raises sections
+- Examples for public APIs
+
 ```python
 def calculate_runoff(precip: float, area: float) -> float:
-    """Compute runoff (m³/s) from precipitation rate and catchment area."""
-    return (precip / 1000) * area * 1000 / 3600
+    """
+    Compute runoff from precipitation rate and catchment area.
+
+    Converts precipitation depth rate to volumetric flow rate using
+    standard hydrological unit conversions.
+
+    Args:
+        precip: Precipitation rate in mm/hour
+        area: Catchment area in km²
+
+    Returns:
+        Runoff in m³/s (cubic meters per second)
+
+    Example:
+        >>> calculate_runoff(10.0, 100.0)
+        277.78
+    """
+    return (precip / 1000) * area * 1e6 / 3600
 ```
+
+### Running Tests
+Before submitting a PR, ensure tests pass:
+
+```bash
+# Run quick tests (recommended before each commit)
+pytest tests/ -m "not slow and not requires_cloud" -x
+
+# Run full local test suite
+pytest tests/ -m "not requires_cloud"
+
+# Run specific test categories
+pytest tests/unit/          # Unit tests only
+pytest tests/integration/   # Integration tests
+pytest tests/e2e/ --run-full-examples  # End-to-end tests (slow)
+```
+
+See `tests/TESTING.md` for detailed testing documentation.
 
 ### Commit Messages
 Use concise, descriptive messages:
@@ -127,11 +168,11 @@ Use concise, descriptive messages:
    git push origin feature/my-update
    ```
 
-3. **Open a Pull Request (PR)**  
+3. **Open a Pull Request (PR)**
    Include:
-   - **Description:** what and why  
-   - **Type:** new feature, fix, documentation, etc.  
-   - **Testing:** how it was verified  
+   - **Description:** what and why
+   - **Type:** new feature, fix, documentation, etc.
+   - **Testing:** how it was verified
    - **Related issues:** e.g., "Closes #42"
 
 Example:
@@ -154,7 +195,7 @@ Closes #117
 ---
 
 ## 5. Code Review
-All submissions are reviewed by maintainers. Expect constructive feedback — discussions help keep the codebase consistent and maintainable.  
+All submissions are reviewed by maintainers. Expect constructive feedback — discussions help keep the codebase consistent and maintainable.
 
 Please be responsive and open to suggestions.
 
@@ -162,10 +203,10 @@ Please be responsive and open to suggestions.
 
 ## 6. Reporting Issues
 When reporting, include:
-- **Description:** what went wrong  
-- **Steps to reproduce**  
-- **Expected vs actual behavior**  
-- **Environment:** OS, Python version, SYMFLUENCE commit/branch  
+- **Description:** what went wrong
+- **Steps to reproduce**
+- **Expected vs actual behavior**
+- **Environment:** OS, Python version, SYMFLUENCE commit/branch
 
 Example:
 ```
@@ -200,18 +241,71 @@ We value ideas for improvement. When proposing features:
 
 ## 8. Contribution Types
 We welcome:
-- Bug fixes  
-- Documentation updates  
-- Example projects or tutorials  
-- New model or data integrations  
-- Performance improvements  
+- Bug fixes
+- Documentation updates
+- Example projects or tutorials
+- New model or data integrations
+- Performance improvements
 - Visualization or reporting enhancements
 
 ---
 
-## 9. Questions
+## 9. API Stability and Versioning
+
+SYMFLUENCE follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (SemVer):
+
+```
+MAJOR.MINOR.PATCH (e.g., 1.2.3)
+```
+
+### Version Guarantees
+
+| Version Change | What It Means | Example |
+|----------------|---------------|---------|
+| **MAJOR** (1.x → 2.x) | Breaking changes to public API | Removing deprecated functions, changing return types |
+| **MINOR** (1.1 → 1.2) | New features, backward compatible | Adding new models, new CLI commands |
+| **PATCH** (1.1.1 → 1.1.2) | Bug fixes, backward compatible | Fixing calculation errors, typos |
+
+### Public API Definition
+
+The **public API** includes:
+- All classes and functions exported in `__all__` from top-level modules
+- CLI commands documented in `--help`
+- Configuration file format (YAML keys)
+- Python API: `SYMFLUENCE`, `SymfluenceConfig`, and exported exceptions
+
+The following are **not** part of the public API:
+- Internal modules (prefixed with `_` or in `internal/` directories)
+- Undocumented functions or classes
+- Debug/logging output format
+- Specific error message text
+
+### Pre-1.0 Stability
+
+While SYMFLUENCE is pre-1.0 (currently 0.x.x):
+- MINOR versions may include breaking changes (documented in CHANGELOG)
+- PATCH versions are always backward compatible
+- Deprecation warnings will be issued at least one MINOR version before removal
+
+### Deprecation Policy
+
+1. **Announce**: Deprecated features are marked with `warnings.warn()` and documented in CHANGELOG
+2. **Grace period**: Deprecated features remain functional for at least one MINOR release
+3. **Remove**: Removal is announced in CHANGELOG with migration guidance
+
+### For Contributors
+
+When making changes:
+- **Adding features**: Increment MINOR version
+- **Fixing bugs**: Increment PATCH version
+- **Breaking changes**: Increment MAJOR version (or MINOR if pre-1.0), document migration path
+- Always update `CHANGELOG.md` with your changes
+
+---
+
+## 10. Questions
 If you're unsure where to start:
-- Open a GitHub discussion or issue  
+- Open a GitHub discussion or issue
 - Review existing docs at [symfluence.readthedocs.io](https://symfluence.readthedocs.io)
 
 Thank you for helping improve SYMFLUENCE.

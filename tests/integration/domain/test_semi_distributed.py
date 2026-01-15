@@ -6,16 +6,13 @@ Downloads example data and reuses the lumped domain assets for a short simulatio
 """
 
 import pytest
-import requests
 import shutil
-import zipfile
-import yaml
 from pathlib import Path
 
 # Import SYMFLUENCE - this should work now since we added the path
 from symfluence import SYMFLUENCE
-from utils.helpers import load_config_template, write_config
-from utils.geospatial import (
+from test_helpers.helpers import load_config_template, write_config
+from test_helpers.geospatial import (
     assert_shapefile_signature_matches,
     load_shapefile_signature,
 )
@@ -194,7 +191,7 @@ def test_semi_distributed_basin_workflow(config_path, example_data_bundle, model
     # Step 2: Reuse data from the lumped example domain
     lumped_domain = "Bow_at_Banff_lumped"
     lumped_data_dir = example_data_bundle / f"domain_{lumped_domain}"
-    
+
     # Fallback for v0.6.0 bundle structure
     if not lumped_data_dir.exists():
         lumped_data_dir = example_data_bundle / "domain_bow_banff_minimal"

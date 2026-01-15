@@ -1,38 +1,467 @@
-"""
-Parallel Execution Mixin
+"""Parallel execution infrastructure mixin for distributed model evaluation during optimization.
 
-Provides parallel processing infrastructure for model optimization.
-Handles MPI and multiprocessing-based parallel evaluation of solutions.
+Provides extensible parallel processing framework supporting three execution paradigms: sequential
+(single process), multiprocessing (ProcessPool on shared-memory systems), and distributed MPI
+(HPC clusters). Coordinates process-specific directory management, configuration file updates,
+task distribution, and environment variable setup.
+
+Architecture:
+    The ParallelExecutionMixin implements the Mixin Pattern combined with Facade Pattern,
+    delegating to specialized helper classes while providing unified interface to optimizers:
+
+    1. Execution Strategies (Strategy Pattern):
+       - SequentialExecutionStrategy: Single-process execution (num_processes=1)
+       - ProcessPoolExecutionStrategy: Python multiprocessing (shared-memory, num_processes>1 on single machine)
+       - MPIExecutionStrategy: MPI-based distributed (HPC clusters with Slurm/PBS/LSF)
+       - Automatic strategy selection based on MPI environment detection and config
+
+    2. Helper Classes (Facade):
+       - DirectoryManager: Creates/manages process-specific directories to avoid file conflicts
+       - ConfigurationUpdater: Updates model config files (fileManager, mizRoute control) for each process
+       - TaskDistributor: Assigns tasks to processes and updates task dictionaries with directory info
+       - WorkerEnvironmentConfig: Sets environment variables (GDAL, Python paths) for worker processes
+
+    3. Parallel Directory Scheme:
+       Base structure: {base_dir}/parallel/{process_id}/
+       Prevents concurrent writes to shared files by isolated directories per process
+       Example for SUMMA model with 4 processes:
+           {base_dir}/parallel/0/settings/ (Process 0)
+           {base_dir}/parallel/1/settings/ (Process 1)
+           {base_dir}/parallel/2/settings/ (Process 2)
+           {base_dir}/parallel/3/settings/ (Process 3)
+
+    4. Configuration Update Workflow:
+       For each process:
+           1. Copy base settings to process directory
+           2. Update fileManager paths: settingsPath → process-specific dir
+           3. Update outputPath, outFilePrefix for process isolation
+           4. Update mizRoute control: <input_dir>, <output_dir> → process dirs
+           5. Update simulation times to calibration period
+
+    5. Task Distribution:
+       Tasks distributed round-robin across processes:
+           Task 0 → Process 0, Task 4 → Process 0 (if 4 processes)
+           Task 1 → Process 1, Task 5 → Process 1
+           etc.
+       Each task updated with parallel_dirs[process_id] for worker access
+
+Execution Modes:
+
+    Sequential (num_processes=1 or single task):
+        - Single Python process executes tasks serially
+        - No parallelization overhead
+        - Used for debugging, single-task runs
+        - Execution: SequentialExecutionStrategy
+
+    ProcessPool (num_processes>1, single machine):
+        - Python multiprocessing.Pool for shared-memory parallelism
+        - Efficient for multi-core systems (typical workstations/small servers)
+        - Spawn worker processes for each task
+        - Execution: ProcessPoolExecutionStrategy
+        - Configuration: MPI_PROCESSES controls pool size
+
+    MPI Distributed (num_processes>1 + HPC environment):
+        - MPI-based execution across multiple compute nodes (HPC clusters)
+        - Job submission via Slurm/PBS/LSF (handled upstream by job scheduler)
+        - Detects MPI via environment variables: OMPI_COMM_WORLD_RANK, PMI_RANK
+        - Master rank (0) distributes tasks, other ranks execute workers
+        - Execution: MPIExecutionStrategy
+        - Fallback to ProcessPool if MPI fails
+
+Workflow Integration:
+
+    1. Optimizer Setup Phase:
+       optimizer.setup_parallel_processing(base_dir, model, exp_id)
+       → Creates parallel/{0,1,2,...,N} directories
+
+    2. Configuration Preparation:
+       optimizer.copy_base_settings(settings_source, parallel_dirs, model)
+       → Copies settings files to all process directories
+
+    3. File Updates:
+       optimizer.update_file_managers(parallel_dirs, model, exp_id)
+       optimizer.update_mizuroute_controls(parallel_dirs, model, exp_id)
+       → Updates paths in fileManager.txt, mizRoute.control for process isolation
+
+    4. Task Distribution:
+       optimizer.distribute_tasks(task_list, parallel_dirs)
+       → Assigns tasks to processes, adds directory info to each task
+
+    5. Batch Execution:
+       optimizer.execute_batch(tasks, worker_func, max_workers)
+       → Selects strategy (Sequential/ProcessPool/MPI) and executes tasks
+
+    6. Cleanup:
+       optimizer.cleanup_parallel_processing(parallel_dirs)
+       → Optional cleanup of parallel directories after run
+
+Key Features:
+
+    - Automatic Strategy Selection: Detects MPI environment and selects optimal execution strategy
+    - Graceful Fallback: MPI → ProcessPool → Sequential if execution fails
+    - Process Isolation: Process-specific directories prevent concurrent file access conflicts
+    - Configuration Management: Automatic path updates for model configs across processes
+    - Error Handling: Comprehensive error reporting from all parallel processes
+    - Environment Setup: Coordinates worker environment variables (GDAL, Python, etc.)
+    - Lazy Initialization: Helper classes created on-demand (properties)
+    - Backward Compatibility: Legacy _create_mpi_worker_script() method preserved
+
+Configuration Parameters:
+    MPI_PROCESSES: int (default 1)
+        - Number of parallel processes to use
+        - > 1 triggers ProcessPool or MPI execution
+        - Typical values: 1 (sequential), 4, 8, 16, 32 (depends on machine cores)
+
+Properties:
+    num_processes: int - Configured number of processes (from MPI_PROCESSES)
+    use_parallel: bool - True if num_processes > 1
+    max_workers: int - min(num_processes, cpu_count()) - effective worker count
+    is_mpi_run: bool - True if running under MPI environment
+
+Required Mixin Attributes:
+    self.config: Dict[str, Any] - Configuration object with MPI_PROCESSES, paths
+    self.logger: logging.Logger - Logger instance
+    self.project_dir: Path - Project directory (used by MPI strategy)
+
+Example Workflows:
+
+    # Sequential Execution (debugging)
+    >>> config.MPI_PROCESSES = 1
+    >>> result = optimizer.execute_batch(tasks, worker_func)
+    # Single process executes tasks serially
+
+    # Multiprocessing (local multi-core)
+    >>> config.MPI_PROCESSES = 8
+    >>> parallel_dirs = optimizer.setup_parallel_processing(base, 'SUMMA', 'exp1')
+    >>> optimizer.copy_base_settings(settings_src, parallel_dirs, 'SUMMA')
+    >>> optimizer.update_file_managers(parallel_dirs, 'SUMMA', 'exp1')
+    >>> tasks = optimizer.distribute_tasks(all_tasks, parallel_dirs)
+    >>> results = optimizer.execute_batch(tasks, worker_func)
+    # ProcessPool creates 8 worker processes on local machine
+
+    # MPI Execution (HPC cluster)
+    >>> # Slurm job: srun -n 4 python calibrate.py (sets MPI_PROCESSES=4)
+    >>> config.MPI_PROCESSES = 4
+    >>> if optimizer.is_mpi_run:
+    ...     # MPI environment detected
+    ...     parallel_dirs = optimizer.setup_parallel_processing(base, 'SUMMA', 'exp1')
+    ...     optimizer.copy_base_settings(settings_src, parallel_dirs, 'SUMMA')
+    ...     optimizer.update_file_managers(parallel_dirs, 'SUMMA', 'exp1')
+    ...     tasks = optimizer.distribute_tasks(all_tasks, parallel_dirs)
+    ...     results = optimizer.execute_batch(tasks, worker_func)
+    # MPI master distributes tasks to worker ranks
+
+Error Handling:
+
+    - MPI failure → Automatic fallback to ProcessPool
+    - ProcessPool failure → Fallback to Sequential
+    - Failed tasks return {'individual_id': ..., 'score': None, 'error': 'message'}
+    - Comprehensive error logging with traceback
+
+References:
+    - Multiprocessing: https://docs.python.org/3/library/multiprocessing.html
+    - MPI for Python: https://mpi4py.readthedocs.io/
+    - Process Pool Pattern: https://en.wikipedia.org/wiki/Thread_pool
+    - Mixin Pattern: Gang of Four design patterns
+    - Strategy Pattern: Gang of Four design patterns
+
+See Also:
+    - DirectoryManager: Process directory creation and management
+    - ConfigurationUpdater: Model config file updates for process isolation
+    - TaskDistributor: Task-to-process assignment and metadata injection
+    - WorkerEnvironmentConfig: Worker process environment variable setup
+    - SequentialExecutionStrategy: Single-process execution implementation
+    - ProcessPoolExecutionStrategy: Multiprocessing.Pool implementation
+    - MPIExecutionStrategy: MPI-based distributed execution implementation
 """
 
 import os
 import logging
-import shutil
+import multiprocessing as mp
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Callable
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import multiprocessing as mp
-import pickle
-import subprocess # Added to fix NameError
+
+from symfluence.core.mixins import ConfigMixin
+from .parallel import (
+    DirectoryManager,
+    ConfigurationUpdater,
+    TaskDistributor,
+    WorkerEnvironmentConfig,
+    SequentialExecutionStrategy,
+    ProcessPoolExecutionStrategy,
+    MPIExecutionStrategy,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class ParallelExecutionMixin:
-    """
-    Mixin class providing parallel processing infrastructure for optimizers.
+class ParallelExecutionMixin(ConfigMixin):
+    """Mixin providing unified parallel execution infrastructure for model optimizers.
 
-    Requires the following attributes on the class using this mixin:
-    - self.config: Dict[str, Any]
-    - self.logger: logging.Logger
-    - self.project_dir: Path
+    Orchestrates distributed model evaluations across multiple processes during calibration.
+    Supports three execution paradigms seamlessly: sequential (debugging), multiprocessing
+    (shared-memory systems), and MPI (HPC clusters). Manages process isolation through
+    dedicated directories, automatic configuration file updates, and environment setup.
 
-    Provides:
-    - Parallel directory setup and management
-    - Task distribution across processes
-    - Batch execution with process pools
-    - MPI-based execution support
+    This class implements the Mixin Pattern, designed to be inherited by optimizer classes
+    that need parallel execution capabilities. Delegates to specialized strategy classes
+    (SequentialExecutionStrategy, ProcessPoolExecutionStrategy, MPIExecutionStrategy) for
+    actual execution, maintaining clean separation of concerns.
+
+    Key Responsibilities:
+
+        1. Strategy Selection & Execution:
+           - Detects execution environment (MPI, single machine, single process)
+           - Selects optimal execution strategy: Sequential → ProcessPool → MPI
+           - Provides graceful fallback: MPI → ProcessPool → Sequential on failure
+           - Exposes unified execute_batch() interface regardless of strategy
+
+        2. Process Directory Management:
+           - Creates process-specific directories to prevent file conflicts
+           - Manages {base_dir}/parallel/{process_id}/ directory scheme
+           - Copies base settings to all process directories
+           - Provides cleanup of parallel directories after execution
+
+        3. Configuration File Updates:
+           - Updates SUMMA fileManager.txt paths for process isolation
+           - Updates MizuRoute control file paths for routing
+           - Synchronizes configuration across all process directories
+           - Handles calibration period time settings
+
+        4. Task Distribution:
+           - Round-robin assignment of tasks to processes
+           - Injects process-specific directory paths into task dictionaries
+           - Maintains task order for result collection
+
+        5. Worker Environment Setup:
+           - Configures worker process environment variables
+           - Handles GDAL configuration, Python paths, library paths
+           - Applies environment settings across execution strategies
+
+    Attributes:
+
+        config (Dict[str, Any]): Configuration dictionary with MPI_PROCESSES and paths
+        logger (logging.Logger): Logger instance for execution logging
+        project_dir (Path): Project base directory (from class using this mixin)
+
+        Lazy-initialized properties (created on-demand):
+        - _directory_manager: DirectoryManager instance
+        - _config_updater: ConfigurationUpdater instance
+        - _task_distributor: TaskDistributor instance
+        - _worker_env_config: WorkerEnvironmentConfig instance
+
+    Properties:
+
+        num_processes (int): Number of parallel processes from config.MPI_PROCESSES.
+            Default 1 (sequential). > 1 enables parallel execution.
+
+        use_parallel (bool): True if num_processes > 1. Controls strategy selection.
+
+        max_workers (int): min(num_processes, cpu_count()).
+            Prevents oversubscription on multi-core systems.
+
+        is_mpi_run (bool): True if MPI environment detected
+            (OMPI_COMM_WORLD_RANK or PMI_RANK in environment).
+
+    Required Mixin Attributes:
+
+        Classes using this mixin MUST provide:
+        - self.config: Dict[str, Any] with 'MPI_PROCESSES' key
+        - self.logger: logging.Logger instance
+        - self.project_dir: Path to project directory
+
+    Workflow Methods:
+
+        setup_parallel_processing(base_dir, model_name, exp_id):
+            Creates parallel directory structure for each process.
+            Returns: Dict mapping process_id → directory paths
+
+        copy_base_settings(source_settings, parallel_dirs, model_name):
+            Copies model settings files to all process directories.
+
+        update_file_managers(parallel_dirs, model_name, exp_id):
+            Updates SUMMA fileManager.txt with process-specific paths.
+            Handles settingsPath, outputPath, outFilePrefix updates.
+
+        update_mizuroute_controls(parallel_dirs, model_name, exp_id):
+            Updates MizuRoute control file with process-specific paths.
+            Updates <input_dir>, <output_dir>, <ancil_dir>, <fname_qsim>.
+
+        distribute_tasks(tasks, parallel_dirs):
+            Assigns tasks to processes round-robin.
+            Returns tasks with process_id and directory info added.
+
+        execute_batch(tasks, worker_func, max_workers):
+            Main execution method. Selects strategy and executes tasks.
+            Returns: List of result dictionaries with scores and errors.
+
+        execute_batch_ordered(tasks, worker_func, max_workers):
+            Execution with guaranteed result ordering (uses ProcessPool).
+            Returns: Results in same order as input tasks.
+
+        cleanup_parallel_processing(parallel_dirs):
+            Optional cleanup of parallel directories.
+
+        setup_worker_environment() → Dict[str, str]:
+            Returns environment variables for worker processes.
+
+        apply_worker_environment():
+            Applies environment variables to current process.
+
+    Execution Strategies:
+
+        Sequential (num_processes=1):
+            - Single-process serial execution
+            - No parallelization overhead
+            - For debugging or single-task runs
+            - Implementation: SequentialExecutionStrategy
+
+        ProcessPool (num_processes > 1, single machine):
+            - Python multiprocessing.Pool for shared-memory systems
+            - Default strategy for workstations/small servers
+            - Spawns worker processes for each task
+            - Configurable pool size (max_workers)
+            - Implementation: ProcessPoolExecutionStrategy
+
+        MPI (num_processes > 1, HPC environment):
+            - MPI-based distributed execution across multiple nodes
+            - Master rank (0) distributes tasks to worker ranks
+            - Requires MPI environment (Slurm/PBS/LSF job submission)
+            - Auto-detected via OMPI_COMM_WORLD_RANK, PMI_RANK environment variables
+            - Fallback to ProcessPool if MPI initialization fails
+            - Implementation: MPIExecutionStrategy
+
+    Example Usage:
+
+        >>> class MyOptimizer(ParallelExecutionMixin):
+        ...     def __init__(self, config, logger, project_dir):
+        ...         # Import here to avoid circular imports
+         from symfluence.core.config.models import SymfluenceConfig
+
+         # Auto-convert dict to typed config for backward compatibility
+         if isinstance(config, dict):
+             try:
+                 self._config = SymfluenceConfig(**config)
+             except Exception:
+                 # Fallback for partial configs (e.g., in tests)
+                 self._config = config
+         else:
+             self._config = config
+        ...         self.logger = logger
+        ...         self.project_dir = project_dir
+        ...
+        ...     def run_calibration(self):
+        ...         # Setup parallel execution
+        ...         parallel_dirs = self.setup_parallel_processing(
+        ...             base_dir=self.project_dir / 'parallel',
+        ...             model_name='SUMMA',
+        ...             experiment_id='exp_001'
+        ...         )
+        ...
+        ...         # Prepare model configs
+        ...         self.copy_base_settings(settings_src, parallel_dirs, 'SUMMA')
+        ...         self.update_file_managers(parallel_dirs, 'SUMMA', 'exp_001')
+        ...
+        ...         # Create tasks (parameter sets to evaluate)
+        ...         tasks = [
+        ...             {'param_id': i, 'params': params_set_i}
+        ...             for i, params_set_i in enumerate(parameter_sets)
+        ...         ]
+        ...
+        ...         # Distribute and execute
+        ...         tasks = self.distribute_tasks(tasks, parallel_dirs)
+        ...         results = self.execute_batch(tasks, self.evaluate_single_task)
+        ...
+        ...         # Cleanup
+        ...         self.cleanup_parallel_processing(parallel_dirs)
+        ...
+        ...         return results
+
+    MPI Deployment Example:
+
+        >>> # Slurm job script: calibrate.slurm
+        >>> #!/bin/bash
+        >>> #SBATCH --nodes 2
+        >>> #SBATCH --ntasks 16
+        >>> #SBATCH --time 04:00:00
+        >>> srun python calibrate.py --config config.yaml
+        >>> # srun sets MPI environment variables detected by is_mpi_run
+
+    Error Handling:
+
+        - MPI Execution Failure: Automatically falls back to ProcessPool
+        - ProcessPool Failure: Falls back to Sequential execution
+        - Task Execution Failure: Individual task error captured, other tasks continue
+        - Failed results: {'individual_id': ..., 'score': None, 'error': 'message'}
+        - Comprehensive logging with traceback for debugging
+
+    Performance Considerations:
+
+        - Process Overhead: ProcessPool/MPI have startup overhead (~0.5-1 sec)
+          Use for runs with many tasks or expensive worker functions
+        - Optimal Task Count: min(num_tasks, num_processes * 4) for load balancing
+        - Memory Usage: Each process duplicates worker memory (plan accordingly)
+        - MPI Scaling: Efficient up to ~256 ranks on typical HPC systems
+        - I/O Bottleneck: Ensure parallel_dirs on fast storage for good scaling
+
+    Configuration:
+
+        config.MPI_PROCESSES: int (default 1)
+            - 1: Sequential execution
+            - 2-8: ProcessPool on workstation
+            - 8+: MPI on HPC cluster (with proper job submission)
+
+    References:
+
+        - Multiprocessing Documentation: https://docs.python.org/3/library/multiprocessing.html
+        - mpi4py: https://mpi4py.readthedocs.io/
+        - Slurm Job Scheduler: https://slurm.schedmd.com/
+        - Process Pool Pattern: Gang of Four design patterns
+        - Mixin Pattern: Gang of Four design patterns
+        - Strategy Pattern: Gang of Four design patterns
+
+    See Also:
+
+        - DirectoryManager: Low-level parallel directory management
+        - ConfigurationUpdater: Model configuration file updates
+        - TaskDistributor: Task-to-process distribution logic
+        - BaseModelOptimizer: Example of class using this mixin
+        - SequentialExecutionStrategy: Single-process execution implementation
+        - ProcessPoolExecutionStrategy: Multiprocessing implementation
+        - MPIExecutionStrategy: MPI-based execution implementation
     """
+
+    # =========================================================================
+    # Lazy initialization of helper classes
+    # =========================================================================
+
+    @property
+    def _directory_manager(self) -> DirectoryManager:
+        """Get or create directory manager."""
+        if not hasattr(self, '__directory_manager'):
+            self.__directory_manager = DirectoryManager(self.logger)
+        return self.__directory_manager
+
+    @property
+    def _config_updater(self) -> ConfigurationUpdater:
+        """Get or create configuration updater."""
+        if not hasattr(self, '__config_updater'):
+            self.__config_updater = ConfigurationUpdater(self.config, self.logger)
+        return self.__config_updater
+
+    @property
+    def _task_distributor(self) -> TaskDistributor:
+        """Get or create task distributor."""
+        if not hasattr(self, '__task_distributor'):
+            self.__task_distributor = TaskDistributor(self.num_processes)
+        return self.__task_distributor
+
+    @property
+    def _worker_env_config(self) -> WorkerEnvironmentConfig:
+        """Get or create worker environment config."""
+        if not hasattr(self, '__worker_env_config'):
+            self.__worker_env_config = WorkerEnvironmentConfig()
+        return self.__worker_env_config
 
     # =========================================================================
     # Properties
@@ -41,7 +470,7 @@ class ParallelExecutionMixin:
     @property
     def num_processes(self) -> int:
         """Get number of processes to use for parallel execution."""
-        return max(1, self.config.get('MPI_PROCESSES', 1))
+        return max(1, self._get_config_value(lambda: self.config.system.mpi_processes, default=1, dict_key='MPI_PROCESSES'))
 
     @property
     def use_parallel(self) -> bool:
@@ -59,7 +488,7 @@ class ParallelExecutionMixin:
         return "OMPI_COMM_WORLD_RANK" in os.environ or "PMI_RANK" in os.environ
 
     # =========================================================================
-    # Directory setup
+    # Directory setup (delegates to DirectoryManager)
     # =========================================================================
 
     def setup_parallel_processing(
@@ -82,28 +511,9 @@ class ParallelExecutionMixin:
         Returns:
             Dictionary mapping process IDs to their directory paths
         """
-        parallel_dirs = {}
-
-        for proc_id in range(self.num_processes):
-            proc_dir = base_dir / f'process_{proc_id}'
-            sim_dir = proc_dir / 'simulations' / experiment_id / model_name
-            settings_dir = proc_dir / 'settings' / model_name
-            output_dir = proc_dir / 'output'
-
-            # Create directories
-            for d in [sim_dir, settings_dir, output_dir]:
-                d.mkdir(parents=True, exist_ok=True)
-
-            parallel_dirs[proc_id] = {
-                'root': proc_dir,
-                'sim_dir': sim_dir,
-                'settings_dir': settings_dir,
-                'output_dir': output_dir,
-            }
-
-            self.logger.debug(f"Created parallel directories for process {proc_id}")
-
-        return parallel_dirs
+        return self._directory_manager.setup_parallel_directories(
+            base_dir, model_name, experiment_id, self.num_processes
+        )
 
     def copy_base_settings(
         self,
@@ -119,23 +529,25 @@ class ParallelExecutionMixin:
             parallel_dirs: Dictionary of parallel directory paths per process
             model_name: Name of the model
         """
-        for proc_id, dirs in parallel_dirs.items():
-            dest_dir = dirs['settings_dir']
+        self._directory_manager.copy_base_settings(
+            source_settings_dir, parallel_dirs, model_name
+        )
 
-            if source_settings_dir.exists():
-                # Copy settings files
-                for item in source_settings_dir.iterdir():
-                    if item.is_file():
-                        shutil.copy2(item, dest_dir / item.name)
-                    elif item.is_dir():
-                        dest_subdir = dest_dir / item.name
-                        if dest_subdir.exists():
-                            shutil.rmtree(dest_subdir)
-                        shutil.copytree(item, dest_subdir)
+    def cleanup_parallel_processing(
+        self,
+        parallel_dirs: Dict[int, Dict[str, Path]]
+    ) -> None:
+        """
+        Cleanup parallel processing directories.
 
-                self.logger.debug(
-                    f"Copied settings from {source_settings_dir} to process {proc_id}"
-                )
+        Args:
+            parallel_dirs: Dictionary of parallel directory paths per process
+        """
+        self._directory_manager.cleanup(parallel_dirs)
+
+    # =========================================================================
+    # Configuration updates (delegates to ConfigurationUpdater)
+    # =========================================================================
 
     def update_file_managers(
         self,
@@ -147,8 +559,8 @@ class ParallelExecutionMixin:
         """
         Update file manager paths in process-specific directories.
 
-        Updates settingsPath, outputPath, and outFilePrefix to point to
-        process-specific directories instead of global directories.
+        Updates settingsPath, outputPath, outFilePrefix, and simulation times
+        to point to process-specific directories and use calibration period.
 
         Args:
             parallel_dirs: Dictionary of parallel directory paths per process
@@ -156,54 +568,9 @@ class ParallelExecutionMixin:
             experiment_id: Experiment identifier
             file_manager_name: Name of the file manager file (default: 'fileManager.txt')
         """
-        for proc_id, dirs in parallel_dirs.items():
-            file_manager_path = dirs['settings_dir'] / file_manager_name
-
-            if not file_manager_path.exists():
-                self.logger.warning(
-                    f"File manager not found for process {proc_id}: {file_manager_path}"
-                )
-                continue
-
-            try:
-                # Read existing file manager
-                with open(file_manager_path, 'r') as f:
-                    lines = f.readlines()
-
-                # Update relevant paths
-                updated_lines = []
-                for line in lines:
-                    if model_name.upper() == 'HYPE' and line.startswith('resultdir'):
-                        # Update HYPE results directory
-                        output_path = str(dirs['output_dir']).replace('\\', '/').rstrip('/') + '/'
-                        updated_lines.append(f"resultdir\t{output_path}\n")
-                    elif 'settingsPath' in line:
-                        # Update to process-specific settings directory
-                        settings_path = str(dirs['settings_dir']).replace('\\', '/')
-                        updated_lines.append(f"settingsPath         '{settings_path}/'\n")
-                    elif 'outputPath' in line:
-                        # Update to process-specific simulation directory
-                        output_path = str(dirs['sim_dir']).replace('\\', '/')
-                        updated_lines.append(f"outputPath           '{output_path}/'\n")
-                    elif 'outFilePrefix' in line:
-                        # Update with process-specific prefix
-                        prefix = f'proc_{proc_id:02d}_{experiment_id}'
-                        updated_lines.append(f"outFilePrefix        '{prefix}'\n")
-                    else:
-                        updated_lines.append(line)
-
-                # Write updated file manager
-                with open(file_manager_path, 'w') as f:
-                    f.writelines(updated_lines)
-
-                self.logger.debug(
-                    f"Updated file manager for process {proc_id}: {file_manager_path}"
-                )
-
-            except Exception as e:
-                self.logger.error(
-                    f"Failed to update file manager for process {proc_id}: {e}"
-                )
+        self._config_updater.update_file_managers(
+            parallel_dirs, model_name, experiment_id, file_manager_name
+        )
 
     def update_mizuroute_controls(
         self,
@@ -224,177 +591,12 @@ class ParallelExecutionMixin:
             experiment_id: Experiment identifier
             control_file_name: Name of the control file (default: 'mizuroute.control')
         """
-        for proc_id, dirs in parallel_dirs.items():
-            # mizuRoute settings are typically in a subdirectory
-            mizu_settings_dir = dirs['settings_dir'].parent / 'mizuRoute'
-            control_file_path = mizu_settings_dir / control_file_name
-
-            if not control_file_path.exists():
-                self.logger.debug(
-                    f"mizuRoute control file not found for process {proc_id}: {control_file_path}"
-                )
-                continue
-
-            try:
-                # Read existing control file
-                with open(control_file_path, 'r') as f:
-                    lines = f.readlines()
-
-                # Construct process-specific paths
-                # dirs['sim_dir'] is .../process_N/simulations/run_1/SUMMA (or other model)
-                # Input dir should point to this process's SUMMA output (same as sim_dir)
-                proc_summa_dir = dirs['sim_dir']
-
-                # Output dir should be sibling to SUMMA dir: .../process_N/simulations/run_1/mizuRoute
-                proc_mizu_dir = proc_summa_dir.parent / 'mizuRoute'
-
-                # Ancil dir should point to process-specific mizuRoute settings (topology, etc.)
-                proc_ancil_dir = mizu_settings_dir
-
-                # Ensure mizuRoute simulation directory exists
-                proc_mizu_dir.mkdir(parents=True, exist_ok=True)
-
-                # Normalize paths (forward slashes, trailing slash)
-                def normalize_path(path):
-                    return str(path).replace('\\', '/').rstrip('/') + '/'
-
-                input_dir = normalize_path(proc_summa_dir)
-                output_dir = normalize_path(proc_mizu_dir)
-                ancil_dir = normalize_path(proc_ancil_dir)
-                case_name = f'proc_{proc_id:02d}_{experiment_id}'
-                
-                # Set model-specific filename, variable name, and timestep for mizuRoute input
-                # Default timestep is 3600s (hourly), HYPE uses 86400s (daily)
-                dt_qsim = self.config.get('SETTINGS_MIZU_ROUTING_DT', '3600')
-                if dt_qsim in ('default', None, ''):
-                    dt_qsim = '3600'
-                # Default sim times use 01:00 for hourly models; HYPE overrides to 00:00 for daily
-                sim_start_time = '01:00'
-                sim_end_time = '23:00'
-
-                if model_name.upper() == 'SUMMA':
-                    fname_qsim = f'proc_{proc_id:02d}_{experiment_id}_timestep.nc'
-                    vname_qsim = 'averageRoutedRunoff'
-                elif model_name.upper() == 'FUSE':
-                    fname_qsim = f'proc_{proc_id:02d}_{experiment_id}_timestep.nc'
-                    vname_qsim = 'q_routed'
-                elif model_name.upper() == 'GR':
-                    domain_name = self.config.get('DOMAIN_NAME')
-                    fname_qsim = f"{domain_name}_{experiment_id}_runs_def.nc"
-                    vname_qsim = self.config.get('SETTINGS_MIZU_ROUTING_VAR', 'q_routed')
-                    if vname_qsim in ('default', None, ''):
-                        vname_qsim = 'q_routed'
-                elif model_name.upper() == 'HYPE':
-                    fname_qsim = f'proc_{proc_id:02d}_{experiment_id}_timestep.nc'
-                    vname_qsim = self.config.get('SETTINGS_MIZU_ROUTING_VAR', 'q_routed')
-                    if vname_qsim in ('default', None, ''):
-                        vname_qsim = 'q_routed'
-                    # HYPE outputs daily data - override dt_qsim to 86400 (daily)
-                    # Also use 00:00 for sim_start/sim_end (HYPE timestamps are at midnight)
-                    dt_qsim = '86400'
-                    sim_start_time = '00:00'
-                    sim_end_time = '00:00'
-                else:
-                    fname_qsim = f'proc_{proc_id:02d}_{experiment_id}_timestep.nc'
-                    vname_qsim = 'q_routed'  # Default for other models
-
-                # Update relevant lines
-                updated_lines = []
-                for line in lines:
-                    if '<ancil_dir>' in line:
-                        if '!' in line:
-                            comment = '!' + '!'.join(line.split('!')[1:])
-                            updated_lines.append(f"<ancil_dir>             {ancil_dir}    {comment}")
-                        else:
-                            updated_lines.append(f"<ancil_dir>             {ancil_dir}    ! Folder that contains ancillary data\n")
-                    elif '<input_dir>' in line:
-                        if '!' in line:
-                            comment = '!' + '!'.join(line.split('!')[1:])
-                            updated_lines.append(f"<input_dir>             {input_dir}    {comment}")
-                        else:
-                            updated_lines.append(f"<input_dir>             {input_dir}    ! Folder that contains runoff data from SUMMA\n")
-                    elif '<output_dir>' in line:
-                        if '!' in line:
-                            comment = '!' + '!'.join(line.split('!')[1:])
-                            updated_lines.append(f"<output_dir>            {output_dir}    {comment}")
-                        else:
-                            updated_lines.append(f"<output_dir>            {output_dir}    ! Folder that will contain mizuRoute simulations\n")
-                    elif '<case_name>' in line:
-                        if '!' in line:
-                            comment = '!' + '!'.join(line.split('!')[1:])
-                            updated_lines.append(f"<case_name>             {case_name}    {comment}")
-                        else:
-                            updated_lines.append(f"<case_name>             {case_name}    ! Simulation case name\n")
-                    elif '<fname_qsim>' in line:
-                        if '!' in line:
-                            comment = '!' + '!'.join(line.split('!')[1:])
-                            updated_lines.append(f"<fname_qsim>            {fname_qsim}    {comment}")
-                        else:
-                            updated_lines.append(f"<fname_qsim>            {fname_qsim}    ! netCDF name for {model_name} runoff\n")
-                    elif '<vname_qsim>' in line:
-                        # Set model-specific variable name
-                        updated_lines.append(f"<vname_qsim>            {vname_qsim}    ! Variable name for {model_name} runoff\n")
-                    elif '<dt_qsim>' in line:
-                        # Set model-specific timestep (HYPE=daily, others=hourly)
-                        updated_lines.append(f"<dt_qsim>               {dt_qsim}    ! Time interval of input runoff in seconds\n")
-                    elif '<sim_start>' in line:
-                        # Extract date part and update time for model compatibility
-                        # Parse existing line to get the date
-                        import re
-                        match = re.search(r'(\d{4}-\d{2}-\d{2})', line)
-                        if match:
-                            sim_date = match.group(1)
-                            updated_lines.append(f"<sim_start>             {sim_date} {sim_start_time}    ! Time of simulation start\n")
-                        else:
-                            updated_lines.append(line)
-                    elif '<sim_end>' in line:
-                        # Extract date part and update time for model compatibility
-                        import re
-                        match = re.search(r'(\d{4}-\d{2}-\d{2})', line)
-                        if match:
-                            sim_date = match.group(1)
-                            updated_lines.append(f"<sim_end>               {sim_date} {sim_end_time}    ! Time of simulation end\n")
-                        else:
-                            updated_lines.append(line)
-                    else:
-                        updated_lines.append(line)
-
-                # Write updated control file
-                with open(control_file_path, 'w') as f:
-                    f.writelines(updated_lines)
-
-                self.logger.debug(
-                    f"Updated mizuRoute control file for process {proc_id}: {control_file_path}"
-                )
-
-            except Exception as e:
-                self.logger.error(
-                    f"Failed to update mizuRoute control file for process {proc_id}: {e}"
-                )
-
-    def cleanup_parallel_processing(
-        self,
-        parallel_dirs: Dict[int, Dict[str, Path]]
-    ) -> None:
-        """
-        Cleanup parallel processing directories.
-
-        Args:
-            parallel_dirs: Dictionary of parallel directory paths per process
-        """
-        for proc_id, dirs in parallel_dirs.items():
-            root_dir = dirs.get('root')
-            if root_dir and root_dir.exists():
-                try:
-                    shutil.rmtree(root_dir)
-                    self.logger.debug(f"Cleaned up parallel directory for process {proc_id}")
-                except Exception as e:
-                    self.logger.warning(
-                        f"Failed to cleanup parallel directory for process {proc_id}: {e}"
-                    )
+        self._config_updater.update_mizuroute_controls(
+            parallel_dirs, model_name, experiment_id, control_file_name
+        )
 
     # =========================================================================
-    # Task distribution
+    # Task distribution (delegates to TaskDistributor)
     # =========================================================================
 
     def distribute_tasks(
@@ -415,25 +617,10 @@ class ParallelExecutionMixin:
         Returns:
             List of tasks with process assignments
         """
-        distributed_tasks = []
-
-        for i, task in enumerate(tasks):
-            proc_id = i % self.num_processes
-            task_copy = task.copy()
-            task_copy['proc_id'] = proc_id
-
-            if parallel_dirs and proc_id in parallel_dirs:
-                dirs = parallel_dirs[proc_id]
-                task_copy['proc_settings_dir'] = str(dirs['settings_dir'])
-                task_copy['proc_sim_dir'] = str(dirs['sim_dir'])
-                task_copy['proc_output_dir'] = str(dirs['output_dir'])
-
-            distributed_tasks.append(task_copy)
-
-        return distributed_tasks
+        return self._task_distributor.distribute(tasks, parallel_dirs)
 
     # =========================================================================
-    # Batch execution
+    # Batch execution (uses execution strategies)
     # =========================================================================
 
     def execute_batch(
@@ -444,32 +631,49 @@ class ParallelExecutionMixin:
     ) -> List[Dict[str, Any]]:
         """
         Execute a batch of tasks using MPI if parallel, otherwise sequentially.
+
+        Args:
+            tasks: List of task dictionaries
+            worker_func: Function to call for each task
+            max_workers: Maximum number of worker processes
+
+        Returns:
+            List of results from task execution
         """
         if max_workers is None:
             max_workers = self.max_workers
 
         if self.use_parallel and len(tasks) > 1:
-            # Parallel execution via MPI
+            # Parallel execution via MPI, with ProcessPool fallback
             try:
-                return self._execute_batch_mpi(tasks, worker_func, max_workers)
+                strategy = MPIExecutionStrategy(
+                    self.project_dir, self.num_processes, self.logger
+                )
+                return strategy.execute(tasks, worker_func, max_workers)
             except Exception as e:
-                self.logger.error(f"MPI batch execution failed: {e}")
-                import traceback
-                self.logger.error(f"Traceback: {traceback.format_exc()}")
-                # Return empty results with errors for all tasks
-                return [{'individual_id': task.get('individual_id', i), 'score': None, 'error': str(e)}
-                        for i, task in enumerate(tasks)]
+                self.logger.warning(f"MPI batch execution failed: {e}")
+                self.logger.info("Falling back to ProcessPool execution...")
+                try:
+                    # Fall back to ProcessPool which is more robust
+                    strategy = ProcessPoolExecutionStrategy(self.logger)
+                    return strategy.execute(tasks, worker_func, max_workers)
+                except Exception as e2:
+                    self.logger.error(f"ProcessPool fallback also failed: {e2}")
+                    import traceback
+                    self.logger.error(f"Traceback: {traceback.format_exc()}")
+                    # Return empty results with errors for all tasks
+                    return [
+                        {
+                            'individual_id': task.get('individual_id', i),
+                            'score': None,
+                            'error': str(e2)
+                        }
+                        for i, task in enumerate(tasks)
+                    ]
         else:
             # Sequential execution for a single process or single task
-            results = []
-            for task in tasks:
-                try:
-                    result = worker_func(task)
-                    results.append(result)
-                except Exception as e:
-                    self.logger.error(f"Task failed in sequential execution: {e}")
-                    results.append({'error': str(e), 'task': task})
-            return results
+            strategy = SequentialExecutionStrategy(self.logger)
+            return strategy.execute(tasks, worker_func, max_workers)
 
     def execute_batch_ordered(
         self,
@@ -491,17 +695,11 @@ class ParallelExecutionMixin:
         if max_workers is None:
             max_workers = self.max_workers
 
-        if max_workers == 1 or len(tasks) == 1:
-            return [worker_func(task) for task in tasks]
-
-        # Use ProcessPoolExecutor.map to preserve order
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            results = list(executor.map(worker_func, tasks))
-
-        return results
+        strategy = ProcessPoolExecutionStrategy(self.logger)
+        return strategy.execute(tasks, worker_func, max_workers)
 
     # =========================================================================
-    # Environment setup
+    # Environment setup (delegates to WorkerEnvironmentConfig)
     # =========================================================================
 
     def setup_worker_environment(self) -> Dict[str, str]:
@@ -511,287 +709,33 @@ class ParallelExecutionMixin:
         Returns:
             Dictionary of environment variables to set
         """
-        return {
-            'OMP_NUM_THREADS': '1',
-            'MKL_NUM_THREADS': '1',
-            'OPENBLAS_NUM_THREADS': '1',
-            'VECLIB_MAXIMUM_THREADS': '1',
-            'NUMEXPR_NUM_THREADS': '1',
-            'NETCDF_DISABLE_LOCKING': '1',
-            'HDF5_USE_FILE_LOCKING': 'FALSE',
-            'HDF5_DISABLE_VERSION_CHECK': '1',
-        }
+        return self._worker_env_config.get_environment()
 
     def apply_worker_environment(self) -> None:
         """Apply worker environment variables to current process."""
-        for key, value in self.setup_worker_environment().items():
-            os.environ[key] = value
+        self._worker_env_config.apply_to_current_process()
 
-    def _create_mpi_worker_script(self, script_path: Path, tasks_file: Path, results_file: Path, worker_module: str, worker_function: str) -> None:
-        """Create the MPI worker script file."""
-        # Calculate the correct path to the src directory (absolute, not relative)
-        # This file is in: src/symfluence/optimization/mixins/parallel_execution.py
-        # Path(__file__).parent = src/symfluence/optimization/mixins
-        # .parent.parent.parent.parent = src/ (the directory we want for PYTHONPATH)
-        src_path = Path(__file__).parent.parent.parent.parent
+    # =========================================================================
+    # Legacy method for backward compatibility
+    # =========================================================================
 
-        script_content = f'''#!/usr/bin/env python3
-import sys
-import pickle
-import os
-from pathlib import Path
-from mpi4py import MPI
-import logging
+    def _create_mpi_worker_script(
+        self,
+        script_path: Path,
+        tasks_file: Path,
+        results_file: Path,
+        worker_module: str,
+        worker_function: str
+    ) -> None:
+        """
+        Create the MPI worker script file.
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] [%(name)s] - %(message)s')
-logger = logging.getLogger(__name__)
-
-# Silence noisy libraries
-for noisy_logger in ['rasterio', 'fiona', 'boto3', 'botocore', 'matplotlib', 'urllib3', 's3transfer']:
-    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
-
-# Add symphluence src to path to ensure imports work
-
-sys.path.insert(0, r"{str(src_path)}")
-
-try:
-    from {worker_module} import {worker_function}
-except ImportError as e:
-    logger.error(f"Failed to import worker function: {{e}}")
-    logger.error(f"sys.path = {{sys.path}}")
-    sys.exit(1)
-
-def main():
-    """MPI worker main function."""
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
-    
-    tasks_file = Path(sys.argv[1])
-    results_file = Path(sys.argv[2])
-    
-    if rank == 0:
-        # Master process - load all tasks
-        try:
-            with open(tasks_file, 'rb') as f:
-                all_tasks = pickle.load(f)
-        except Exception as e:
-            logger.error(f"Master failed to load tasks: {{e}}")
-            all_tasks = []
-
-        logger.info(f"Rank 0: Loaded {{len(all_tasks)}} tasks")
-
-        # Distribute tasks by proc_id to avoid race conditions
-        # Tasks with the same proc_id share directories, so they must run on the same rank
-        from collections import defaultdict
-        tasks_by_proc = defaultdict(list)
-        for task in all_tasks:
-            proc_id = task.get('proc_id', 0)
-            # Assign to rank based on proc_id modulo size
-            assigned_rank = proc_id % size
-            tasks_by_proc[assigned_rank].append(task)
-
-        logger.info(f"Rank 0: Distributed tasks by proc_id - {{{{r: len(tasks_by_proc[r]) for r in range(size)}}}}")
-        all_results = []
-
-        for worker_rank in range(size):
-            worker_tasks = tasks_by_proc[worker_rank]
-
-            if worker_rank == 0:
-                my_tasks = worker_tasks
-                logger.info(f"Rank 0: Processing {{len(my_tasks)}} tasks locally")
-            else:
-                logger.info(f"Rank 0: Sending {{len(worker_tasks)}} tasks to rank {{worker_rank}}")
-                comm.send(worker_tasks, dest=worker_rank, tag=1)
-
-        # Process rank 0 tasks
-        for i, task in enumerate(my_tasks):
-            try:
-                worker_result = {worker_function}(task)
-                all_results.append(worker_result)
-            except Exception as e:
-                logger.error(f"Rank 0: Task {{i}} failed: {{e}}")
-                error_result = {{
-                    'individual_id': task.get('individual_id', -1),
-                    'params': task.get('params', {{}}),
-                    'score': None,
-                    'error': f'Rank 0 error: {{str(e)}}'
-                }}
-                all_results.append(error_result)
-
-        # Collect results from workers
-        for worker_rank in range(1, size):
-            try:
-                logger.info(f"Rank 0: Waiting for results from rank {{worker_rank}}")
-                worker_results = comm.recv(source=worker_rank, tag=2)
-                logger.info(f"Rank 0: Received {{len(worker_results)}} results from rank {{worker_rank}}")
-                all_results.extend(worker_results)
-            except Exception as e:
-                logger.error(f"Error receiving from worker {{worker_rank}}: {{e}}")
-
-        # Save results
-        logger.info(f"Rank 0: Saving {{len(all_results)}} results to {{results_file}}")
-        with open(results_file, 'wb') as f:
-            pickle.dump(all_results, f)
-        logger.info(f"Rank 0: Results saved successfully")
-
-    else:
-        # Worker process
-        logger.info(f"Rank {{rank}}: Waiting for tasks from rank 0")
-        try:
-            my_tasks = comm.recv(source=0, tag=1)
-            logger.info(f"Rank {{rank}}: Received {{len(my_tasks)}} tasks")
-
-            my_results = []
-
-            for i, task in enumerate(my_tasks):
-                logger.info(f"Rank {{rank}}: Processing task {{i+1}}/{{len(my_tasks)}}")
-                try:
-                    worker_result = {worker_function}(task)
-                    my_results.append(worker_result)
-                except Exception as e:
-                    logger.error(f"Rank {{rank}}: Task {{i}} failed: {{e}}")
-                    error_result = {{
-                        'individual_id': task.get('individual_id', -1),
-                        'params': task.get('params', {{}}),
-                        'score': None,
-                        'error': f'Rank {{rank}} error: {{str(e)}}'
-                    }}
-                    my_results.append(error_result)
-
-            logger.info(f"Rank {{rank}}: Sending {{len(my_results)}} results back to rank 0")
-            comm.send(my_results, dest=0, tag=2)
-            logger.info(f"Rank {{rank}}: Results sent successfully")
-
-        except Exception as e:
-            logger.error(f"Worker {{rank}} failed: {{e}}")
-
-if __name__ == "__main__":
-    main()
-'''
-        with open(script_path, 'w') as f:
-            f.write(script_content)
-
-    def _execute_batch_mpi(self, tasks: List[Dict[str, Any]], worker_func: Callable, max_workers: int) -> List[Dict[str, Any]]:
-        """Execute a batch of tasks using mpirun."""
-        import uuid
-        import sys
-
-        work_dir = self.project_dir / "temp_mpi"
-        work_dir.mkdir(exist_ok=True)
-
-        unique_id = uuid.uuid4().hex[:8]
-        tasks_file = work_dir / f'mpi_tasks_{unique_id}.pkl'
-        results_file = work_dir / f'mpi_results_{unique_id}.pkl'
-        worker_script = work_dir / f'mpi_worker_{unique_id}.py'
-
-        # Get worker module and function name from the callable
-        if hasattr(worker_func, '__module__'):
-            worker_module = worker_func.__module__
-            worker_function = worker_func.__name__
-        else:
-            # Fallback to defaults
-            worker_module = "symfluence.optimization.workers.summa_parallel_workers"
-            worker_function = "_evaluate_parameters_worker_safe"
-
-        cleanup_files = True  # Track whether to clean up files
-        try:
-            self.logger.debug(f"MPI batch: {len(tasks)} tasks, worker={worker_module}.{worker_function}")
-
-            with open(tasks_file, 'wb') as f:
-                pickle.dump(tasks, f)
-
-            self._create_mpi_worker_script(worker_script, tasks_file, results_file, worker_module, worker_function)
-            worker_script.chmod(0o755)
-
-            num_processes = min(max_workers, self.num_processes, len(tasks))
-
-            # Use the Python executable from sys.executable (should be the venv Python)
-            # If sys.executable is not found or doesn't have mpi4py, try to detect the venv
-            python_exe = sys.executable
-            self.logger.debug(f"sys.executable: {python_exe}, exists: {Path(python_exe).exists()}")
-
-            # Always prefer the venv Python if it exists
-            venv_paths = [
-                Path(__file__).parent.parent.parent.parent.parent / "venv" / "bin" / "python",
-                Path.home() / "venv" / "bin" / "python",
-            ]
-            for venv_path in venv_paths:
-                if venv_path.exists():
-                    python_exe = str(venv_path)
-                    self.logger.info(f"Using venv Python: {python_exe}")
-                    break
-
-            if not Path(python_exe).exists():
-                self.logger.warning(f"Python executable not found: {python_exe}, using sys.executable")
-
-            # Don't use -x for PYTHONPATH since venv Python already includes src in sys.path
-            # Use -x for worker environment variables that control threading and HDF5
-            mpi_cmd = ['mpirun', '-x', 'OMP_NUM_THREADS', '-x', 'HDF5_USE_FILE_LOCKING', '-x', 'MKL_NUM_THREADS',
-                       '-n', str(num_processes), python_exe, str(worker_script), str(tasks_file), str(results_file)]
-
-            self.logger.debug(f"MPI command: {' '.join(mpi_cmd)}")
-
-            # Setup environment for MPI workers
-            mpi_env = os.environ.copy()
-
-            # Ensure PYTHONPATH includes the src directory (same path as in script)
-            src_path = str(Path(__file__).parent.parent.parent.parent)
-            current_pythonpath = mpi_env.get('PYTHONPATH', '')
-            if current_pythonpath:
-                mpi_env['PYTHONPATH'] = f"{src_path}:{current_pythonpath}"
-            else:
-                mpi_env['PYTHONPATH'] = src_path
-
-            # Add worker environment variables for thread control and HDF5 locking
-            worker_env = self.setup_worker_environment()
-            mpi_env.update(worker_env)
-
-            # Ensure OpenMPI passes environment variables to spawned processes
-            # This is important for PYTHONPATH and other settings
-            if 'OMPI_MCA_' not in mpi_env:
-                mpi_env['OMPI_MCA_pls_rsh_agent'] = 'ssh'
-
-            self.logger.debug(f"MPI environment - PYTHONPATH: {mpi_env.get('PYTHONPATH')}")
-            self.logger.debug(f"MPI command: {' '.join(mpi_cmd)}")
-
-            # Run MPI command
-            result = subprocess.run(mpi_cmd, capture_output=True, text=True, env=mpi_env)
-
-            # Always log MPI output for debugging
-            self.logger.debug(f"MPI returncode: {result.returncode}")
-            if result.stdout:
-                self.logger.debug(f"MPI stdout: {result.stdout[:1000]}")
-            if result.stderr:
-                # Still log stderr if there's significant output, but maybe keep it at debug if it's just expected warnings
-                self.logger.debug(f"MPI stderr: {result.stderr[:1000]}")
-
-            if result.returncode != 0:
-                self.logger.error(f"MPI execution failed (returncode={result.returncode})")
-                self.logger.error(f"MPI stdout: {result.stdout[:2000] if result.stdout else 'empty'}")
-                self.logger.error(f"MPI stderr: {result.stderr[:2000] if result.stderr else 'empty'}")
-                cleanup_files = False  # Keep files for debugging
-                raise RuntimeError(f"MPI execution failed with returncode {result.returncode}")
-
-            if results_file.exists():
-                with open(results_file, 'rb') as f:
-                    results = pickle.load(f)
-                self.logger.debug(f"MPI completed: {len(results)} results")
-                return results
-            else:
-                self.logger.error(f"MPI results file not created: {results_file}")
-                self.logger.error(f"MPI stdout: {result.stdout[:2000] if result.stdout else 'empty'}")
-                self.logger.error(f"MPI stderr: {result.stderr[:2000] if result.stderr else 'empty'}")
-                cleanup_files = False  # Keep files for debugging
-                raise RuntimeError("MPI results file not created")
-
-        finally:
-            # Cleanup only if successful
-            if cleanup_files:
-                for file_path in [tasks_file, results_file, worker_script]:
-                    if file_path.exists():
-                        try:
-                            file_path.unlink()
-                        except OSError:
-                            pass
+        Note: This method is kept for backward compatibility.
+        New code should use MPIExecutionStrategy directly.
+        """
+        strategy = MPIExecutionStrategy(
+            self.project_dir, self.num_processes, self.logger
+        )
+        strategy._create_worker_script(
+            script_path, tasks_file, results_file, worker_module, worker_function
+        )

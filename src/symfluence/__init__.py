@@ -1,3 +1,26 @@
+"""
+SYMFLUENCE: SYnergistic Modelling Framework for Linking and Unifying
+Earth-system Nexii for Computational Exploration.
+
+A computational environmental modeling platform that streamlines the
+hydrological modeling workflow from domain setup to evaluation. Provides
+an integrated framework for multi-model comparison, parameter optimization,
+and automated workflow management.
+
+Main entry points:
+    SYMFLUENCE: Main workflow orchestrator class
+    SymfluenceConfig: Configuration management for workflows
+
+Example:
+    >>> from symfluence import SYMFLUENCE, SymfluenceConfig
+    >>> config = SymfluenceConfig.from_file('config.yaml')
+    >>> workflow = SYMFLUENCE(config)
+    >>> workflow.run()
+
+For CLI usage:
+    $ symfluence workflow run --config config.yaml
+    $ symfluence --help
+"""
 # src/symfluence/__init__.py
 import logging
 import os
@@ -24,8 +47,8 @@ from .core.exceptions import (
 )
 
 __all__ = [
-    "SYMFLUENCE", 
-    "SymfluenceConfig", 
+    "SYMFLUENCE",
+    "SymfluenceConfig",
     "SYMFLUENCEError",
     "ConfigurationError",
     "ModelExecutionError",

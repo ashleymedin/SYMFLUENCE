@@ -28,7 +28,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, Callable
-import logging
 
 
 class ExecutionMode(Enum):
@@ -233,7 +232,7 @@ class ModelExecutor(ABC):
 
             return exec_result
 
-        except subprocess.TimeoutExpired as e:
+        except subprocess.TimeoutExpired:
             duration = time.time() - start_time
             self.logger.error(f"Process timed out after {timeout}s")
             return ExecutionResult(
@@ -675,7 +674,13 @@ class ModelExecutor(ABC):
         Returns:
             ExecutionResult from final attempt
         """
-        last_result = None
+        # Initialize last_result to handle case where loop might not execute
+        last_result = ExecutionResult(
+            success=False,
+            return_code=-1,
+            error_message="Execution failed to start or all attempts failed",
+            metadata={'command': str(command)}
+        )
 
         for attempt in range(1, max_attempts + 1):
             self.logger.debug(f"Attempt {attempt}/{max_attempts}")

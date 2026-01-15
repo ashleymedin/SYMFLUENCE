@@ -6,7 +6,7 @@ all other config models and provides validation, factory methods, and
 backward compatibility.
 """
 
-from typing import Dict, Any, Optional, TYPE_CHECKING
+from typing import Dict, Any, Optional
 from pathlib import Path
 from pydantic import BaseModel, Field, model_validator, ConfigDict
 from functools import cached_property
@@ -16,24 +16,20 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from .base import FROZEN_CONFIG
 from .system import SystemConfig
-from .domain import DomainConfig, DelineationConfig
+from .domain import DomainConfig
 from .data import DataConfig
-from .forcing import ForcingConfig, NexConfig, EMEarthConfig
+from .forcing import ForcingConfig
 from .model_configs import (
-    ModelConfig, SUMMAConfig, FUSEConfig, GRConfig, HYPEConfig,
-    NGENConfig, MESHConfig, MizuRouteConfig, LSTMConfig
+    ModelConfig
 )
 from .optimization import (
-    OptimizationConfig, PSOConfig, DEConfig, DDSConfig, SCEUAConfig,
-    NSGA2Config, DPEConfig, LargeDomainConfig, EmulationConfig
+    OptimizationConfig
 )
 from .evaluation import (
-    EvaluationConfig, StreamflowConfig, SNOTELConfig, FluxNetConfig,
-    USGSGWConfig, SMAPConfig, GRACEConfig, MODISSnowConfig, AttributesConfig
+    EvaluationConfig
 )
-from .paths import PathsConfig, ShapefilePathConfig
+from .paths import PathsConfig
 
 
 class SymfluenceConfig(BaseModel):
@@ -124,6 +120,7 @@ class SymfluenceConfig(BaseModel):
                 'lumped',
                 'discretized',
                 'distributed',
+                'distribute',
                 'subset',
                 'point',
                 'delineate',
@@ -230,7 +227,7 @@ class SymfluenceConfig(BaseModel):
                     raise ConfigurationError(
                         f"POUR_POINT_COORDS longitude {lon_f} out of range [-180, 180]"
                     )
-            except ValueError as e:
+            except ValueError:
                 raise ConfigurationError(
                     f"POUR_POINT_COORDS must be 'lat/lon' format, got '{self.domain.pour_point_coords}'"
                 )
@@ -247,13 +244,13 @@ class SymfluenceConfig(BaseModel):
                     )
                 if not (-180 <= west_f <= 180 and -180 <= east_f <= 180):
                     raise ConfigurationError(
-                        f"BOUNDING_BOX_COORDS longitude out of range [-180, 180]"
+                        "BOUNDING_BOX_COORDS longitude out of range [-180, 180]"
                     )
                 if south_f >= north_f:
                     raise ConfigurationError(
                         f"BOUNDING_BOX_COORDS: south ({south_f}) must be < north ({north_f})"
                     )
-            except ValueError as e:
+            except ValueError:
                 raise ConfigurationError(
                     f"BOUNDING_BOX_COORDS must be 'north/west/south/east' format, got '{self.domain.bounding_box_coords}'"
                 )
@@ -262,93 +259,143 @@ class SymfluenceConfig(BaseModel):
 
     @model_validator(mode='after')
     def validate_model_requirements(self):
-        """Validate model-specific required fields based on HYDROLOGICAL_MODEL"""
+        """
+        Validate model-specific required fields based on HYDROLOGICAL_MODEL.
+
+        Uses ModelRegistry for validation when available, falling back to
+        legacy hardcoded validation for backward compatibility.
+        """
         from symfluence.core.exceptions import ConfigurationError
 
         models = self._parse_models()
-        missing_fields = []
+        all_errors = []
 
         # Helper to check if value is unset
         def is_unset(value):
             return value is None or (isinstance(value, str) and value in ['', 'None'])
 
-        # SUMMA requirements - validate only if summa config provided
-        if 'SUMMA' in models and self.model.summa:
-            summa_required = {
-                'SUMMA_EXE': self.model.summa.exe,
-                'SETTINGS_SUMMA_PATH': self.model.summa.settings_path,
-            }
-            for field, value in summa_required.items():
-                if is_unset(value):
-                    missing_fields.append(f"{field} (required for SUMMA)")
+        # Try ModelRegistry validation first (NEW PATTERN)
+        try:
+            from symfluence.models.registry import ModelRegistry
+            from symfluence.core.config.transformers import flatten_nested_config
 
-        # FUSE requirements - validate only if fuse config provided
-        if 'FUSE' in models and self.model.fuse:
-            fuse_required = {
-                'FUSE_EXE': self.model.fuse.exe,
-                'SETTINGS_FUSE_PATH': self.model.fuse.settings_path,
-            }
-            for field, value in fuse_required.items():
-                if is_unset(value):
-                    missing_fields.append(f"{field} (required for FUSE)")
+            # Convert to flat config for model validators
+            flat_config = flatten_nested_config(self)
 
-        # GR requirements - validate only if gr config provided
-        if 'GR' in models and self.model.gr:
-            gr_required = {
-                'GR_EXE': self.model.gr.exe,
-                'SETTINGS_GR_PATH': self.model.gr.settings_path,
-            }
-            for field, value in gr_required.items():
-                if is_unset(value):
-                    missing_fields.append(f"{field} (required for GR)")
+            # Validate each model using ModelRegistry
+            for model_name in models:
+                try:
+                    ModelRegistry.validate_model_config(model_name, flat_config)
+                except Exception as e:
+                    # Collect validation errors
+                    all_errors.append(f"{model_name}: {str(e)}")
+        except ImportError:
+            # ModelRegistry not available, use legacy validation below
+            pass
+        except Exception as e:
+            # If ModelRegistry validation fails, log and fall back to legacy
+            import logging
+            logging.debug(f"ModelRegistry validation failed: {e}, using legacy validation")
 
-        # HYPE requirements - validate only if hype config provided
-        if 'HYPE' in models and self.model.hype:
-            hype_required = {
-                'SETTINGS_HYPE_PATH': self.model.hype.settings_path,
-            }
-            for field, value in hype_required.items():
-                if is_unset(value):
-                    missing_fields.append(f"{field} (required for HYPE)")
+        # LEGACY VALIDATION (BACKWARD COMPATIBILITY)
+        # Only run if ModelRegistry validation didn't catch everything
+        if not all_errors:
+            missing_fields = []
 
-        # NGEN requirements - validate only if ngen config provided
-        if 'NGEN' in models and self.model.ngen:
-            ngen_required = {
-                'NGEN_EXE': self.model.ngen.exe,
-                'NGEN_INSTALL_PATH': self.model.ngen.install_path,
-            }
-            for field, value in ngen_required.items():
-                if is_unset(value):
-                    missing_fields.append(f"{field} (required for NGEN)")
-
-        # MESH requirements - validate only if mesh config provided
-        if 'MESH' in models and self.model.mesh:
-            mesh_required = {
-                'MESH_EXE': self.model.mesh.exe,
-                'SETTINGS_MESH_PATH': self.model.mesh.settings_path,
-            }
-            for field, value in mesh_required.items():
-                if is_unset(value):
-                    missing_fields.append(f"{field} (required for MESH)")
-
-        # Routing model requirements - validate only if mizuroute config provided
-        if self.model.routing_model:
-            routing_model = self.model.routing_model.upper()
-            if routing_model == 'MIZUROUTE' and self.model.mizuroute:
-                mizu_required = {
-                    'EXE_NAME_MIZUROUTE': self.model.mizuroute.exe,
-                    'INSTALL_PATH_MIZUROUTE': self.model.mizuroute.install_path,
+            # SUMMA requirements - validate only if summa config provided
+            if 'SUMMA' in models and self.model.summa:
+                summa_required = {
+                    'SUMMA_EXE': self.model.summa.exe,
+                    'SETTINGS_SUMMA_PATH': self.model.summa.settings_path,
                 }
-                for field, value in mizu_required.items():
+                for field, value in summa_required.items():
                     if is_unset(value):
-                        missing_fields.append(f"{field} (required for mizuRoute)")
+                        missing_fields.append(f"{field} (required for SUMMA)")
 
-        if missing_fields:
+            # FUSE requirements - validate only if fuse config provided
+            if 'FUSE' in models and self.model.fuse:
+                fuse_required = {
+                    'FUSE_EXE': self.model.fuse.exe,
+                    'SETTINGS_FUSE_PATH': self.model.fuse.settings_path,
+                }
+                for field, value in fuse_required.items():
+                    if is_unset(value):
+                        missing_fields.append(f"{field} (required for FUSE)")
+
+            # GR requirements - validate only if gr config provided
+            if 'GR' in models and self.model.gr:
+                gr_required = {
+                    'GR_EXE': self.model.gr.exe,
+                    'SETTINGS_GR_PATH': self.model.gr.settings_path,
+                }
+                for field, value in gr_required.items():
+                    if is_unset(value):
+                        missing_fields.append(f"{field} (required for GR)")
+
+            # HYPE requirements - validate only if hype config provided
+            if 'HYPE' in models and self.model.hype:
+                hype_required = {
+                    'SETTINGS_HYPE_PATH': self.model.hype.settings_path,
+                }
+                for field, value in hype_required.items():
+                    if is_unset(value):
+                        missing_fields.append(f"{field} (required for HYPE)")
+
+            # NGEN requirements - validate only if ngen config provided
+            if 'NGEN' in models and self.model.ngen:
+                ngen_required = {
+                    'NGEN_EXE': self.model.ngen.exe,
+                    'NGEN_INSTALL_PATH': self.model.ngen.install_path,
+                }
+                for field, value in ngen_required.items():
+                    if is_unset(value):
+                        missing_fields.append(f"{field} (required for NGEN)")
+
+            # MESH requirements - validate only if mesh config provided
+            if 'MESH' in models and self.model.mesh:
+                mesh_required = {
+                    'MESH_EXE': self.model.mesh.exe,
+                    'SETTINGS_MESH_PATH': self.model.mesh.settings_path,
+                }
+                for field, value in mesh_required.items():
+                    if is_unset(value):
+                        missing_fields.append(f"{field} (required for MESH)")
+
+            # RHESSys requirements - validate only if rhessys config provided
+            if 'RHESSYS' in models and self.model.rhessys:
+                rhessys_required = {
+                    'RHESSYS_EXE': self.model.rhessys.exe,
+                    'SETTINGS_RHESSYS_PATH': self.model.rhessys.settings_path,
+                }
+                for field, value in rhessys_required.items():
+                    if is_unset(value):
+                        missing_fields.append(f"{field} (required for RHESSys)")
+
+            # Routing model requirements - validate only if mizuroute config provided
+            if self.model.routing_model:
+                routing_model = self.model.routing_model.upper()
+                if routing_model == 'MIZUROUTE' and self.model.mizuroute:
+                    mizu_required = {
+                        'EXE_NAME_MIZUROUTE': self.model.mizuroute.exe,
+                        'INSTALL_PATH_MIZUROUTE': self.model.mizuroute.install_path,
+                    }
+                    for field, value in mizu_required.items():
+                        if is_unset(value):
+                            missing_fields.append(f"{field} (required for mizuRoute)")
+
+            if missing_fields:
+                raise ConfigurationError(
+                    "Model-specific configuration incomplete:\n"
+                    + "\n".join(f"  • {field}" for field in missing_fields)
+                    + f"\n\nSelected models: {', '.join(models)}"
+                    + (f"\nRouting model: {self.model.routing_model}" if self.model.routing_model else "")
+                )
+
+        # Raise errors from ModelRegistry validation if any
+        if all_errors:
             raise ConfigurationError(
-                f"Model-specific configuration incomplete:\n"
-                + "\n".join(f"  • {field}" for field in missing_fields)
-                + f"\n\nSelected models: {', '.join(models)}"
-                + (f"\nRouting model: {self.model.routing_model}" if self.model.routing_model else "")
+                "Model configuration validation failed:\n"
+                + "\n".join(f"  • {error}" for error in all_errors)
             )
 
         return self
@@ -360,12 +407,22 @@ class SymfluenceConfig(BaseModel):
         models = self._parse_models()
         issues = []
 
-        # Check FUSE spatial mode
+        # Auto-align FUSE spatial mode with domain definition
         if 'FUSE' in models and self.model.fuse:
-            if self.domain.definition_method == 'lumped' and self.model.fuse.spatial_mode != 'lumped':
+            # Map domain definition to appropriate FUSE spatial mode
+            domain_to_fuse_mode = {
+                'lumped': 'lumped',
+                'semi_distributed': 'semi_distributed',
+                'distributed': 'distributed',
+                'discretized': 'distributed',  # Treat discretized as distributed
+            }
+            expected_fuse_mode = domain_to_fuse_mode.get(self.domain.definition_method)
+
+            if expected_fuse_mode and self.model.fuse.spatial_mode != expected_fuse_mode:
+                # Auto-align FUSE spatial mode to match domain definition
+                self.model.fuse = self.model.fuse.model_copy(update={'spatial_mode': expected_fuse_mode})
                 issues.append(
-                    f"FUSE_SPATIAL_MODE is '{self.model.fuse.spatial_mode}' but DOMAIN_DEFINITION_METHOD is 'lumped'. "
-                    f"Consider setting FUSE_SPATIAL_MODE to 'lumped'."
+                    f"Auto-aligned FUSE_SPATIAL_MODE to '{expected_fuse_mode}' (DOMAIN_DEFINITION_METHOD is '{self.domain.definition_method}')"
                 )
 
         # Check GR spatial mode
@@ -415,7 +472,7 @@ class SymfluenceConfig(BaseModel):
             )
 
         # Validate optimization metric
-        valid_metrics = ['KGE', 'KGEp', 'NSE', 'RMSE', 'MAE', 'PBIAS', 'R2']
+        valid_metrics = ['KGE', 'KGEp', 'NSE', 'RMSE', 'MAE', 'PBIAS', 'R2', 'correlation']
         if self.optimization.metric not in valid_metrics:
             errors.append(
                 f"OPTIMIZATION_METRIC '{self.optimization.metric}' not recognized. "
@@ -464,30 +521,9 @@ class SymfluenceConfig(BaseModel):
                 if not (0 <= self.optimization.dpe.iterate_convergence_tol <= 1):
                     errors.append(f"DPE_ITERATE_CONVERGENCE_TOL should be in [0, 1], got {self.optimization.dpe.iterate_convergence_tol}")
 
-        # Validate emulation settings
-        if self.optimization.large_domain and self.optimization.large_domain.enabled:
-            if self.optimization.large_domain.training_epochs < 1:
-                errors.append(f"LARGE_DOMAIN_TRAINING_EPOCHS must be >= 1, got {self.optimization.large_domain.training_epochs}")
-
-            # Validate objective weights sum to 1.0
-            total_weight = (
-                self.optimization.large_domain.streamflow_weight +
-                self.optimization.large_domain.smap_weight +
-                self.optimization.large_domain.grace_weight +
-                self.optimization.large_domain.modis_weight
-            )
-            if abs(total_weight - 1.0) > 0.01:
-                errors.append(
-                    f"Large domain emulator objective weights should sum to 1.0, got {total_weight:.3f}. "
-                    f"(Streamflow: {self.optimization.large_domain.streamflow_weight}, "
-                    f"SMAP: {self.optimization.large_domain.smap_weight}, "
-                    f"GRACE: {self.optimization.large_domain.grace_weight}, "
-                    f"MODIS: {self.optimization.large_domain.modis_weight})"
-                )
-
         if errors:
             raise ConfigurationError(
-                f"Optimization configuration invalid:\n"
+                "Optimization configuration invalid:\n"
                 + "\n".join(f"  • {error}" for error in errors)
             )
 

@@ -5,10 +5,8 @@ Tests SUMMA-specific preprocessing functionality.
 """
 
 import pytest
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch
 from symfluence.models.summa import SummaPreProcessor
-from symfluence.core.exceptions import ModelExecutionError
 
 
 class TestSummaPreProcessorInitialization:
@@ -70,7 +68,7 @@ class TestSummaPathResolution:
         overrides = summa_config.to_dict(flatten=True)
         overrides['DEM_NAME'] = 'custom_dem.tif'
         custom_config = SymfluenceConfig(**overrides)
-        
+
         preprocessor = SummaPreProcessor(custom_config, mock_logger)
 
         assert preprocessor.dem_path.name == 'custom_dem.tif'
