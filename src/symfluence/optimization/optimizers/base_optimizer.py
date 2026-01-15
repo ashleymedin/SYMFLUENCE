@@ -682,7 +682,7 @@ class BaseOptimizer(SUMMAOptimizerMixin, ABC, ConfigMixin):
             return 'groundwater'
         elif optimization_target in ['sm_point', 'sm_smap', 'sm_esa', 'sm_ismn', 'soil_moisture', 'sm']:
             return 'soil_moisture'
-        elif optimization_target in ['tws', 'grace', 'grace_tws', 'total_storage', 'stor_grace']:
+        elif optimization_target in ['tws', 'grace', 'grace_tws', 'total_storage', 'stor_grace', 'stor_mb']:
             return 'tws'
         elif optimization_target == 'multivariate':
             return 'multivariate'

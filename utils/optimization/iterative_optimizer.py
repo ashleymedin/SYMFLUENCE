@@ -75,7 +75,7 @@ from worker_scripts import (
 
 from calibration_targets import (
     CalibrationTarget,
-    StorageTarget,
+    TWSTarget,
     StreamflowTarget, 
     SnowTarget,
     GroundwaterTarget,
@@ -1462,7 +1462,7 @@ class BaseOptimizer(ABC):
             return SoilMoistureTarget(optimization_target, self.config, self.project_dir, self.logger)
         
         elif optimization_target in ['stor_grace', 'stor_mb']:
-            return StorageTarget(optimization_target, self.config, self.project_dir, self.logger)
+            return TWSTarget(optimization_target, self.config, self.project_dir, self.logger)
 
         # Check for streamflow calibration (should be near the end as it's most common)
         elif optimization_target == 'streamflow' or 'flow' in calibration_variable:
@@ -4176,7 +4176,7 @@ class NSGA2Optimizer(BaseOptimizer):
             GroundwaterTarget,
             ETTarget,
             SoilMoistureTarget,
-            StorageTarget
+            TWSTarget
         )
         
         target_type = target_type.lower()
@@ -4197,7 +4197,7 @@ class NSGA2Optimizer(BaseOptimizer):
             return SoilMoistureTarget(target_type, self.config, self.project_dir, self.logger)
         
         elif target_type in ['stor_grace', 'stor_mb']:
-            return StorageTarget(target_type,self.config, self.project_dir, self.logger)
+            return TWSTarget(target_type,self.config, self.project_dir, self.logger)
         
         else:
             raise ValueError(f"Unknown calibration target type: {target_type}. "

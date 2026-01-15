@@ -692,7 +692,7 @@ def _calculate_multitarget_objectives(task: Dict, summa_dir: str, mizuroute_dir:
             return ETTarget(config, project_path, logger)
         elif target_type in ['sm_point', 'sm_smap', 'sm_esa', 'sm_ismn', 'soil_moisture', 'sm']:
             return SoilMoistureTarget(config, project_path, logger)
-        elif target_type in ['tws', 'grace', 'grace_tws', 'total_storage', 'stor_grace']:
+        elif target_type in ['tws', 'grace', 'grace_tws', 'total_storage', 'stor_mb', 'stor_grace']:
             return TWSTarget(config, project_path, logger)
         else:
             # Default to streamflow

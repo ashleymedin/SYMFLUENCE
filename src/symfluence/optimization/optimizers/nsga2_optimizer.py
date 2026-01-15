@@ -233,7 +233,7 @@ class NSGA2Optimizer(BaseOptimizer):
         elif target_type in ['gw_depth', 'gw_grace', 'groundwater', 'gw']: return GroundwaterTarget(self.config, self.project_dir, self.logger)
         elif target_type in ['et', 'latent_heat', 'evapotranspiration']: return ETTarget(self.config, self.project_dir, self.logger)
         elif target_type in ['sm_point', 'sm_smap', 'sm_esa', 'sm_ismn', 'soil_moisture', 'sm']: return SoilMoistureTarget(self.config, self.project_dir, self.logger)
-        elif target_type in ['tws', 'grace', 'grace_tws', 'total_storage', 'stor_grace']: return TWSTarget(self.config, self.project_dir, self.logger)
+        elif target_type in ['tws', 'grace', 'grace_tws', 'total_storage', 'stor_grace', 'stor_mb']: return TWSTarget(self.config, self.project_dir, self.logger)
         else: raise ValueError(f"Unknown target type: {target_type}")
 
     def get_algorithm_name(self) -> str:

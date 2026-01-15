@@ -16,7 +16,7 @@ Base calibration targets (aliases from evaluation.evaluators):
 - SoilMoistureTarget: Soil moisture calibration target
 - SnowTarget: Snow calibration target
 - GroundwaterTarget: Groundwater calibration target
-- StorageTarget: Terrestrial water storage calibration target
+- TWSTarget: Terrestrial water storage calibration target
 - MultivariateTarget: Multivariate calibration combining multiple variables
 
 Model-specific calibration targets:
@@ -45,7 +45,7 @@ from .base import (
     SoilMoistureTarget,
     SnowTarget,
     GroundwaterTarget,
-    StorageTarget,
+    TWSTarget,
     MultivariateTarget,
 )
 
@@ -203,7 +203,7 @@ __all__ = [
     'SoilMoistureTarget',
     'SnowTarget',
     'GroundwaterTarget',
-    'StorageTarget',
+    'TWSTarget',
     'MultivariateTarget',
     # SUMMA targets
     'SUMMAStreamflowTarget',

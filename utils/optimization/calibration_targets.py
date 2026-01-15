@@ -2608,14 +2608,14 @@ class GroundwaterTarget(CalibrationTarget):
 
 
 
-class StorageTarget(CalibrationTarget):
+class TWSTarget(CalibrationTarget):
     """
     Storage calibration target comparing SUMMA storage to GRACE Storage anomalies or
     independent observed storage anomalies (i.e. glacier mass balance)
     """
     def __init__(self, optimization_target: str, config: Dict[str, Any], project_dir: Path, logger: logging.Logger):
         super().__init__(optimization_target, config, project_dir, logger)
-        self.logger.info(f"Initialized StorageTarget for {self.optimization_target.upper()} calibration")
+        self.logger.info(f"Initialized TWSTarget for {self.optimization_target.upper()} calibration")
         
         # GRACE processing center preference, snow/ice should not use csr as default
         self.grace_center = config.get('GRACE_PROCESSING_CENTER', 'jpl') 
