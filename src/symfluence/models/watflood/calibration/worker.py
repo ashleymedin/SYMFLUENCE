@@ -42,10 +42,16 @@ class WATFLOODWorker(BaseWorker):
             data_dir = Path(config.get('SYMFLUENCE_DATA_DIR', '.'))
             original_dir = data_dir / f'domain_{domain_name}' / 'WATFLOOD_input' / 'settings'
 
+            par_file = config.get('WATFLOOD_PAR_FILE', 'bow.par')
             if original_dir.exists() and original_dir.resolve() != settings_dir.resolve():
                 settings_dir.mkdir(parents=True, exist_ok=True)
-                # Copy entire directory tree (WATFLOOD needs subdirectories)
-                if not (settings_dir / 'basin').exists():
+                # Copy the WATFLOOD settings tree (subdirectories included) when the
+                # parameter file isn't already staged here. Key on the .par file
+                # rather than the basin/ dir: a stale, empty basin/ left by a
+                # previous failed run must not silently skip the copy.
+                have_par = ((settings_dir / 'basin' / par_file).exists()
+                            or (settings_dir / par_file).exists())
+                if not have_par:
                     for item in original_dir.iterdir():
                         dest = settings_dir / item.name
                         if item.is_dir():
@@ -55,7 +61,6 @@ class WATFLOODWorker(BaseWorker):
                             shutil.copy2(item, dest)
 
             # Find .par file (check basin/ subdirectory too)
-            par_file = config.get('WATFLOOD_PAR_FILE', 'bow.par')
             par_path = settings_dir / 'basin' / par_file
             if not par_path.exists():
                 par_path = settings_dir / par_file
@@ -141,9 +146,13 @@ class WATFLOODWorker(BaseWorker):
             try:
                 with open(sim_dir / 'watflood_stdout.log', 'w') as out, \
                      open(sim_dir / 'watflood_stderr.log', 'w') as err:
+                    # CHARM issues an unconditional `read(*,*)` "hit any key"
+                    # prompt on the first event (sub.f, id<=1). With no stdin it
+                    # hits EOF and the read crashes; feed blank lines so it
+                    # continues non-interactively.
                     result = subprocess.run(
                         cmd, cwd=str(settings_dir), env=env,
-                        stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                        input=b'\n' * 256, stdout=out, stderr=err,
                         timeout=timeout
                     )
             except subprocess.TimeoutExpired:
@@ -153,7 +162,6 @@ class WATFLOODWorker(BaseWorker):
             # WATFLOOD may exit non-zero but still produce valid output
             if result.returncode != 0:
                 self.logger.warning(f"WATFLOOD exited with code {result.returncode}")
-
             # Collect outputs from settings_dir and results/
             for src in [settings_dir, settings_dir / 'results']:
                 if src.exists():

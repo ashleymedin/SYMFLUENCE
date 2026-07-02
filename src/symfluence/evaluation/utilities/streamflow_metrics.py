@@ -188,10 +188,16 @@ class StreamflowMetrics:
         domain_name: str,
         source: str = 'shapefile',
         settings_dir: Optional[Path] = None,
-        default_area: float = 1000.0
+        default_area: float = 1.0
     ) -> float:
         """
         Get catchment area in km2 from various sources.
+
+        FIXED_CATCHMENT_AREA (m²) always wins when set. The last-resort
+        default is 1 km² and must stay identical to the
+        StreamflowEvaluator fallback: trial metrics and the final
+        evaluation convert units with this value, and any disagreement
+        makes their scores incomparable.
 
         Args:
             config: Configuration dictionary
@@ -205,6 +211,12 @@ class StreamflowMetrics:
             Catchment area in km2
         """
         try:
+            fixed_area_m2 = config.get('FIXED_CATCHMENT_AREA')
+            if fixed_area_m2:
+                area_km2 = float(fixed_area_m2) / 1e6
+                logger.debug(f"Using fixed catchment area from config: {area_km2:.2f} km2")
+                return area_km2
+
             if source == 'shapefile':
                 return self._get_area_from_shapefile(config, project_dir, domain_name, default_area)
             elif source == 'netcdf':
@@ -246,19 +258,32 @@ class StreamflowMetrics:
             logger.warning(
                 f"Catchment shapefile not found for {domain_name}. "
                 f"Using default area {default_area} km2. "
-                f"This may cause incorrect unit conversions during calibration!"
+                f"This makes discharge unit conversions physically meaningless — "
+                f"set FIXED_CATCHMENT_AREA in the config to the true area in m²."
             )
             return default_area
 
         gdf = gpd.read_file(catchment_file)
 
-        # Priority 1: Use GRU_area column if available (already in m2)
+        # Priority 1: per-HRU area (m2) — sums to the catchment area regardless of
+        # how the catchment is discretised (lumped, elevation bands, land class …).
+        if 'HRU_area' in gdf.columns:
+            area_km2 = gdf['HRU_area'].sum() / 1e6
+            logger.debug(f"Catchment area from HRU_area: {area_km2:.2f} km2")
+            return area_km2
+
+        # Priority 2: GRU_area (m2) is the per-GRU basin area, repeated on every
+        # HRU row when the catchment is HRU-discretised. Summing it across HRU
+        # rows multiplies the basin area by the HRU count, so dedupe by GRU id.
         if 'GRU_area' in gdf.columns:
-            area_km2 = gdf['GRU_area'].sum() / 1e6
+            if 'GRU_ID' in gdf.columns and gdf['GRU_ID'].nunique() < len(gdf):
+                area_km2 = gdf.drop_duplicates('GRU_ID')['GRU_area'].sum() / 1e6
+            else:
+                area_km2 = gdf['GRU_area'].sum() / 1e6
             logger.debug(f"Catchment area from GRU_area: {area_km2:.2f} km2")
             return area_km2
 
-        # Priority 2: Calculate from geometry
+        # Priority 3: Calculate from geometry
         if gdf.crs and not gdf.crs.is_geographic:
             area_m2 = gdf.geometry.area.sum()
         else:

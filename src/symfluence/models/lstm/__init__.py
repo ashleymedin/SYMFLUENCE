@@ -26,9 +26,6 @@ _LAZY_ALIASES = {
     'FlashRunner': ('.runner', 'LSTMRunner'),
     'FlashPreProcessor': ('.preprocessor', 'LSTMPreProcessor'),
     'FlashPostProcessor': ('.postprocessor', 'LSTMPostProcessor'),
-    # Deprecated pre-1.0 spellings (RTI item 23) — use *PostProcessor.
-    'LSTMPostprocessor': ('.postprocessor', 'LSTMPostProcessor'),
-    'FlashPostprocessor': ('.postprocessor', 'LSTMPostProcessor'),
 }
 
 
@@ -57,8 +54,14 @@ from .plotter import LSTMPlotter
 
 def register() -> None:
     """Register LSTM components with the unified registry."""
+    from .postprocessor import LSTMPostProcessor
+    from .preprocessor import LSTMPreProcessor
+    from .runner import LSTMRunner
     model_manifest(
         "LSTM",
+        preprocessor=LSTMPreProcessor,
+        runner=LSTMRunner,
+        postprocessor=LSTMPostProcessor,
         config_adapter=LSTMConfigAdapter,
         result_extractor=LSTMResultExtractor,
         plotter=LSTMPlotter,
