@@ -36,6 +36,7 @@ References:
 """
 from __future__ import annotations
 
+import os
 import zipfile
 from pathlib import Path
 
@@ -47,7 +48,7 @@ from symfluence.core.registries import R
 
 from ..base import BaseAcquisitionHandler
 from ..mixins import RetryMixin
-from ..utils import create_robust_session
+from ..utils import create_robust_session, download_file_resumable
 
 
 @R.acquisition_handlers.add('SOILGRIDS')
@@ -225,7 +226,9 @@ class SoilGridsAcquirer(BaseAcquisitionHandler, RetryMixin):
             lambda: self.config.data.geospatial.soilgrids.hs_cache_dir, default='default'
         )
         if cache_dir_cfg == 'default':
-            cache_dir = out_p.parent / "cache"
+            # Data-dir-level cache: the HydroShare archive is global (~1 GB,
+            # up to an hour to fetch), so every domain shares one download.
+            cache_dir = self.data_dir / "cache" / "soilgrids"
         else:
             cache_dir = Path(cache_dir_cfg)
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -243,41 +246,22 @@ class SoilGridsAcquirer(BaseAcquisitionHandler, RetryMixin):
 
         # Download with retry logic using mixin
         if not zip_path.exists() or zip_path.stat().st_size == 0 or self._get_config_value(lambda: self.config.data.force_download, default=False):
-            tmp_path = zip_path.with_suffix(".zip.part")
-
-            def do_download():
-                self.logger.info("Downloading soil data from HydroShare...")
-                try:
-                    session = create_robust_session(max_retries=3, backoff_factor=2.0)
-
-                    with session.get(hs_url, stream=True, timeout=600) as resp:
-                        resp.raise_for_status()
-                        total_size = int(resp.headers.get('content-length', 0))
-                        downloaded = 0
-
-                        with open(tmp_path, "wb") as handle:
-                            for chunk in resp.iter_content(chunk_size=65536):
-                                if chunk:
-                                    handle.write(chunk)
-                                    downloaded += len(chunk)
-
-                        # Verify download completed
-                        if total_size > 0 and downloaded < total_size:
-                            raise IOError(f"Incomplete download: {downloaded}/{total_size} bytes")
-
-                    tmp_path.replace(zip_path)
-                    self.logger.info(f"✓ Downloaded {downloaded / 1024 / 1024:.1f} MB from HydroShare")
-                except (requests.RequestException, OSError, IOError) as download_err:
-                    # Clean up partial download before retry
-                    if tmp_path.exists():
-                        tmp_path.unlink()
-                    raise download_err
-
-            self.execute_with_retry(
-                do_download,
-                max_retries=3,
-                base_delay=2,
-                backoff_factor=2.0
+            # PID-unique temp: concurrent workflows share this cache dir, so two
+            # writers on one .part file would corrupt both downloads. Pass it as
+            # part_path so download_file_resumable resumes from it across
+            # mid-stream interruptions (HydroShare's S3 backend honours Range
+            # requests) instead of re-fetching the ~415 MB archive from byte zero
+            # on every network blip — a hard repro blocker on slow/flaky links.
+            tmp_path = zip_path.with_suffix(f".zip.part.{os.getpid()}")
+            self.logger.info("Downloading soil data from HydroShare...")
+            session = create_robust_session(max_retries=0)
+            download_file_resumable(
+                hs_url,
+                zip_path,
+                session=session,
+                timeout=600,
+                part_path=tmp_path,
+                logger_=self.logger,
             )
 
         # Extract and crop to domain

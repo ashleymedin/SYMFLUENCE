@@ -1,0 +1,65 @@
+# LSTM - Multi-Model Ensemble (Section 4.2.1, Fig. 7)
+# Long Short-Term Memory neural network via FLASH
+
+system:
+  # Steps this experiment runs (self-scoping; see `symfluence workflow list-steps`)
+  workflow_steps:
+  - setup_project
+  - create_pour_point
+  - acquire_attributes
+  - define_domain
+  - discretize_domain
+  - process_observed_data
+  - acquire_forcings
+  - model_agnostic_preprocessing
+  - build_model_ready_store
+  - model_specific_preprocessing
+  - run_model
+  - calibrate_model
+  data_dir: default
+  code_dir: default
+  random_seed: 42
+domain:
+  name: Bow_at_Banff_lumped_era5
+  pour_point_coords: 51.1722/-115.5717
+  bounding_box_coords: 51.76/-116.55/50.95/-115.5
+  definition_method: lumped
+  delineation:
+    routing: lumped
+    geofabric_type: TDX
+    stream_threshold: 5000
+  time_start: 2002-01-01 01:00
+  time_end: 2009-12-31 23:00
+  calibration_period: 2004-01-01, 2007-12-31
+  evaluation_period: 2008-01-01, 2009-12-31
+  spinup_period: 2002-01-01, 2003-12-31
+  discretization: GRUs
+  experiment_id: run_1
+data:
+  streamflow_data_provider: WSC
+forcing:
+  dataset: ERA5
+  time_step_size: 3600
+model:
+  hydrological_model: LSTM
+  routing_model: none
+  lstm:
+    hidden_size: 96
+    num_layers: 2
+    epochs: 500
+    learning_rate: 0.0005
+    learning_patience: 50
+    lookback: 365
+    dropout: 0.15
+    l2_regularization: 1e-05
+optimization:
+  methods:
+  - iteration
+  # Inert for LSTM (self-training via PyTorch; key only names the output dir).
+  # Kept at the frozen run's value so paths match the curated logs.
+  algorithm: PSO
+  iterations: 1000
+  metric: KGE
+evaluation:
+  streamflow:
+    station_id: 05BB001

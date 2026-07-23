@@ -12,28 +12,36 @@ models in worker processes.
 """
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from pathlib import Path
 from typing import Dict
 
+from symfluence.core.logging_utils import log_once
 from symfluence.core.profiling import get_system_profiler
 
 from .netcdf_utilities import fix_summa_time_precision
 
 
-def _cleanup_stale_output_files(output_dir: Path, logger) -> None:
-    """Remove stale output files from previous iterations to prevent metric calculation errors.
+def _cleanup_stale_output_files(output_dir: Path, logger) -> list:
+    """Remove stale output files from previous iterations.
 
     This is critical for calibration: if routing fails, we don't want metrics to be
     calculated from old output files from previous iterations.
+
+    Returns:
+        The files that could NOT be removed. A non-empty list means this
+        directory is unsafe to reuse: the caller must not run into it, or the
+        very substitution this function exists to prevent happens anyway.
 
     Args:
         output_dir: Directory containing model output files
         logger: Logger instance
     """
+    stuck: list = []
     if not output_dir.exists():
-        return
+        return stuck
 
     # Patterns to clean up (SUMMA and mizuRoute output files)
     cleanup_patterns = [
@@ -51,7 +59,9 @@ def _cleanup_stale_output_files(output_dir: Path, logger) -> None:
                 file_path.unlink()
                 files_removed += 1
             except (FileNotFoundError, subprocess.CalledProcessError, OSError) as e:
-                logger.warning(f"Could not remove stale file {file_path}: {e}")
+                stuck.append(file_path)
+                log_once(logger, logging.WARNING, key=f'summa-stale-file-{file_path}',
+                         message=f"Could not remove stale file {file_path}: {e}")
 
     # Clean up stale GRU-parallel split directories
     for split_dir in output_dir.glob('gru_split_*'):
@@ -61,11 +71,13 @@ def _cleanup_stale_output_files(output_dir: Path, logger) -> None:
                 shutil.rmtree(split_dir, ignore_errors=True)
                 files_removed += 1
             except OSError as e:
-                logger.warning(f"Could not remove stale split dir {split_dir}: {e}")
+                log_once(logger, logging.WARNING, key=f'summa-stale-split-{split_dir}',
+                         message=f"Could not remove stale split dir {split_dir}: {e}")
 
     if files_removed > 0:
         logger.debug(f"Cleaned up {files_removed} stale output files/dirs from {output_dir}")
 
+    return stuck
 
 def _deduplicate_output_control(output_control_path: Path, logger):
     """Ensure outputControl.txt doesn't have duplicate variables for the same frequency"""
@@ -93,7 +105,8 @@ def _deduplicate_output_control(output_control_path: Path, logger):
 
             key = (var_name, freq)
             if key in seen_vars:
-                logger.warning(f"Removing duplicate output request: {var_name} | {freq}")
+                log_once(logger, logging.WARNING, key=f'summa-dup-output-{var_name}-{freq}',
+                               message=f"Removing duplicate output request: {var_name} | {freq}")
                 changed = True
                 continue
 
@@ -106,7 +119,8 @@ def _deduplicate_output_control(output_control_path: Path, logger):
             logger.debug(f"Deduplicated {output_control_path.name}")
 
     except (FileNotFoundError, subprocess.CalledProcessError, OSError) as e:
-        logger.warning(f"Failed to deduplicate output control: {e}")
+        log_once(logger, logging.WARNING, key='summa-dedup-output-control-failed',
+                       message=f"Failed to deduplicate output control: {e}")
 
 
 def _ensure_coupling_output_vars(output_control_path: Path, config, logger) -> None:
@@ -141,11 +155,16 @@ def _ensure_coupling_output_vars(output_control_path: Path, config, logger) -> N
                 added.append(var)
         if added:
             output_control_path.write_text(content, encoding='utf-8')
-            logger.info(
-                f"Ensured groundwater-coupling output vars in "
-                f"{output_control_path.name}: {added}")
+            log_once(
+                logger, logging.INFO,
+                key='summa-coupling-vars-added',
+                message=(
+                    f"Ensured groundwater-coupling output vars in "
+                    f"{output_control_path.name}: {added}"),
+            )
     except OSError as e:
-        logger.warning(f"Could not ensure coupling output vars: {e}")
+        log_once(logger, logging.WARNING, key='summa-coupling-vars-failed',
+                 message=f"Could not ensure coupling output vars: {e}")
 
 
 def _rewrite_mizuroute_control_for_run(
@@ -190,6 +209,44 @@ def _rewrite_mizuroute_control_for_run(
     with open(control_file, "w", encoding="utf-8", newline="\n") as f:
         f.writelines(updated_lines)
 
+
+
+def _usable_output_dir(summa_dir: Path, logger) -> Path:
+    """Return a directory this evaluation can safely own.
+
+    A wedged predecessor never releases its output NetCDF handle (see
+    symfluence.core.process_exec), so the stale file cannot be deleted. Running
+    into that directory anyway has two bad outcomes: SUMMA cannot create its
+    output and dies with a bare ``STOP 1``, or — worse — metrics get computed
+    from the previous iteration's leftovers, which is exactly what
+    _cleanup_stale_output_files exists to prevent.
+
+    So when the directory cannot be cleared, this evaluation gets a fresh
+    sibling instead. Both the fileManager's outputPath and the metric reader
+    derive from this path, so redirecting here moves writer and reader
+    together and no glob can straddle two iterations.
+    """
+    stuck = _cleanup_stale_output_files(summa_dir, logger)
+    if not stuck:
+        return summa_dir
+
+    for attempt in range(1, 1000):
+        candidate = summa_dir.parent / f"{summa_dir.name}__r{attempt}"
+        if candidate.exists() and _cleanup_stale_output_files(candidate, logger):
+            continue  # that one is poisoned too
+        candidate.mkdir(parents=True, exist_ok=True)
+        log_once(
+            logger, logging.WARNING, key=f'summa-output-redirect-{summa_dir}',
+            message=(
+                f"{len(stuck)} stale output file(s) in {summa_dir} could not be "
+                f"removed (a previous model process exited without releasing "
+                f"them). Redirecting this evaluation to {candidate.name} so it "
+                f"neither collides with them nor reads them."
+            ),
+        )
+        return candidate
+
+    return summa_dir
 
 def _run_summa_worker(summa_exe: Path, file_manager: Path, summa_dir: Path, logger, debug_info: Dict, summa_settings_dir: Path = None, timeout: int = 7200, config: Dict = None) -> bool:
     """SUMMA execution with iteration-aware logging.
@@ -246,7 +303,8 @@ def _run_summa_worker(summa_exe: Path, file_manager: Path, summa_dir: Path, logg
                         runinfo_path.chmod(0o644)
                     runinfo_path.unlink()
                 except (FileNotFoundError, subprocess.CalledProcessError, OSError) as e:
-                    logger.warning(f"Could not remove existing runinfo.txt: {e}")
+                    log_once(logger, logging.WARNING, key='summa-runinfo-remove-failed',
+                                message=f"Could not remove existing runinfo.txt: {e}")
 
             updated_lines = []
             output_path_updated = False
@@ -312,17 +370,18 @@ def _run_summa_worker(summa_exe: Path, file_manager: Path, summa_dir: Path, logg
                 logger.debug(f"Updated file manager settings path to: {settings_path_str}")
 
         except (FileNotFoundError, subprocess.CalledProcessError, OSError) as e:
-            logger.warning(f"Failed to update file manager paths: {e}")
+            log_once(logger, logging.WARNING, key='summa-filemanager-update-failed',
+                       message=f"Failed to update file manager paths: {e}")
             # Continue anyway, hoping it works or fails later
 
         # Check for intra-iteration parallel GRU execution
         use_parallel = config.get('SETTINGS_SUMMA_USE_PARALLEL_SUMMA', False) if config else False
-        logger.info(f"Parallel SUMMA check: config={config is not None}, use_parallel={use_parallel}, settings_dir={summa_settings_dir}")
+        logger.debug(f"Parallel SUMMA check: config={config is not None}, use_parallel={use_parallel}, settings_dir={summa_settings_dir}")
         if use_parallel and summa_settings_dir is not None:
             from symfluence.models.summa.parallel_gru_execution import run_summa_gru_parallel
 
             num_parallel = int(config.get('SETTINGS_SUMMA_CPUS_PER_TASK', 8))
-            logger.info(f"Launching parallel SUMMA with {num_parallel} processes")
+            logger.debug(f"Launching parallel SUMMA with {num_parallel} processes")
             result = run_summa_gru_parallel(
                 summa_exe=Path(summa_exe_str),
                 file_manager=Path(file_manager_str),
@@ -336,13 +395,14 @@ def _run_summa_worker(summa_exe: Path, file_manager: Path, summa_dir: Path, logg
             )
             if result:
                 return True
-            logger.warning("Parallel GRU execution did not succeed, falling back to sequential")
+            log_once(logger, logging.WARNING, key='summa-parallel-gru-fallback',
+                     message="Parallel GRU execution did not succeed, falling back to sequential")
 
         # Build command as list to avoid shell=True security concerns
         cmd = [summa_exe_str, "-m", file_manager_str]
         cmd_str = " ".join(cmd)
 
-        logger.info(f"Executing SUMMA command: {cmd_str}")
+        logger.debug(f"Executing SUMMA command: {cmd_str}")
         logger.debug(f"Working directory: {summa_dir}")
 
         debug_info['commands_run'].append(f"SUMMA: {cmd_str}")
@@ -387,13 +447,19 @@ def _run_summa_worker(summa_exe: Path, file_manager: Path, summa_dir: Path, logg
                 debug_info['errors'].append(error_msg)
                 return False
 
-        logger.info(f"SUMMA execution completed successfully. Output files: {len(timestep_files)} timestep files")
+        logger.debug(f"SUMMA execution completed successfully. Output files: {len(timestep_files)} timestep files")
         debug_info['summa_output_files'] = [str(f) for f in timestep_files[:3]]  # First 3 files
 
         return True
 
     except subprocess.CalledProcessError as e:
+        # Without the reason, a rejected parameter set is indistinguishable
+        # from a poorly performing one once it has been folded into a penalty
+        # score, so surface SUMMA's own diagnosis here.
+        reason = _extract_summa_fatal_error(log_file)
         error_msg = f"SUMMA simulation failed with exit code {e.returncode}"
+        if reason:
+            error_msg = f"{error_msg}: {reason}"
         logger.error(error_msg)
         debug_info['errors'].append(error_msg)
         return False
@@ -409,6 +475,38 @@ def _run_summa_worker(summa_exe: Path, file_manager: Path, summa_dir: Path, logg
         logger.error(error_msg)
         debug_info['errors'].append(error_msg)
         return False
+
+
+def _extract_summa_fatal_error(log_file, max_tail_bytes: int = 8192) -> str:
+    """Pull SUMMA's ``FATAL ERROR`` diagnosis out of a worker log.
+
+    SUMMA writes the reason it aborted to stdout and exits 1. The calibration
+    layer only sees the exit code, so a parameter set rejected by
+    ``paramCheck`` scores the same generic penalty as one that merely fits
+    badly. Recovering the message keeps rejections attributable.
+
+    Args:
+        log_file: Path to the SUMMA worker log.
+        max_tail_bytes: How much of the end of the log to inspect.
+
+    Returns:
+        The fatal error message, or an empty string when none is found.
+    """
+    try:
+        path = Path(log_file)
+        size = path.stat().st_size
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            if size > max_tail_bytes:
+                f.seek(size - max_tail_bytes)
+            tail = f.read()
+    except (OSError, ValueError):
+        return ""
+
+    for line in reversed(tail.splitlines()):
+        stripped = line.strip()
+        if stripped.startswith('FATAL ERROR'):
+            return stripped
+    return ""
 
 
 def _run_mizuroute_worker(task_data: Dict, mizuroute_dir: Path, logger, debug_info: Dict, summa_dir: Path = None) -> bool:
@@ -435,16 +533,16 @@ def _run_mizuroute_worker(task_data: Dict, mizuroute_dir: Path, logger, debug_in
         time_fix_file = routing_files[0] if routing_files else expected_files[0]
 
         try:
-            logger.info(f"Fixing time precision for mizuRoute compatibility: {time_fix_file.name}")
+            logger.debug(f"Fixing time precision for mizuRoute compatibility: {time_fix_file.name}")
             fix_summa_time_precision(time_fix_file)
-            logger.info("Time precision fixed successfully")
+            logger.debug("Time precision fixed successfully")
         except (FileNotFoundError, subprocess.CalledProcessError, OSError) as e:
             error_msg = f"Failed to fix SUMMA time precision: {str(e)}"
             logger.error(error_msg)
             debug_info['errors'].append(error_msg)
             return False
 
-        logger.info(f"Found {len(expected_files)} SUMMA output files for mizuRoute")
+        logger.debug(f"Found {len(expected_files)} SUMMA output files for mizuRoute")
         config = task_data['config']
         mizu_timeout = int(config.get('MIZUROUTE_TIMEOUT', 3600))
 
@@ -498,7 +596,7 @@ def _run_mizuroute_worker(task_data: Dict, mizuroute_dir: Path, logger, debug_in
         mizu_num_threads = str(config.get('MIZUROUTE_NUM_THREADS', 1))
         mizu_env['OMP_NUM_THREADS'] = mizu_num_threads
 
-        logger.info(f"Executing mizuRoute command: {cmd_str} (OMP_NUM_THREADS={mizu_num_threads})")
+        logger.debug(f"Executing mizuRoute command: {cmd_str} (OMP_NUM_THREADS={mizu_num_threads})")
         debug_info['commands_run'].append(f"mizuRoute: {cmd_str}")
         debug_info['mizuroute_log'] = str(log_file)
 
@@ -538,7 +636,7 @@ def _run_mizuroute_worker(task_data: Dict, mizuroute_dir: Path, logger, debug_in
             debug_info['errors'].append(error_msg)
             return False
 
-        logger.info(f"mizuRoute execution completed successfully. Output files: {len(nc_files)}")
+        logger.debug(f"mizuRoute execution completed successfully. Output files: {len(nc_files)}")
         debug_info['mizuroute_output_files'] = [str(f) for f in nc_files[:3]]
 
         return True

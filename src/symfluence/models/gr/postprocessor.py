@@ -19,12 +19,15 @@ from symfluence.core.registries import R
 
 from ..base import BaseModelPostProcessor
 from ..spatial_modes import SpatialMode
+from .r_environment import configure_r_dll_search, r_path, run_r_script
 
 # Optional R/rpy2 support - only needed for GR models
 # Broad exception handling is intentional here: rpy2 can raise RuntimeError, RRuntimeError,
 # ImportError, or other exceptions when R is installed but broken (missing core packages,
 # incompatible versions, etc.). We must catch all to provide graceful fallback.
 # rpy2 prints noisy messages to stderr during R initialization — redirect to suppress.
+# configure_r_dll_search() must precede the rpy2 import: see r_environment.
+configure_r_dll_search()
 try:
     import contextlib
     import io
@@ -96,7 +99,7 @@ class GRPostProcessor(BaseModelPostProcessor):
             return None
 
         # Load R data
-        robjects.r(f'load("{str(r_results_path)}")')
+        run_r_script(robjects, f'load({r_path(r_results_path)})', "GR results loader")
 
         # Extract simulated streamflow
         r_script = """
@@ -106,7 +109,7 @@ class GRPostProcessor(BaseModelPostProcessor):
         )
         """
 
-        sim_df = robjects.r(r_script)
+        sim_df = run_r_script(robjects, r_script, "GR streamflow extractor")
 
         # Convert to pandas
         with localconverter(robjects.default_converter + pandas2ri.converter):

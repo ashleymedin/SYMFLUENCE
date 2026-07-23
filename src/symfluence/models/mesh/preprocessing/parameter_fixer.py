@@ -233,6 +233,86 @@ class MESHParameterFixer(ConfigMixin):
             start_month, latitude
         )
 
+    def apply_class_field_overrides(self) -> None:
+        """Override meshflow-derived CLASS fields with configured values.
+
+        meshflow hard-derives regime-determining CLASS fields (soil texture,
+        drainage density, initial states, vegetation params) from the input
+        data. When the corresponding ``MESH_*`` config keys are set they
+        override those fields across all GRU blocks, letting the surface-runoff
+        regime be controlled from config alone.  Left unset => keep meshflow's
+        values (no-op).
+        """
+        overrides = {
+            'sand': self._get_config_value(
+                lambda: self.config.model.mesh.soil_sand, default=None, dict_key='MESH_SOIL_SAND'),
+            'clay': self._get_config_value(
+                lambda: self.config.model.mesh.soil_clay, default=None, dict_key='MESH_SOIL_CLAY'),
+            'orgm': self._get_config_value(
+                lambda: self.config.model.mesh.soil_orgm, default=None, dict_key='MESH_SOIL_ORGM'),
+            'dd': self._get_config_value(
+                lambda: self.config.model.mesh.drainage_density, default=None, dict_key='MESH_DD'),
+            'mid': self._get_config_value(
+                lambda: self.config.model.mesh.mid, default=None, dict_key='MESH_MID'),
+            'tbar': self._get_config_value(
+                lambda: self.config.model.mesh.init_tbar, default=None, dict_key='MESH_INIT_TBAR'),
+            'thlq': self._get_config_value(
+                lambda: self.config.model.mesh.init_thlq, default=None, dict_key='MESH_INIT_THLQ'),
+            'cmas': self._get_config_value(
+                lambda: self.config.model.mesh.veg_cmas, default=None, dict_key='MESH_VEG_CMAS'),
+            'qa50': self._get_config_value(
+                lambda: self.config.model.mesh.veg_qa50, default=None, dict_key='MESH_VEG_QA50'),
+            'vpda': self._get_config_value(
+                lambda: self.config.model.mesh.veg_vpda, default=None, dict_key='MESH_VEG_VPDA'),
+            'vpdb': self._get_config_value(
+                lambda: self.config.model.mesh.veg_vpdb, default=None, dict_key='MESH_VEG_VPDB'),
+        }
+        self._class_mgr.apply_field_overrides(overrides)
+
+    def apply_hydrology_field_overrides(self) -> None:
+        """Override meshflow-derived hydrology.ini fields with configured values.
+
+        Currently supports the IWF interflow flag: when ``MESH_IWF`` is set,
+        the ``IWF`` line's value(s) are replaced (0=off, 1=on). Left unset =>
+        keep meshflow's value (no-op).
+        """
+        iwf = self._get_config_value(
+            lambda: self.config.model.mesh.iwf, default=None, dict_key='MESH_IWF'
+        )
+        if iwf is None or not self.hydro_path.exists():
+            return
+
+        try:
+            with open(self.hydro_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+            modified = False
+            for i, line in enumerate(lines):
+                if re.match(r'^\s*IWF\b', line):
+                    # Preserve any trailing comment; replace all numeric tokens
+                    # with the configured value (one per GRU column).
+                    comment = ''
+                    body = line.rstrip('\n')
+                    for marker in ('#', '!'):
+                        if marker in body:
+                            idx = body.index(marker)
+                            comment = ' ' + body[idx:]
+                            body = body[:idx]
+                            break
+                    tokens = body.split()
+                    n_values = max(1, len(tokens) - 1)  # tokens[0] == 'IWF'
+                    values = '    '.join([str(int(iwf))] * n_values)
+                    lines[i] = f"IWF   {values}{comment}\n"
+                    modified = True
+                    break
+
+            if modified:
+                with open(self.hydro_path, 'w', encoding='utf-8') as f:
+                    f.writelines(lines)
+                self.logger.info(f"Set hydrology IWF={int(iwf)} from config")
+        except Exception as e:  # noqa: BLE001 — model execution resilience
+            self.logger.warning(f"Failed to apply hydrology IWF override: {e}", exc_info=True)
+
     # ==================================================================
     # Hydrology methods (kept directly — no suitable helper group)
     # ==================================================================
@@ -383,6 +463,137 @@ class MESHParameterFixer(ConfigMixin):
 
         except Exception as e:  # noqa: BLE001 — model execution resilience
             self.logger.warning(f"Failed to verify hydrology parameters: {e}", exc_info=True)
+
+    # GRU-dependent hydrology parameters (one value per GRU column).
+    # meshflow emits these under the "GRU class dependent hydrologic parameters"
+    # section; ZSNL/ZPLS/ZPLG are the standard set, and RCHARG/FRZTH are appended
+    # by fix_missing_hydrology_params.
+    _GRU_DEPENDENT_HYDRO_PARAMS = ('ZSNL', 'ZPLS', 'ZPLG', 'RCHARG', 'FRZTH', 'DDEN', 'MANN')
+
+    def fix_gru_dependent_hydrology_params(self) -> None:
+        """Expand GRU-dependent hydrology parameters to one value per GRU.
+
+        MESH reads GRU-dependent hydrology parameters (ZSNL, ZPLS, ZPLG, …) as an
+        array with exactly ``NTYPE`` values — one per GRU. meshflow, tuned for the
+        single-GRU lumped case, writes a single value per line; on any multi-GRU
+        domain (elevation bands, semi-distributed, distributed) MESH then aborts
+        during initialization with::
+
+            Error converting GRU dependent parameter ZSNL GRU  2: ''
+            A value is required for all active GRUs.
+
+        Only the parameters MESH actually reads — the first ``count`` lines of the
+        section, as declared by that section's own count — are expanded. Trailing
+        scalar lines that fix_missing_hydrology_params appends *after* the counted
+        block (RCHARG/FRZTH) are left untouched: MESH stops reading at ``count``
+        and never sees them, exactly as in the working lumped file. The section
+        count is preserved. Single-GRU (lumped) files are already correct and
+        pass through unchanged.
+        """
+        if not self.hydro_path.exists():
+            return
+
+        # NTYPE = number of CLASS.ini GRU blocks, exactly what MESH reads.
+        num_grus = self._count_class_gru_blocks()
+        if num_grus <= 1:
+            return  # lumped: single value per line is already correct
+
+        try:
+            with open(self.hydro_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+            # Locate the GRU-dependent section header and its count line.
+            header_idx = next(
+                (i for i, ln in enumerate(lines)
+                 if 'GRU class dependent hydrologic parameters' in ln), None
+            )
+            if header_idx is None:
+                return
+            count_idx = next(
+                (i for i in range(header_idx + 1, len(lines))
+                 if re.match(r'\s*\d+\s', lines[i]) and 'Number' in lines[i]), None
+            )
+            if count_idx is None:
+                # Fall back to the first bare-integer line after the header.
+                count_idx = next(
+                    (i for i in range(header_idx + 1, len(lines))
+                     if re.match(r'\s*\d+\s*$', lines[i].split('#')[0])), None
+                )
+            if count_idx is None:
+                return
+
+            # Only the first `declared_count` parameter lines are read by MESH;
+            # expand exactly those and leave any trailing scalar lines untouched.
+            count_match = re.match(r'\s*(\d+)', lines[count_idx])
+            declared_count = int(count_match.group(1)) if count_match else 0
+            if declared_count <= 0:
+                return
+
+            n_expanded = 0
+            seen = 0
+            changed = False
+            for i in range(count_idx + 1, len(lines)):
+                if seen >= declared_count:
+                    break
+                raw = lines[i]
+                stripped = raw.strip()
+                if not stripped or stripped.startswith(('!', '#')):
+                    continue
+                m = re.match(r'^(\s*)([A-Za-z_]\w*)\s+(.*)$', raw)
+                if not m:
+                    continue
+                seen += 1  # this is one of the counted GRU-dependent parameters
+                indent = m.group(1)
+                rest = m.group(3)
+                comment = ''
+                for marker in ('#', '!'):
+                    if marker in rest:
+                        rest, comment = rest.split(marker, 1)
+                        comment = marker + comment
+                        break
+                values = rest.split()
+                if not values:
+                    continue
+                if len(values) >= num_grus:
+                    continue  # already expanded (idempotent re-runs)
+                expanded = '    '.join([values[0]] * num_grus)
+                new_line = f"{indent}{m.group(2)}  {expanded}"
+                if comment:
+                    new_line += f"  {comment.rstrip()}"
+                new_line += '\n'
+                lines[i] = new_line
+                n_expanded += 1
+                changed = True
+
+            if changed:
+                with open(self.hydro_path, 'w', encoding='utf-8') as f:
+                    f.writelines(lines)
+                self.logger.info(
+                    f"Expanded {n_expanded} GRU-dependent hydrology parameter(s) to "
+                    f"{num_grus} values each (NTYPE={num_grus}) in {self.hydro_path.name}"
+                )
+
+        except Exception as e:  # noqa: BLE001 — model execution resilience
+            self.logger.warning(
+                f"Failed to expand GRU-dependent hydrology parameters: {e}", exc_info=True
+            )
+
+    def _count_class_gru_blocks(self) -> int:
+        """Number of GRU parameter blocks in CLASS.ini (== MESH NTYPE).
+
+        Counts the ``DRN/SDEP`` marker that opens each GRU block. Falls back to
+        the drainage-database GRU count, then 1 (lumped) if neither is readable.
+        """
+        try:
+            if self.class_file_path.exists():
+                with open(self.class_file_path, 'r', encoding='utf-8') as f:
+                    n = sum(1 for ln in f if 'DRN/SDEP' in ln)
+                if n > 0:
+                    return n
+        except OSError:
+            pass
+        ddb_count = self._ddb.get_gru_count()
+        return ddb_count if ddb_count and ddb_count > 0 else 1
 
     # ==================================================================
     # Reservoir

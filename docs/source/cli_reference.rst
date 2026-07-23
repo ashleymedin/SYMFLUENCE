@@ -29,7 +29,8 @@ Basic usage:
 Global Options
 ==============
 
-These options are available to all commands:
+These options may be written before the category or after the action. Options
+that affect only supported operations are explicitly identified below.
 
 .. list-table::
    :header-rows: 1
@@ -38,21 +39,33 @@ These options are available to all commands:
    * - Option
      - Description
    * - ``--config PATH``
-     - Path to configuration file (default: ./config.yaml)
+     - Path to configuration file (default: ./config.yaml;
+       override with SYMFLUENCE_DEFAULT_CONFIG)
    * - ``--debug``
-     - Enable debug output and stack traces
+     - Enable debug output and stack traces (console shows DEBUG-level detail)
+   * - ``--quiet, -q``
+     - Suppress console INFO output; warnings and errors are still shown, and
+       the file log is unaffected. Console verbosity is three-state:
+       quiet (WARNING+), normal (INFO+), debug (DEBUG+)
    * - ``--visualise / --visualize``
-     - Enable visualization during execution
+     - Enable visualization during workflow execution
+   * - ``--diagnostic``
+     - Enable diagnostic plots during workflow execution
    * - ``--dry-run``
-     - Show what would be executed without running
+     - Preview supported operations without making changes (currently workflow
+       cleaning and binary system-dependency installation)
    * - ``--profile``
-     - Enable I/O profiling
+     - Enable I/O profiling for workflow execution
    * - ``--profile-output PATH``
-     - Path for profiling report (default: profile_report.json)
+     - Path for workflow profiling report (default: profile_report.json)
    * - ``--profile-stacks``
-     - Capture stack traces in profiling
+     - Capture stack traces in workflow profiling
    * - ``--version``
      - Display SYMFLUENCE version
+
+For bundled-binary pass-through, global options may precede ``binary``. Every
+argument after the tool name is forwarded unchanged; for example,
+``symfluence --debug binary summa --version`` forwards ``--version`` to SUMMA.
 
 Workflow Commands
 =================
@@ -194,6 +207,15 @@ Clean intermediate or output files.
 .. code-block:: bash
 
    symfluence workflow clean --level all --dry-run
+
+workflow diagnose
+-----------------
+
+Run diagnostic plots on existing workflow outputs.
+
+.. code-block:: bash
+
+   symfluence workflow diagnose [--config CONFIG]
 
 Project Commands
 ================
@@ -338,6 +360,20 @@ Run comprehensive system diagnostics.
 
    symfluence binary doctor
 
+binary install-sysdeps
+----------------------
+
+Install system dependencies (compilers, libraries) for the current platform.
+
+.. code-block:: bash
+
+   symfluence binary install-sysdeps [--tool TOOL] [--dry-run]
+
+**Options:**
+
+- ``--tool``: Install deps for a specific tool only (e.g. summa, fuse)
+- ``--dry-run``: Show install commands without executing them
+
 binary info
 -----------
 
@@ -478,37 +514,96 @@ List available example notebooks.
 Agent Commands
 ==============
 
-Hand off to an installed coding-agent CLI (Claude Code, Codex, Gemini, ...) primed
-with the SYMFLUENCE skills. SYMFLUENCE does not ship its own language model — it
-detects an installed agent CLI, exposes the SYMFLUENCE skills to it, and replaces
-itself with that agent. See :doc:`agent_guide` for the full walkthrough.
+Launch an installed coding-agent CLI (Claude Code, Codex, Gemini, ...) primed as
+the *SYMFLUENCE agent*, in one of two modes: ``agent model`` (drive experiments
+conversationally) or ``agent code`` (extend the platform). SYMFLUENCE does not
+ship its own language model — it detects an installed agent CLI, primes it with
+that mode's profile (skills, identity with live project context, the SYMFLUENCE
+MCP server, subagents), and replaces itself with that agent. Bare
+``symfluence agent`` opens the TUI agent screen to pick a mode. See
+:doc:`agent_guide` for the full walkthrough.
 
-agent launch
-------------
+agent model
+-----------
 
-Launch the agent. With no prompt it starts an interactive session; with a prompt
-it runs once and exits (handy in scripts).
+Start a **modelling session**: configs, runs, calibrations, and results, driven
+conversationally through the workflow tools. Primed with the operational skills
+(``explore-platform``, ``run-workflow-locally``, ``debug-calibration``) and the
+MCP tools; its house rules forbid editing platform source code. Inside the TUI
+this opens the native chat screen when Claude Code is the runtime (headless
+stream-JSON driving); other runtimes get the suspend round-trip with modelling
+priming.
 
 .. code-block:: bash
 
-   # Interactive session (run from your project directory)
-   symfluence agent launch
+   # Interactive modelling session (run from your project directory)
+   symfluence agent model
+
+   # One-shot prompt (runs once and exits — handy in scripts)
+   symfluence agent model "validate my config and run the next step"
+
+agent code
+----------
+
+Start a **coding session** in the host coding-agent CLI, primed with every
+packaged skill and subagent. Interactive sessions open the TUI agent screen
+first; the handoff always happens after the TUI exits and restores the
+terminal. A one-shot ``PROMPT``, ``--direct``, a missing TTY, or a missing TUI
+extra (``textual``) hands off immediately.
+
+.. code-block:: bash
+
+   # Interactive coding session (opens the TUI agent screen first)
+   symfluence agent code
+
+   # Hand off to the agent CLI immediately
+   symfluence agent code --direct
 
    # One-shot prompt
-   symfluence agent launch "add an MSWEP forcing data handler"
+   symfluence agent code "add an MSWEP forcing data handler"
+
+   # Pick a specific CLI, or launch it bare (no SYMFLUENCE priming)
+   symfluence agent code --cli codex
+   symfluence agent code --no-skills
 
    # Forward extra flags to the underlying CLI after --
-   symfluence agent launch -- --model claude-sonnet-4-6
+   symfluence agent code -- --model claude-sonnet-4-6
 
-CLI selection and skill exposure are controlled by environment variables
+CLI selection and priming can also be controlled by environment variables
 (``SYMFLUENCE_AGENT_CLI``, ``SYMFLUENCE_NO_SKILLS``); see :doc:`agent_guide`.
+The Agent screen is also available inside ``symfluence tui launch`` (key ``7``).
+
+agent doctor
+------------
+
+Diagnose the agent setup: detected runtimes (and which is active), API keys,
+per-mode priming, packaged skills and subagents, cache directory, MCP server,
+and detected project context. ``--json`` emits the diagnosis machine-readably.
+
+.. code-block:: bash
+
+   symfluence agent doctor
+   symfluence agent doctor --json
+
+agent mcp
+---------
+
+Serve the SYMFLUENCE MCP server on stdio. The session verbs wire this into the
+host CLI automatically where supported; it can also be registered manually in
+any MCP-capable tool. ``--mode`` restricts the tool set to one agent mode's
+profile.
+
+.. code-block:: bash
+
+   symfluence agent mcp
+   symfluence agent mcp --mode model
 
 Deprecated aliases
 ~~~~~~~~~~~~~~~~~~~
 
-``symfluence agent start`` and ``symfluence agent run PROMPT`` are deprecated aliases
-for ``agent launch`` (interactive and one-shot respectively) and will be removed in a
-future release. Their ``--config`` / ``--verbose`` flags are deprecated and ignored.
+``symfluence agent launch`` is a deprecated alias for ``agent code`` and will be
+removed in a future release. The former ``start``, ``run``, ``list``, and
+``skills`` verbs have been removed (``doctor`` covers the last two).
 
 GUI Commands
 ============

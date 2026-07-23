@@ -81,9 +81,8 @@ def get_config_template(template_name: str = 'config_template.yaml') -> Path:
                       Available templates:
                       - config_template.yaml
                       - config_template_comprehensive.yaml
-                      - fluxnet_template.yaml
-                      - camelsspat_template.yaml
-                      - norswe_template.yaml
+                      - config_template_comprehensive_nested.yaml
+                      - config_quickstart_minimal_nested.yaml
 
     Returns:
         Path to the template file
@@ -115,7 +114,8 @@ def get_config_template(template_name: str = 'config_template.yaml') -> Path:
     except (FileNotFoundError, ModuleNotFoundError, AttributeError) as e:
         # Provide helpful error message with available templates
         available = ['config_template.yaml', 'config_template_comprehensive.yaml',
-                    'fluxnet_template.yaml', 'camelsspat_template.yaml', 'norswe_template.yaml']
+                    'config_template_comprehensive_nested.yaml',
+                    'config_quickstart_minimal_nested.yaml']
         raise FileNotFoundError(
             f"Config template '{template_name}' not found.\n"
             f"Available templates: {', '.join(available)}"
@@ -155,9 +155,8 @@ def list_config_templates() -> list[Path]:
                 known_templates = [
                     'config_template.yaml',
                     'config_template_comprehensive.yaml',
-                    'fluxnet_template.yaml',
-                    'camelsspat_template.yaml',
-                    'norswe_template.yaml'
+                    'config_template_comprehensive_nested.yaml',
+                    'config_quickstart_minimal_nested.yaml'
                 ]
                 for name in known_templates:
                     try:
@@ -276,9 +275,94 @@ def get_skills_dir() -> Path:
         ) from e
 
 
-def _render_agents_md(skills_dir: Path) -> str:
+def get_agents_dir() -> Path:
+    """
+    Get path to the packaged subagent-definition directory.
+
+    Each ``*.md`` file (YAML frontmatter + prompt body) describes one
+    specialized subagent that ``symfluence agent launch`` exposes to host CLIs
+    that support custom agents.
+
+    Returns:
+        Path to the ``symfluence.resources.agents`` directory.
+
+    Raises:
+        FileNotFoundError: If the packaged agents directory is missing.
+    """
+    try:
+        agents_root = files('symfluence.resources') / 'agents'
+
+        if hasattr(agents_root, '__fspath__'):
+            path = Path(agents_root)
+        else:
+            path = Path(str(agents_root))
+
+        if not path.is_dir():
+            raise FileNotFoundError(f"Packaged agents directory not found at: {path}")
+
+        return path
+
+    except (FileNotFoundError, ModuleNotFoundError, AttributeError) as e:
+        raise FileNotFoundError(
+            "Packaged subagent definitions (symfluence.resources.agents) not found."
+        ) from e
+
+
+def agent_cache_root() -> Path:
+    """The scratch directory where launch-time agent context is materialized."""
+    return Path(tempfile.gettempdir()) / 'symfluence-agent-skills'
+
+
+def parse_frontmatter(md_file: Path) -> tuple[dict, str] | None:
+    """Parse a ``---``-fenced YAML-frontmatter markdown file into (metadata, body).
+
+    The single frontmatter parser for the packaged skills and subagent
+    definitions — the CLI listing, the TUI panels, and launch-time priming all
+    go through here so they can never disagree about the same file.
+
+    Returns None when the file is unreadable, does not *start* with a
+    frontmatter fence (a mid-document ``---`` ruler is not frontmatter), or the
+    YAML block is invalid / not a mapping.
+    """
+    try:
+        text = md_file.read_text(encoding='utf-8')
+    except OSError:
+        return None
+    text = text.lstrip('\ufeff')  # tolerate a BOM
+    if not text.startswith('---'):
+        return None
+    try:
+        import yaml
+        _, frontmatter, body = text.split('---', 2)
+        meta = yaml.safe_load(frontmatter)
+    except Exception:  # noqa: BLE001 — malformed frontmatter is "no frontmatter"
+        return None
+    if not isinstance(meta, dict):
+        return None
+    return meta, body.strip()
+
+
+def _selected_skills(
+    skills_dir: Path, skills: tuple[str, ...] | None,
+) -> list[Path]:
+    """The packaged skill directories to materialize (all when ``skills`` is None)."""
+    return [
+        skill for skill in sorted(skills_dir.iterdir())
+        if (skill / 'SKILL.md').is_file()
+        and (skills is None or skill.name in skills)
+    ]
+
+
+def _render_agents_md(
+    skills_dir: Path,
+    preamble: str | None = None,
+    skills: tuple[str, ...] | None = None,
+) -> str:
     """Render the packaged skills into a single neutral ``AGENTS.md`` document."""
-    lines = [
+    lines = []
+    if preamble:
+        lines.extend([preamble, "", "---", ""])
+    lines += [
         "# SYMFLUENCE agent skills",
         "",
         "These are SYMFLUENCE domain guides. Read the relevant skill before acting "
@@ -286,18 +370,21 @@ def _render_agents_md(skills_dir: Path) -> str:
         "running the workflow).",
         "",
     ]
-    for skill in sorted(skills_dir.iterdir()):
-        skill_md = skill / 'SKILL.md'
-        if not skill_md.is_file():
-            continue
+    for skill in _selected_skills(skills_dir, skills):
         lines.append(f"## {skill.name}")
         lines.append("")
-        lines.append(skill_md.read_text(encoding='utf-8').strip())
+        lines.append((skill / 'SKILL.md').read_text(encoding='utf-8').strip())
         lines.append("")
     return "\n".join(lines)
 
 
-def prepare_agent_context(skills_mode: str, workdir: Path) -> tuple[list[str], list[str]]:
+def prepare_agent_context(
+    skills_mode: str,
+    workdir: Path,
+    preamble: str | None = None,
+    skills: tuple[str, ...] | None = None,
+    cache_scope: str | None = None,
+) -> tuple[list[str], list[str], bool]:
     """
     Materialize the packaged skills for an external coding-agent CLI.
 
@@ -307,48 +394,71 @@ def prepare_agent_context(skills_mode: str, workdir: Path) -> tuple[list[str], l
             cache directory and return ``--add-dir`` so Claude Code discovers them
             without touching the user's project.
             ``"agents_md"`` — write a neutral ``AGENTS.md`` into ``workdir`` (the
-            convention honoured by Codex/Gemini and other tools), but only if one
-            is not already present.
+            convention honoured by Codex/Gemini and other tools). A SYMFLUENCE-
+            generated ``AGENTS.md`` from an earlier launch is refreshed in place;
+            a user-authored one is never touched (and ``delivered`` is False so
+            callers can report the gap honestly).
         workdir: The directory the agent CLI is launched from.
+        preamble: Optional block (agent identity / project context) prepended to
+            the generated ``AGENTS.md``. Ignored in ``claude_native`` mode, where
+            identity travels via the CLI's own system-prompt flag.
+        skills: Packaged skill names to materialize; None means all of them.
+        cache_scope: Optional subdirectory of the agent cache to materialize
+            into (e.g. an agent-mode name), so differently-primed launches
+            don't clobber each other's cache payloads.
 
     Returns:
-        ``(extra_argv, messages)`` — extra arguments to pass to the CLI, and
-        human-readable info lines for the caller to log. Skill materialization is
-        skipped entirely when ``SYMFLUENCE_NO_SKILLS`` is set.
+        ``(extra_argv, messages, delivered)`` — extra arguments to pass to the
+        CLI, human-readable lines for the caller to log, and whether the skills
+        (and preamble, in ``agents_md`` mode) actually reached the CLI. Skill
+        materialization is skipped entirely when ``SYMFLUENCE_NO_SKILLS`` is set.
     """
     if os.environ.get('SYMFLUENCE_NO_SKILLS'):
-        return [], ["Skill materialization disabled via SYMFLUENCE_NO_SKILLS."]
+        return [], ["Skill materialization disabled via SYMFLUENCE_NO_SKILLS."], False
 
     skills_dir = get_skills_dir()
 
     if skills_mode == 'claude_native':
-        cache_root = Path(tempfile.gettempdir()) / 'symfluence-agent-skills'
+        cache_root = agent_cache_root()
+        if cache_scope:
+            cache_root = cache_root / cache_scope
         target = cache_root / '.claude' / 'skills'
         if target.exists():
             shutil.rmtree(target)
         target.mkdir(parents=True, exist_ok=True)
         count = 0
-        for skill in sorted(skills_dir.iterdir()):
-            skill_md = skill / 'SKILL.md'
-            if not skill_md.is_file():
-                continue
-            dest = target / skill.name
-            dest.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(skill_md, dest / 'SKILL.md')
+        for skill in _selected_skills(skills_dir, skills):
+            # The whole skill directory travels, so reference/asset files
+            # shipped alongside SKILL.md survive materialization.
+            shutil.copytree(skill, target / skill.name)
             count += 1
         return (
             ['--add-dir', str(cache_root)],
             [f"Exposed {count} SYMFLUENCE skill(s) to the agent via {cache_root}."],
+            True,
         )
 
     if skills_mode == 'agents_md':
         agents_md = workdir / 'AGENTS.md'
         if agents_md.exists():
-            return [], [f"AGENTS.md already present in {workdir}; left unchanged."]
-        agents_md.write_text(_render_agents_md(skills_dir), encoding='utf-8')
-        return [], [f"Wrote SYMFLUENCE skills to {agents_md}."]
+            existing = agents_md.read_text(encoding='utf-8', errors='replace')
+            if '# SYMFLUENCE agent skills' not in existing:
+                # User-authored file: never touch it, and say plainly that the
+                # SYMFLUENCE context did NOT reach the CLI.
+                return [], [
+                    f"AGENTS.md in {workdir} is not SYMFLUENCE-generated; left "
+                    f"unchanged. SYMFLUENCE identity/skills were NOT injected — "
+                    f"merge or remove it to let SYMFLUENCE regenerate."
+                ], False
+            # Ours from an earlier launch: refresh (preamble + skills may be stale).
+            agents_md.write_text(
+                _render_agents_md(skills_dir, preamble, skills), encoding='utf-8')
+            return [], [f"Refreshed SYMFLUENCE context in {agents_md}."], True
+        agents_md.write_text(
+            _render_agents_md(skills_dir, preamble, skills), encoding='utf-8')
+        return [], [f"Wrote SYMFLUENCE skills to {agents_md}."], True
 
-    return [], []
+    return [], [], False
 
 
 def copy_config_template_to_project(destination: Path,

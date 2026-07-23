@@ -63,7 +63,7 @@ class ProjectCommands(BaseCommand):
                 BaseCommand._console.error(f"Invalid date range: {error.message if error else 'validation failed'}")
                 return ExitCode.VALIDATION_ERROR
 
-        output_dir = BaseCommand.get_arg(args, 'output_dir', './0_config_files/')
+        output_dir = BaseCommand.get_arg(args, 'output_dir', './')
         scaffold = BaseCommand.get_arg(args, 'scaffold', False)
         minimal = BaseCommand.get_arg(args, 'minimal', False)
         comprehensive = BaseCommand.get_arg(args, 'comprehensive', True)
@@ -93,7 +93,7 @@ class ProjectCommands(BaseCommand):
             domain_dir = init_manager.create_scaffold(config)
             BaseCommand._console.success(f"Created project structure at: {domain_dir}")
         else:
-            BaseCommand._console.info(f"To create project structure, run: symfluence setup_project --config {written_path}")
+            BaseCommand._console.info(f"To create project structure, run: symfluence workflow step setup_project --config {written_path}")
 
         return ExitCode.SUCCESS
 

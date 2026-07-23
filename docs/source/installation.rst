@@ -31,11 +31,27 @@ Quick Install
    GDAL) do not yet ship wheels for Python 3.14+. If you are on 3.14, create a
    3.11 or 3.12 environment instead (``python3.11 -m venv venv``).
 
+**Optional extras**
+
+The base install stays lean (~1 GB smaller than with the ML stack). Add
+extras for optional feature sets:
+
+.. code-block:: bash
+
+   pip install "symfluence[ml]"    # PyTorch stack: LSTM and GNN models, dCoupler differentiable coupling
+   pip install "symfluence[jax]"   # JAX conceptual models (Snow-17, SAC-SMA, HBV, ...) and autodiff calibration
+   pip install "symfluence[gdal]"  # GDAL Python bindings (a system GDAL install is auto-detected otherwise)
+
+Without ``[ml]``, selecting ``HYDROLOGICAL_MODEL: LSTM`` or ``GNN`` fails with
+an actionable install hint; everything else works.
+
 **Option 2: npm (bundled pre-built binaries)**
 
 .. code-block:: bash
 
-   # Install globally (includes SUMMA, mizuRoute, FUSE, NGEN, TauDEM)
+   # Install globally (pre-built model binaries; see `npm/README.md` for the
+   # full list — SUMMA, mizuRoute, FUSE, NGEN, TauDEM, HYPE, MESH, CRHM, mHM,
+   # PRMS, SWAT, GSFLOW, RHESSys and more, subject to platform availability)
    npm install -g symfluence
 
    # Verify installation
@@ -67,8 +83,11 @@ installer:
 
 What this does:
 
-- Creates/updates ``venv/`` (Python 3.11 recommended)
-- Installs Python dependencies with ``pip``
+- Sets up a Python environment — via `pixi <https://pixi.sh>`_ if it is
+  installed, otherwise a ``venv/`` created with ``pip`` (Python 3.11–3.13)
+- Installs Python dependencies
+- Builds and validates the external model binaries (the first run can take
+  a long time)
 - Reuses the environment on subsequent runs
 
 Manual Setup (Optional)
@@ -99,14 +118,14 @@ CDS API Credentials (CARRA/CERRA)
 If you plan to use CARRA or CERRA forcing datasets, configure CDS API credentials:
 
 1. Register: https://cds.climate.copernicus.eu/
-2. Get your API key at https://cds.climate.copernicus.eu/user
+2. Get your Personal Access Token from your CDS user profile
 3. Create ``~/.cdsapirc``:
 
 .. code-block:: bash
 
    cat > ~/.cdsapirc << EOF
    url: https://cds.climate.copernicus.eu/api
-   key: {UID}:{API_KEY}
+   key: {PERSONAL_ACCESS_TOKEN}
    EOF
 
 4. Restrict permissions:
@@ -216,7 +235,8 @@ Verification
 ------------
 .. code-block:: bash
 
-   ./scripts/symfluence-bootstrap --help
+   symfluence --version
+   symfluence binary doctor
 
 Troubleshooting
 ---------------
@@ -354,13 +374,13 @@ Run these to diagnose issues:
    symfluence binary doctor
 
    # Verify Python environment
-   python -c "import gdal; print(gdal.__version__)"
+   python -c "from osgeo import gdal; print(gdal.__version__)"
    python -c "import netCDF4; print(netCDF4.__version__)"
    python -c "import rpy2; print(rpy2.__version__)"
 
    # Check system libraries
    ldconfig -p | grep -E "(gdal|netcdf|hdf5)"  # Linux
-   otool -L $(python -c "import gdal; print(gdal.__file__)")  # macOS
+   otool -L $(python -c "from osgeo import gdal; print(gdal.__file__)")  # macOS
 
 Next Steps
 ----------

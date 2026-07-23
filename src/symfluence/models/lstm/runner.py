@@ -17,10 +17,16 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 import psutil
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    from torch.utils.data import DataLoader, TensorDataset
+except ImportError as _err:
+    raise ImportError(
+        "The LSTM model requires PyTorch. Install with: pip install 'symfluence[ml]'"
+    ) from _err
 
 try:
     import droute
@@ -401,7 +407,7 @@ class LSTMRunner(BaseModelRunner, SpatialOrchestrator, MizuRouteConfigMixin, Spa
         X_flattened = X.transpose(1, 2).reshape(B * N, T, F)
         y_flattened = y.reshape(B * N, n_out)
 
-        self.logger.info(f"Training distributed LSTM: Flattened shape {X_flattened.shape}")
+        self.logger.debug(f"Training distributed LSTM: Flattened shape {X_flattened.shape}")
         self._train_model(X_flattened, y_flattened, epochs, batch_size, learning_rate)
 
     def _train_model_with_routing(self, X: torch.Tensor, obs_df: pd.DataFrame, common_dates: pd.DatetimeIndex, epochs: int, learning_rate: float):
@@ -625,7 +631,7 @@ class LSTMRunner(BaseModelRunner, SpatialOrchestrator, MizuRouteConfigMixin, Spa
             # Join with features_avg (which is the original forcing_df subset)
             result = features_avg.join(pred_df, how='outer')
 
-        self.logger.info(f"Shape of final result: {result.shape}")
+        self.logger.debug(f"Shape of final result: {result.shape}")
         self._log_memory_usage()
         return result
 

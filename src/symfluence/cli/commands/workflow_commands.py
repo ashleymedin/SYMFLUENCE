@@ -60,7 +60,8 @@ class WorkflowCommands(BaseCommand):
             config_overrides=config_overrides,
             debug_mode=BaseCommand.get_arg(args, 'debug', False),
             visualize=BaseCommand.get_arg(args, 'visualise', False),
-            diagnostic=BaseCommand.get_arg(args, 'diagnostic', False)
+            diagnostic=BaseCommand.get_arg(args, 'diagnostic', False),
+            quiet_mode=BaseCommand.get_arg(args, 'quiet', False)
         )
 
         # Execute full workflow
@@ -100,7 +101,8 @@ class WorkflowCommands(BaseCommand):
             config_overrides={'FORCE_RUN_ALL_STEPS': True} if force_rerun else None,
             debug_mode=BaseCommand.get_arg(args, 'debug', False),
             visualize=BaseCommand.get_arg(args, 'visualise', False),
-            diagnostic=BaseCommand.get_arg(args, 'diagnostic', False)
+            diagnostic=BaseCommand.get_arg(args, 'diagnostic', False),
+            quiet_mode=BaseCommand.get_arg(args, 'quiet', False)
         )
 
         # Run single step
@@ -141,7 +143,8 @@ class WorkflowCommands(BaseCommand):
             config_overrides={'FORCE_RUN_ALL_STEPS': True} if force_rerun else None,
             debug_mode=BaseCommand.get_arg(args, 'debug', False),
             visualize=BaseCommand.get_arg(args, 'visualise', False),
-            diagnostic=BaseCommand.get_arg(args, 'diagnostic', False)
+            diagnostic=BaseCommand.get_arg(args, 'diagnostic', False),
+            quiet_mode=BaseCommand.get_arg(args, 'quiet', False)
         )
 
         # Run multiple steps in order
@@ -173,7 +176,8 @@ class WorkflowCommands(BaseCommand):
             config_path,
             debug_mode=BaseCommand.get_arg(args, 'debug', False),
             visualize=BaseCommand.get_arg(args, 'visualise', False),
-            diagnostic=BaseCommand.get_arg(args, 'diagnostic', False)
+            diagnostic=BaseCommand.get_arg(args, 'diagnostic', False),
+            quiet_mode=BaseCommand.get_arg(args, 'quiet', False)
         )
 
         # Show workflow status
@@ -266,7 +270,8 @@ class WorkflowCommands(BaseCommand):
             config_path,
             debug_mode=BaseCommand.get_arg(args, 'debug', False),
             visualize=BaseCommand.get_arg(args, 'visualise', False),
-            diagnostic=BaseCommand.get_arg(args, 'diagnostic', False)
+            diagnostic=BaseCommand.get_arg(args, 'diagnostic', False),
+            quiet_mode=BaseCommand.get_arg(args, 'quiet', False)
         )
 
         # Run steps from resume point
@@ -298,7 +303,7 @@ class WorkflowCommands(BaseCommand):
         dry_run = BaseCommand.get_arg(args, 'dry_run', False)
 
         # Require confirmation for non-dry-run destructive operations
-        if not dry_run and level in ('output', 'all'):
+        if not dry_run and level in ('outputs', 'all'):
             if not BaseCommand.confirm_action(
                 f"This will delete {level} files. Are you sure?"
             ):
@@ -309,7 +314,9 @@ class WorkflowCommands(BaseCommand):
         if dry_run:
             BaseCommand._console.indent("(DRY RUN - no files will be deleted)")
 
-        symfluence = SYMFLUENCE(config_path, debug_mode=BaseCommand.get_arg(args, 'debug', False))
+        symfluence = SYMFLUENCE(config_path,
+                                debug_mode=BaseCommand.get_arg(args, 'debug', False),
+                                quiet_mode=BaseCommand.get_arg(args, 'quiet', False))
 
         if hasattr(symfluence, 'clean_workflow_files'):
             symfluence.clean_workflow_files(level=level, dry_run=dry_run)
@@ -317,9 +324,9 @@ class WorkflowCommands(BaseCommand):
             # Feature in development - provide helpful guidance
             BaseCommand._console.warning("[BETA] Automated cleaning is under development")
             BaseCommand._console.info(f"Manual cleanup guidance for '{level}' level:")
-            if level == 'temp':
+            if level == 'intermediate':
                 BaseCommand._console.indent("Remove temporary files: rm -rf <domain>/temp/*")
-            elif level == 'output':
+            elif level == 'outputs':
                 BaseCommand._console.indent("Remove model outputs: rm -rf <domain>/simulations/*/output/*")
             elif level == 'all':
                 BaseCommand._console.indent("Remove temp files: rm -rf <domain>/temp/*")
@@ -364,7 +371,8 @@ class WorkflowCommands(BaseCommand):
         symfluence = SYMFLUENCE(
             config_path,
             debug_mode=BaseCommand.get_arg(args, 'debug', False),
-            diagnostic=True  # Always enable diagnostic mode for this command
+            diagnostic=True,  # Always enable diagnostic mode for this command
+            quiet_mode=BaseCommand.get_arg(args, 'quiet', False)
         )
 
         # Run diagnostics

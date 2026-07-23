@@ -7,13 +7,13 @@ __pycache__/
 build/
 
 # Requirements - auto-generated from pyproject.toml
-requirements.txt
+/requirements.txt
 develop-eggs/
 dist/
 downloads/
 eggs/
 .eggs/
-lib/
+/lib/
 lib64/
 parts/
 sdist/
@@ -24,6 +24,11 @@ wheels/
 *.egg
 .ipynb_checkpoints/
 examples/*/data/
+# Local example configs (kept out of the repo)
+examples/01_point_vertical_flux_estimation/**/*.yaml
+examples/02_watershed_modelling/**/*.yaml
+examples/03_large_domain_simulation/**/*.yaml
+examples/04_workshop_notebooks/**/*.yaml
 .confluence_env
 mpi_*
 # ...but never ignore mpi_*.py source modules (e.g. mpi_persistent.py, mpi_utils.py);
@@ -43,12 +48,8 @@ env/
 .venv-docs/
 .conda-env/
 
-# Ignore everything in 0_config_files (user workspace)
-0_config_files/*
-
-# Keep only the README explaining the new structure
-!0_config_files/README.md
-
+# Ignore the 0_config_files user workspace (created at runtime by the CLI)
+0_config_files/
 
 # Claude Code
 CLAUDE.md
@@ -134,7 +135,7 @@ cover/*.nc
 docs/_build/
 # Local drafts, co-author response notes, slide decks — not published
 docs/presentations/
-config_template.yaml
+/config_template.yaml
 
 # Benchmark results (auto-generated)
 benchmark_results/
@@ -178,7 +179,7 @@ SYMFLUENCE_data/
 
 # Local build scripts and configs
 build_clm.sh
-Makefile
+/Makefile
 config_semi_distributed_troute.yaml
 
 # Local test/development domain directories

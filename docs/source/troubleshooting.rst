@@ -35,20 +35,56 @@ Installation and Environment
 
   .. code-block:: bash
 
-     source .venv/bin/activate
+     source venv/bin/activate
 
 **Missing libraries**
 - Verify GDAL, NetCDF, and HDF5 are installed and accessible.
 - Check ``which gdalinfo`` and ``ldd <libnetcdf.so>`` on Linux.
+- For GDAL/NetCDF/HDF5 build and version problems, see :doc:`installation`.
 
 **Version conflicts**
-- Use Python 3.11. Other versions are not guaranteed to be supported.
+- Use Python 3.11–3.13. Other versions are not supported.
 - Reinstall dependencies cleanly:
 
   .. code-block:: bash
 
-     rm -rf .venv
+     rm -rf venv
      ./scripts/symfluence-bootstrap --install
+
+**Windows: model processes never exit and cannot be killed**
+
+Symptoms: a model run finishes and writes its output, but the process stays in
+the task list forever, ignores ``taskkill /F``, keeps its output NetCDF file
+locked, and only disappears on reboot. Subsequent calibration evaluations then
+fail on the locked files. Diagnostics from the run may be empty.
+
+Cause: MSYS2's stock ``mingw-w64-x86_64-netcdf`` is built with the AWS S3 SDK.
+netCDF's ``DLL_PROCESS_DETACH`` hook calls ``Aws::ShutdownAPI``, which waits on
+AWS CRT worker threads that ``RtlExitUserProcess`` has already terminated, so it
+blocks forever. The process gets a valid exit code but never signals:
+``GetExitCodeProcess`` succeeds while ``WaitForSingleObject`` times out.
+
+Check::
+
+   grep "S3 Support" /c/msys64/mingw64/lib/libnetcdf.settings
+
+The Windows release bundle (``npm install -g symfluence``) ships an S3-free
+netCDF, so this only affects source builds against your own MSYS2 install. To
+fix one, rebuild netCDF without S3 — the result is a drop-in replacement and no
+model needs relinking::
+
+   scripts/build_netcdf_no_s3_mingw.sh
+
+**Windows: a model exits instantly with no output and scores -9999**
+
+A Windows executable that cannot resolve one of its imported DLLs is terminated
+by the loader with ``0xC0000135`` (``STATUS_DLL_NOT_FOUND``) *before* ``main()``
+runs, so it produces no stdout, no stderr, and no log. Calibration cannot tell
+that apart from a model that ran and scored badly, and records ``-9999``.
+
+List the missing imports with::
+
+   scripts/check_windows_dll_closure.sh <bin_dir>
 
 ---
 
@@ -98,28 +134,34 @@ HPC and Cluster Use
 
 Logging and Debugging
 ---------------------
-All major steps produce detailed logs stored in ``_workLog_<domain_name>/``.
+All major steps log into a single run log stored in ``_workLog_<domain_name>/``.
 
 **Log files**
-- ``system.log`` — Overall workflow progress and manager operations
-- ``model_run.log`` — Model execution output and errors
-- ``calibration.log`` — Optimization progress and parameter trials
-- ``data_acquisition.log`` — Forcing and attribute data downloads
 
-**Increasing verbosity**
+- ``symfluence_<domain>_<experiment_id>_<timestamp>.log`` — the complete run
+  log (workflow progress, model execution, calibration, data acquisition).
+  The file log always captures everything regardless of console verbosity.
+- ``run_summary_<timestamp>.json`` — machine-readable run summary
+  (schema version 2) with per-step status and duration, plus error/warning
+  totals counted from the actual log records.
+- External-tool sidecar logs (e.g. ``fuse_distributed_run.log``) — raw
+  stdout/stderr of external model executables, written next to the model
+  output; the run log contains one line referencing each sidecar path.
 
-Set log level in your configuration:
+**Adjusting verbosity**
+
+Console verbosity is three-state: ``--quiet``/``-q`` (warnings and errors
+only), normal (INFO), and ``--debug`` (full diagnostic detail):
+
+.. code-block:: bash
+
+   symfluence workflow run --config my_config.yaml --debug
+
+The base log level can also be set in your configuration:
 
 .. code-block:: yaml
 
    LOG_LEVEL: DEBUG  # Options: DEBUG, INFO, WARNING, ERROR
-
-Or use environment variable:
-
-.. code-block:: bash
-
-   export SYMFLUENCE_LOG_LEVEL=DEBUG
-   symfluence workflow run --config my_config.yaml
 
 **Common debugging steps**
 
@@ -240,21 +282,9 @@ Performance Issues
 Platform-Specific Issues
 ------------------------
 
-**macOS**
-- Install Xcode Command Line Tools: ``xcode-select --install``
-- Use Homebrew for dependencies: ``brew install gdal netcdf hdf5``
-- For Apple Silicon (M1/M2/M3), ensure arm64 compatible packages
-
-**Linux**
-- Install build essentials: ``sudo apt-get install build-essential gfortran``
-- Verify shared library paths: ``ldconfig -p | grep netcdf``
-- Check for conflicting conda environments
-
-**HPC Clusters**
-- Load required modules before running (see :doc:`installation` for cluster-specific recipes)
-- Request appropriate resources in SLURM script
-- Use cluster-optimized Python and library builds
-- Check filesystem quotas and permissions
+Platform prerequisites and GDAL/NetCDF/HDF5 fixes for macOS, Linux, and HPC
+clusters are covered in :doc:`installation`. For HPC, load your site's modules
+before running (cluster-specific recipes are listed there too).
 
 ---
 
@@ -339,18 +369,14 @@ Diagnostic Commands
    symfluence workflow step acquire_forcings --config my_config.yaml
 
    # Test model preprocessing
-   symfluence workflow step preprocess_models --config my_config.yaml
+   symfluence workflow step model_specific_preprocessing --config my_config.yaml
 
 ---
 
 Tips for Successful Runs
 -------------------------
 
-1. **Start small**: Test with a small domain and short time period first
-2. **Validate early**: Use ``config validate`` before running workflows
-3. **Check logs frequently**: Monitor ``_workLog_*/`` for progress and errors
-4. **Test incrementally**: Run individual workflow steps before full workflow
-5. **Keep backups**: Save working configurations for reference
-6. **Use version control**: Track configuration changes with git
-7. **Document changes**: Comment custom modifications in configuration files
-8. **Test on HPC**: Start with small jobs to verify cluster setup
+1. **Start small**: test with a small domain and a short time period first
+2. **Validate early**: run ``config validate`` before running workflows
+3. **Test incrementally**: run individual workflow steps before the full workflow
+4. **Check the logs**: ``_workLog_*/`` records progress and errors for every run

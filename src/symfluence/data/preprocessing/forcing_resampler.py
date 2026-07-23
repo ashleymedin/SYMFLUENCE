@@ -244,6 +244,11 @@ class _ParallelWorker:
         from symfluence.core.hdf5_safety import apply_worker_environment
         apply_worker_environment()
 
+        # Cap noisy third-party loggers (spawned workers do not inherit the
+        # parent's logging configuration)
+        from symfluence.core.logging_utils import silence_third_party
+        silence_third_party()
+
         # Create a minimal logger for the worker
         self._logger = logging.getLogger(f"forcing_worker_{mp.current_process().pid}")
         self._logger.setLevel(logging.WARNING)  # Reduce noise in parallel workers
@@ -289,12 +294,15 @@ class _ParallelWorker:
         self._init_worker_components()
 
         output_file = self._file_processor.determine_output_filename(file)
-        return self._weight_applier.apply_weights(file, self.remap_file, output_file, worker_id)
+        # Every file reaching the applier was already judged to need (re)processing
+        # by FileProcessor.filter_processed_files; republish it atomically over
+        # any existing shared output.
+        return self._weight_applier.apply_weights(
+            file, self.remap_file, output_file, worker_id, overwrite=True
+        )
 
-# Suppress verbose easmore logging
-logging.getLogger('easymore').setLevel(logging.WARNING)
-logging.getLogger('easymorepy').setLevel(logging.WARNING)
-
+# easymore/easymorepy logger suppression lives in the shared table in
+# symfluence.core.logging_utils (applied by setup_logging and worker inits).
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='easymore')
 warnings.filterwarnings('ignore', category=RuntimeWarning, module='easymore')
 
@@ -628,7 +636,10 @@ class ForcingResampler(PathResolverMixin):
         """Process files in serial mode."""
         def process_func(file):
             output_file = self.file_processor.determine_output_filename(file)
-            return self.weight_applier.apply_weights(file, remap_file, output_file)
+            # Already filtered as needing (re)processing — republish atomically.
+            return self.weight_applier.apply_weights(
+                file, remap_file, output_file, overwrite=True
+            )
 
         return self.file_processor.process_serial(files, process_func)
 

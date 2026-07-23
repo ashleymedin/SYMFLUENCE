@@ -287,13 +287,11 @@ class StreamflowEvaluator(ModelEvaluator):
 
                 result = cast(pd.Series, var.to_pandas())
 
-                # Check units and convert if needed
-                units = ds[var_name].attrs.get('units', 'unknown')
+                units = ds[var_name].attrs.get('units', '').strip()
                 if 'm3/s' in units or 'm³/s' in units or 'm^3/s' in units:
-                    # Already in m³/s
                     self.logger.debug("FUSE output already in m³/s")
                     return result
-                elif 'mm' in units or units == 'unknown':
+                if 'mm' in units and ('day' in units or units.rstrip(')').endswith(('/d', 'd-1'))):
                     # mm/day → m³/s: multiply by area_m² / (1000 * 86400)
                     catchment_area = self._get_catchment_area()
                     result = result * catchment_area / 1000.0 / 86400.0
@@ -302,10 +300,22 @@ class StreamflowEvaluator(ModelEvaluator):
                         f"(area={catchment_area/1e6:.1f} km²)"
                     )
                     return result
-                else:
-                    # Assume per-unit-area depth rate, scale by catchment area
+                if not units and var_name in ('q_routed', 'q_instnt'):
+                    # FUSE's native discharge variables are mm/day by definition;
+                    # tolerate a missing units attribute for them, but loudly.
+                    self.logger.warning(
+                        "FUSE variable %s has no units attribute; assuming the "
+                        "FUSE-native mm/day convention", var_name,
+                    )
                     catchment_area = self._get_catchment_area()
-                    return result * catchment_area
+                    return result * catchment_area / 1000.0 / 86400.0
+                from symfluence.core.exceptions import EvaluationError
+                raise EvaluationError(
+                    f"Unrecognized streamflow units {units!r} on FUSE variable "
+                    f"'{var_name}' in {sim_file.name}. Expected m³/s or mm/day. "
+                    "Set a correct 'units' attribute on the variable — guessing a "
+                    "conversion here would silently rescale the simulated flow."
+                )
 
             raise ValueError("No suitable streamflow variable found in FUSE output")
 
@@ -599,6 +609,40 @@ class StreamflowEvaluator(ModelEvaluator):
     MIN_CATCHMENT_AREA = 1e3    # 0.001 km² - smallest reasonable catchment
     MAX_CATCHMENT_AREA = 1e12   # 1,000,000 km² - larger than any river basin
 
+    @staticmethod
+    def _ordered_area_shapefiles(directory: "Path") -> "List[Path]":
+        """Deterministic, artifact-aware ordering of area shapefiles.
+
+        Area detection used ``list(dir.glob("*.shp"))[0]``, whose order is
+        filesystem-dependent — the same domain resolved
+        ``..._riverBasins_lumped.shp`` (correct area) on one machine and a
+        leftover ``..._riverBasins_lumped_temp.shp`` (a degenerate 2-feature
+        scratch file, ~0.9 m²) on another, silently corrupting every
+        discharge on the second. Order candidates instead of trusting glob:
+
+        - drop obvious scratch artifacts (``*_temp.shp``, ``*.tmp.shp``);
+        - sort the rest so the shortest, canonical name wins (``_lumped``
+          before ``_lumped_temp``), ties broken lexically for stability.
+
+        A caller that walks this list and validates each candidate's area is
+        robust to a stray file that would otherwise be picked first — the key
+        change from taking ``[0]`` blindly.
+        """
+        if not directory.exists():
+            return []
+        scratch = ("_temp", ".tmp")
+        files = [
+            f for f in directory.glob("*.shp")
+            if not any(tok in f.stem.lower() for tok in scratch)
+        ]
+        # Include scratch files only as a last resort, never ahead of a real one.
+        deferred = [
+            f for f in directory.glob("*.shp")
+            if any(tok in f.stem.lower() for tok in scratch)
+        ]
+        return sorted(files, key=lambda p: (len(p.stem), p.stem)) + \
+            sorted(deferred, key=lambda p: (len(p.stem), p.stem))
+
     def _validate_catchment_area(
         self,
         area_m2: float,
@@ -722,22 +766,22 @@ class StreamflowEvaluator(ModelEvaluator):
         try:
             import geopandas as gpd
             basin_path = self.project_dir / "shapefiles" / "river_basins"
-            basin_files = list(basin_path.glob("*.shp"))
-            if basin_files:
-                gdf = gpd.read_file(basin_files[0])
-                area_col = self._get_config_value(
-                    lambda: self.config.geospatial.river_basin_area_column,
-                    default='GRU_area',
-                    dict_key='RIVER_BASIN_SHP_AREA'
-                )
+            area_col = self._get_config_value(
+                lambda: self.config.geospatial.river_basin_area_column,
+                default='GRU_area',
+                dict_key='RIVER_BASIN_SHP_AREA'
+            )
+            for basin_file in self._ordered_area_shapefiles(basin_path):
+                gdf = gpd.read_file(basin_file)
                 if area_col in gdf.columns:
                     total_area = gdf[area_col].sum()
                     validated = self._validate_catchment_area(
-                        total_area, f'basin shapefile ({area_col})'
+                        total_area, f'basin shapefile {basin_file.name} ({area_col})'
                     )
                     if validated:
                         self.logger.info(
-                            f"Using catchment area from basin shapefile: {validated:.0f} m²"
+                            f"Using catchment area from basin shapefile "
+                            f"{basin_file.name}: {validated:.0f} m²"
                         )
                         return validated
                 # Fallback: calculate from geometry
@@ -747,13 +791,16 @@ class StreamflowEvaluator(ModelEvaluator):
                     gdf = gdf.to_crs(utm_crs)
                 geom_area = gdf.geometry.area.sum()
                 validated = self._validate_catchment_area(
-                    geom_area, 'basin shapefile (geometry)'
+                    geom_area, f'basin shapefile {basin_file.name} (geometry)'
                 )
                 if validated:
                     self.logger.info(
-                        f"Using catchment area from basin geometry: {validated:.0f} m²"
+                        f"Using catchment area from basin geometry "
+                        f"{basin_file.name}: {validated:.0f} m²"
                     )
                     return validated
+                # This candidate did not yield a plausible area — try the next
+                # one rather than giving up on the whole river_basins directory.
         except Exception as e:  # noqa: BLE001 — must-not-raise contract
             self.logger.warning(
                 f"Could not calculate catchment area from basin shapefile: {str(e)}"

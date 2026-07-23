@@ -29,6 +29,7 @@ from symfluence.core.exceptions import ModelExecutionError
 from symfluence.core.mixins.config import ConfigMixin
 from symfluence.core.mixins.project import resolve_data_subdir
 from symfluence.core.path_resolver import find_basin_shapefile, find_catchment_subfile
+from symfluence.core.process_exec import run as run_subprocess
 from symfluence.data.utils.netcdf_utils import create_netcdf_encoding
 
 if TYPE_CHECKING:
@@ -285,16 +286,24 @@ class SubcatchmentProcessor(ConfigMixin):
             # Create log file for this subcatchment
             log_file = subcat_output_dir / 'fuse_run.log'
 
+            timeout = self._get_config_value(
+                lambda: self.config.model.fuse.timeout,
+                default=3600,
+                dict_key='FUSE_TIMEOUT',
+            )
+
             with open(log_file, 'w', encoding='utf-8', errors='replace') as f:
-                result = subprocess.run(
+                result = run_subprocess(
                     command,
                     check=True,
+                    stdin=subprocess.DEVNULL,
                     stdout=f,
                     stderr=subprocess.STDOUT,
                     text=True,
                     encoding='utf-8',
                     errors='replace',
-                    cwd=str(settings_dir)
+                    cwd=str(settings_dir),
+                    timeout=timeout,
                 )
 
             if result.returncode == 0:
@@ -664,7 +673,7 @@ class SubcatchmentProcessor(ConfigMixin):
 
             # Log summary information
             self.logger.info(f"Combined dataset dimensions: {dict(combined_ds.dims)}")
-            self.logger.info(f"Combined dataset variables: {list(combined_ds.data_vars.keys())}")
+            self.logger.debug(f"Combined dataset variables: {list(combined_ds.data_vars.keys())}")
 
             # Also create a simplified streamflow-only file for easier analysis
             if 'q_routed' in combined_ds.data_vars:

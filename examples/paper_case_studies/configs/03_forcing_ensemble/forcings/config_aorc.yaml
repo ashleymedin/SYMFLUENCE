@@ -1,0 +1,72 @@
+# AORC - Forcing Ensemble (Section 4.1, Fig. 6)
+# Analysis of Record for Calibration
+
+system:
+  # Steps this experiment runs (self-scoping; see `symfluence workflow list-steps`)
+  workflow_steps:
+  - setup_project
+  - create_pour_point
+  - acquire_attributes
+  - define_domain
+  - discretize_domain
+  - process_observed_data
+  - acquire_forcings
+  - model_agnostic_preprocessing
+  - build_model_ready_store
+  - model_specific_preprocessing
+  - run_model
+  - calibrate_model
+  data_dir: default
+  random_seed: 42   # pin the DDS trajectory; the paper runs were unseeded
+  code_dir: default
+domain:
+  name: paradise_snotel_wa
+  definition_method: point
+  pour_point_coords: 46.78/-121.75
+  time_start: 2015-01-01 01:00
+  time_end: 2020-12-31 23:00
+  calibration_period: 2015-10-01, 2018-09-30
+  evaluation_period: 2018-10-01, 2020-09-30
+  spinup_period: 2015-01-01, 2015-09-30
+  discretization: GRUs
+  experiment_id: forcing_ensemble_aorc
+  delineation:
+    multi_scale_thresholds: 10000,5000,2500,1000,500
+data:
+  # SNOTEL SWE observations drive the SWE calibration (Fig. 6)
+  additional_observations:
+  - SNOTEL
+  - ISMN
+  download_ismn: true
+forcing:
+  dataset: AORC
+model:
+  hydrological_model: SUMMA
+  routing_model: mizuRoute
+  summa:
+    # Snow-process parameter set from the paper runs (Fig. 6c centers on
+    # frozenPrecipMultip, the snowfall-undercatch correction)
+    params_to_calibrate: tempCritRain,tempRangeTimestep,frozenPrecipMultip,albedoMax,albedoMinWinter,albedoDecayRate,constSnowDen,mw_exp,k_snow,z0Snow
+    basin_params_to_calibrate: routingGammaScale
+    decision_options:
+      thCondSnow:
+      - smnv2000
+  mizuroute:
+    routing_dt: 86400
+    routing_units: mm/d
+    routing_var: q_routed
+optimization:
+  methods:
+  - iteration
+  algorithm: DDS
+  iterations: 1000
+  metric: RMSE
+  target: swe
+evaluation:
+  snotel:
+    download: true
+    station: '679'
+  evaluation_data:
+  - streamflow
+  streamflow:
+    station_id: 05BB001

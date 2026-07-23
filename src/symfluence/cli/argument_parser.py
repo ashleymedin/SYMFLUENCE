@@ -21,6 +21,7 @@ Categories:
 from __future__ import annotations
 
 import argparse
+import sys
 from typing import List, Optional
 
 from symfluence.workflow_steps import (
@@ -29,6 +30,8 @@ from symfluence.workflow_steps import (
     WORKFLOW_STEP_NAMES,
     resolve_workflow_step_name,
 )
+
+from .defaults import DEFAULT_CONFIG_PATH
 
 try:
     from symfluence.symfluence_version import __version__
@@ -91,10 +94,64 @@ EXPERIMENTAL_TOOLS = [
     'openfews', 'wmfire', 'cfuse', 'droute', 'ignacio',
     'modflow', 'enzyme',
 ]
+# Exactly the binaries the Paper 3 case studies need (examples/
+# paper_case_studies): TauDEM+SUNDIALS for domains, mizuRoute for
+# routing, and the compiled members of the Fig 7 ensemble. RHESSys is
+# always built --patched here: the paper's runs use the SYMFLUENCE
+# subsurface-GW physics, and an unpatched binary silently caps its
+# calibration (KGE ~0.15 vs 0.85).
+PAPER_REPRO_TOOLS = [
+    'sundials', 'taudem', 'mizuroute',
+    'crhm', 'fuse', 'gsflow', 'hype', 'mesh', 'mhm',
+    'prms', 'rhessys', 'summa', 'swat',
+]
 EXTERNAL_TOOLS = DEFAULT_TOOLS + EXPERIMENTAL_TOOLS
 
 # Hydrological models
 MODELS = ['SUMMA', 'FUSE', 'GR', 'HYPE', 'MESH', 'RHESSys', 'NGEN', 'LSTM']
+
+# The global options, defined once. _create_common_parser registers them, and the
+# derived GLOBAL_FLAG_OPTIONS / GLOBAL_VALUE_OPTIONS sets drive both
+# _normalize_global_options and main_cli's binary pass-through prefix handling —
+# a new global option added here propagates everywhere.
+_GLOBAL_OPTION_SPECS: tuple = (
+    (('--config',), {
+        'type': str,
+        'help': f'Path to configuration file (default: {DEFAULT_CONFIG_PATH})'}),
+    (('--debug',), {
+        'action': 'store_true', 'help': 'Enable debug output'}),
+    (('--quiet', '-q'), {
+        'action': 'store_true', 'dest': 'quiet',
+        'help': 'Suppress console INFO output (warnings/errors still shown; '
+                'the file log is unaffected)'}),
+    (('--visualise', '--visualize'), {
+        'action': 'store_true', 'dest': 'visualise',
+        'help': 'Enable visualization during workflow execution'}),
+    (('--diagnostic',), {
+        'action': 'store_true',
+        'help': 'Enable diagnostic plots for workflow validation'}),
+    (('--dry-run',), {
+        'action': 'store_true', 'dest': 'dry_run',
+        'help': 'Preview supported operations without making changes'}),
+    (('--profile',), {
+        'action': 'store_true', 'dest': 'profile',
+        'help': 'Enable I/O profiling for workflow execution'}),
+    (('--profile-output',), {
+        'type': str, 'dest': 'profile_output',
+        'help': 'Workflow profiling report path (default: profile_report.json)'}),
+    (('--profile-stacks',), {
+        'action': 'store_true', 'dest': 'profile_stacks',
+        'help': 'Capture workflow profiling stacks (expensive)'}),
+)
+
+GLOBAL_FLAG_OPTIONS = frozenset(
+    flag for flags, kwargs in _GLOBAL_OPTION_SPECS
+    if kwargs.get('action') == 'store_true' for flag in flags
+)
+GLOBAL_VALUE_OPTIONS = frozenset(
+    flag for flags, kwargs in _GLOBAL_OPTION_SPECS
+    if kwargs.get('action') != 'store_true' for flag in flags
+)
 
 
 class CLIParser:
@@ -120,23 +177,9 @@ class CLIParser:
         # Use SUPPRESS to avoid overwriting global flags with subcommand defaults
         parser = argparse.ArgumentParser(add_help=False, argument_default=argparse.SUPPRESS)
 
-        # Global options available to all commands
-        parser.add_argument('--config', type=str,
-                          help='Path to configuration file (default: ./config.yaml)')
-        parser.add_argument('--debug', action='store_true',
-                          help='Enable debug output')
-        parser.add_argument('--visualise', '--visualize', action='store_true', dest='visualise',
-                          help='Enable visualization during execution')
-        parser.add_argument('--diagnostic', action='store_true',
-                          help='Enable diagnostic plots for workflow validation')
-        parser.add_argument('--dry-run', action='store_true', dest='dry_run',
-                          help='Show what would be executed without running')
-        parser.add_argument('--profile', action='store_true', dest='profile',
-                          help='Enable I/O profiling to diagnose IOPS bottlenecks')
-        parser.add_argument('--profile-output', type=str, dest='profile_output',
-                          help='Path for profiling report output (default: profile_report.json)')
-        parser.add_argument('--profile-stacks', action='store_true', dest='profile_stacks',
-                          help='Capture stack traces in profiling (expensive, for debugging)')
+        # Global options available to all commands (single source: _GLOBAL_OPTION_SPECS)
+        for flags, kwargs in _GLOBAL_OPTION_SPECS:
+            parser.add_argument(*flags, **kwargs)
         return parser
 
     def _create_parser(self) -> argparse.ArgumentParser:
@@ -430,6 +473,13 @@ For more help on a specific command:
         )
         install_parser.add_argument('tools', nargs='*', metavar='TOOL',
                                   help=_tools_help)
+        install_parser.add_argument('--paper-repro', action='store_true',
+                                  help=(
+                                      'Install exactly the binaries the Paper 3 case studies need '
+                                      f'({len(PAPER_REPRO_TOOLS)} tools: {", ".join(PAPER_REPRO_TOOLS)}). '
+                                      'Implies --patched (the paper runs RHESSys with the '
+                                      'SYMFLUENCE subsurface-GW physics).'
+                                  ))
         install_parser.add_argument('--force', action='store_true',
                                   help='Force reinstall even if already installed')
         install_parser.add_argument('--patched', action='store_true',
@@ -447,6 +497,10 @@ For more help on a specific command:
         )
         validate_parser.add_argument('--verbose', action='store_true',
                                    help='Show detailed validation output')
+        validate_parser.add_argument('--paper-repro', action='store_true',
+                                   help=f'Require the {len(PAPER_REPRO_TOOLS)} Paper 3 tools '
+                                        '(validated even when marked optional, so a missing '
+                                        'one fails instead of being skipped)')
         validate_parser.set_defaults(func=BinaryCommands.validate)
 
         # binary doctor
@@ -633,54 +687,89 @@ For more help on a specific command:
 
         agent_parser = subparsers.add_parser(
             'agent',
-            help='Launch an installed coding-agent CLI, primed with SYMFLUENCE skills',
+            help='The SYMFLUENCE agent: modelling and coding sessions primed '
+                 'with skills, project context, and MCP tools',
             description=(
-                'Hand off to an installed coding-agent CLI (Claude Code, Codex, '
-                'Gemini, ...) primed with the SYMFLUENCE skills. Set the matching '
-                'API key (e.g. ANTHROPIC_API_KEY) and run `symfluence agent launch`. '
-                'Override CLI detection with SYMFLUENCE_AGENT_CLI; skip skill '
-                'materialization with SYMFLUENCE_NO_SKILLS.'
+                'Two session modes, both primed as the SYMFLUENCE agent: '
+                '`agent model` drives experiments (configs, runs, calibrations, '
+                'results) conversationally; `agent code` extends the platform in '
+                'a host coding-agent CLI (Claude Code, Codex, Gemini, ...). '
+                'Bare `symfluence agent` opens the TUI to pick a mode. Set the '
+                'matching API key (e.g. ANTHROPIC_API_KEY). Override CLI '
+                'detection with --cli or SYMFLUENCE_AGENT_CLI; skip all priming '
+                'with --no-skills or SYMFLUENCE_NO_SKILLS.'
             )
         )
         agent_subparsers = agent_parser.add_subparsers(
             dest='action',
-            required=True,
-            help='Agent action',
+            required=False,
+            help='Agent action (omit to open the TUI agent screen)',
             metavar='<action>'
         )
+        agent_parser.set_defaults(func=AgentCommands.home)
 
-        # agent launch
+        def _add_session_args(parser, direct_flag: bool) -> None:
+            parser.add_argument('prompt', type=str, nargs='?', default=None,
+                                help='Optional one-shot prompt; omit for interactive mode')
+            parser.add_argument('--cli', type=str, default=None,
+                                help='Agent CLI to launch (e.g. claude, codex, gemini); '
+                                     'overrides auto-detection and SYMFLUENCE_AGENT_CLI')
+            parser.add_argument('--no-skills', action='store_true',
+                                help='Launch the bare CLI without any SYMFLUENCE priming')
+            if direct_flag:
+                parser.add_argument('--direct', action='store_true',
+                                    help='Skip the TUI agent screen and hand off to the '
+                                         'agent CLI immediately')
+            parser.add_argument('extra', nargs=argparse.REMAINDER,
+                                help='Extra args forwarded to the agent CLI (after --)')
+
+        # agent model
+        model_parser = agent_subparsers.add_parser(
+            'model',
+            help='Modelling session: run experiments conversationally '
+                 '(configs, runs, calibrations, results)'
+        )
+        _add_session_args(model_parser, direct_flag=False)
+        model_parser.set_defaults(func=AgentCommands.model)
+
+        # agent code
+        code_parser = agent_subparsers.add_parser(
+            'code',
+            help='Coding session: extend the platform in a coding-agent CLI'
+        )
+        _add_session_args(code_parser, direct_flag=True)
+        code_parser.set_defaults(func=AgentCommands.code)
+
+        # agent launch (deprecated alias -> code)
         launch_parser = agent_subparsers.add_parser(
             'launch',
-            help='Launch the agent (interactive, or one-shot with a PROMPT)'
+            help='[deprecated] alias for `agent code`'
         )
-        launch_parser.add_argument('prompt', type=str, nargs='?', default=None,
-                                   help='Optional one-shot prompt; omit for interactive mode')
-        launch_parser.add_argument('extra', nargs=argparse.REMAINDER,
-                                   help='Extra args forwarded to the agent CLI (after --)')
+        _add_session_args(launch_parser, direct_flag=True)
         launch_parser.set_defaults(func=AgentCommands.launch)
 
-        # agent start (deprecated alias -> launch, interactive)
-        start_parser = agent_subparsers.add_parser(
-            'start',
-            help='[deprecated] alias for `agent launch`'
+        # agent doctor
+        agent_doctor_parser = agent_subparsers.add_parser(
+            'doctor',
+            help='Diagnose the agent setup (runtimes, keys, per-mode priming, '
+                 'MCP server)'
         )
-        start_parser.add_argument('--verbose', action='store_true',
-                                  help='(deprecated, ignored)')
-        start_parser.add_argument('extra', nargs=argparse.REMAINDER,
-                                  help='Extra args forwarded to the agent CLI (after --)')
-        start_parser.set_defaults(func=AgentCommands.start)
+        agent_doctor_parser.add_argument('--json', action='store_true',
+                                         help='Emit the diagnosis as JSON')
+        agent_doctor_parser.set_defaults(func=AgentCommands.doctor)
 
-        # agent run (deprecated alias -> launch PROMPT)
-        run_parser = agent_subparsers.add_parser(
-            'run',
-            help='[deprecated] alias for `agent launch PROMPT`'
+        # agent mcp
+        mcp_parser = agent_subparsers.add_parser(
+            'mcp',
+            help='Serve the SYMFLUENCE MCP server on stdio (used by the agent '
+                 'session verbs)'
         )
-        run_parser.add_argument('prompt', type=str,
-                                help='Prompt to execute')
-        run_parser.add_argument('--verbose', action='store_true',
-                                help='(deprecated, ignored)')
-        run_parser.set_defaults(func=AgentCommands.run)
+        # Named --mode (not --profile): --profile is a global profiling flag
+        # and would be hoisted away from this subcommand.
+        mcp_parser.add_argument('--mode', type=str, default=None,
+                                choices=['model', 'code'],
+                                help="Serve only one agent mode's tool profile")
+        mcp_parser.set_defaults(func=AgentCommands.mcp)
 
     def _register_list_commands(self, subparsers):
         """Register the registry/config introspection command."""
@@ -923,4 +1012,67 @@ For more help on a specific command:
         Returns:
             Parsed arguments namespace
         """
-        return self.parser.parse_args(args)
+        raw_args = list(sys.argv[1:] if args is None else args)
+        return self.parser.parse_args(self._normalize_global_options(raw_args))
+
+    def _passthrough_boundary(self, args: List[str]) -> int:
+        """Index where pass-through territory begins (nothing is hoisted from there).
+
+        Walks the subcommand tree along the positional tokens; the boundary is a
+        literal ``--``, or the token right after a subcommand whose parser
+        declares a ``REMAINDER`` positional (e.g. ``agent launch``'s ``extra``)
+        — everything beyond belongs to the host tool, not to symfluence.
+        """
+        parser = self.parser
+        index = 0
+        while index < len(args):
+            token = args[index]
+            if token == '--':  # nosec B105 — argv separator, not a password
+                return index
+            if token.startswith('-'):
+                option = token.partition('=')[0]
+                if option in GLOBAL_VALUE_OPTIONS and '=' not in token:
+                    index += 2
+                    continue
+                index += 1
+                continue
+            subparsers = next(
+                (a for a in parser._actions
+                 if isinstance(a, argparse._SubParsersAction)), None)
+            if subparsers is None or token not in subparsers.choices:
+                return len(args)  # leaf reached / unknown token: argparse decides
+            parser = subparsers.choices[token]
+            if any(a.nargs == argparse.REMAINDER for a in parser._actions):
+                return index + 1
+            index += 1
+        return len(args)
+
+    def _normalize_global_options(self, args: List[str]) -> List[str]:
+        """Allow global options before the category or after an action.
+
+        ``argparse`` parent parsers normally make option placement depend on
+        which leaf parser inherited the parent.  Move known global options to
+        the front before parsing — but never out of pass-through territory
+        (after ``--``, or anything following a subcommand with a ``REMAINDER``
+        positional), where identically-named flags belong to the host tool.
+        """
+        boundary = self._passthrough_boundary(args)
+        head, tail = args[:boundary], args[boundary:]
+
+        global_args: List[str] = []
+        remaining: List[str] = []
+        index = 0
+        while index < len(head):
+            token = head[index]
+            option, separator, _ = token.partition('=')
+            if option in GLOBAL_VALUE_OPTIONS:
+                global_args.append(token)
+                if not separator and index + 1 < len(head):
+                    index += 1
+                    global_args.append(head[index])
+            elif token in GLOBAL_FLAG_OPTIONS:
+                global_args.append(token)
+            else:
+                remaining.append(token)
+            index += 1
+        return global_args + remaining + tail

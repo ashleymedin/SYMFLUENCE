@@ -45,6 +45,50 @@ class TestGlobalOptions:
         args = parser.parse_args(['--dry-run', 'workflow', 'run'])
         assert args.dry_run is True
 
+    @pytest.mark.parametrize('argv', [
+        ['--debug', 'workflow', 'run'],
+        ['workflow', '--debug', 'run'],
+        ['workflow', 'run', '--debug'],
+    ])
+    def test_global_flag_is_position_independent(self, argv):
+        args = CLIParser().parse_args(argv)
+        assert args.debug is True
+
+    def test_global_value_option_after_action(self):
+        args = CLIParser().parse_args(['project', 'init', '--config', 'test.yaml'])
+        assert args.config == 'test.yaml'
+
+    def test_global_option_normalization_applies_to_sys_argv(self, monkeypatch):
+        monkeypatch.setattr(
+            'sys.argv', ['symfluence', 'doctor', '--debug']
+        )
+        args = CLIParser().parse_args()
+        assert args.debug is True
+
+    def test_double_dash_preserves_forwarded_global_looking_options(self):
+        args = CLIParser().parse_args(['agent', 'launch', 'prompt', '--', '--debug'])
+        assert args.extra == ['--debug']
+
+    @pytest.mark.parametrize('argv', [
+        ['--quiet', 'workflow', 'run'],
+        ['-q', 'workflow', 'run'],
+        ['workflow', 'run', '--quiet'],
+        ['workflow', 'run', '-q'],
+    ])
+    def test_quiet_option_is_global_and_position_independent(self, argv):
+        args = CLIParser().parse_args(argv)
+        assert args.quiet is True
+
+    def test_quiet_defaults_to_absent(self):
+        args = CLIParser().parse_args(['workflow', 'run'])
+        assert getattr(args, 'quiet', False) is False
+
+    def test_quiet_does_not_collide_with_subcommand_verbose(self):
+        """binary validate keeps its own --verbose; --quiet stays global."""
+        args = CLIParser().parse_args(['binary', 'validate', '--verbose', '-q'])
+        assert args.verbose is True
+        assert args.quiet is True
+
 
 class TestWorkflowCommands:
     """Test workflow category commands."""
@@ -154,19 +198,33 @@ class TestConfigCommands:
 class TestAgentCommands:
     """Test agent category commands."""
 
-    def test_agent_start(self):
-        """Test agent start command."""
+    def test_agent_bare_opens_home(self):
+        """Bare `symfluence agent` routes to the TUI home handler."""
         parser = CLIParser()
-        args = parser.parse_args(['agent', 'start'])
+        args = parser.parse_args(['agent'])
         assert args.category == 'agent'
-        assert args.action == 'start'
+        assert args.func.__name__ == 'home'
 
-    def test_agent_run(self):
-        """Test agent run command."""
+    def test_agent_model(self):
+        """Test agent model command."""
         parser = CLIParser()
-        args = parser.parse_args(['agent', 'run', 'calibrate the model'])
-        assert args.action == 'run'
+        args = parser.parse_args(['agent', 'model', 'calibrate the model'])
+        assert args.action == 'model'
         assert args.prompt == 'calibrate the model'
+
+    def test_agent_code(self):
+        """Test agent code command."""
+        parser = CLIParser()
+        args = parser.parse_args(['agent', 'code', '--direct'])
+        assert args.action == 'code'
+        assert args.direct is True
+
+    def test_agent_mcp_profile(self):
+        """Test agent mcp --mode flag."""
+        parser = CLIParser()
+        args = parser.parse_args(['agent', 'mcp', '--mode', 'model'])
+        assert args.action == 'mcp'
+        assert args.mode == 'model'
 
 
 class TestExampleCommands:
@@ -185,3 +243,36 @@ class TestExampleCommands:
         parser = CLIParser()
         args = parser.parse_args(['example', 'list'])
         assert args.action == 'list'
+
+
+class TestGlobalOptionPassthroughSafety:
+    """Global-named flags must never be stolen from host-CLI pass-through."""
+
+    def test_agent_launch_keeps_global_named_flags_in_extra(self):
+        from symfluence.cli.argument_parser import CLIParser
+        args = CLIParser().parse_args(['agent', 'launch', 'fix', '--debug'])
+        assert args.extra == ['--debug']
+        assert getattr(args, 'debug', None) in (None, False)
+
+    def test_leading_globals_still_hoisted_for_agent(self):
+        from symfluence.cli.argument_parser import CLIParser
+        args = CLIParser().parse_args(['--debug', 'agent', 'launch', 'fix'])
+        assert args.debug is True
+        assert args.extra == []
+
+    def test_option_sets_derive_from_single_spec(self):
+        """The shared sets must exactly match what the common parser registers."""
+        from symfluence.cli.argument_parser import (
+            GLOBAL_FLAG_OPTIONS,
+            GLOBAL_VALUE_OPTIONS,
+            CLIParser,
+        )
+        parser = CLIParser()
+        registered_flags, registered_values = set(), set()
+        for action in parser.common_parser._actions:
+            if not action.option_strings:
+                continue
+            target = registered_flags if action.nargs == 0 else registered_values
+            target.update(action.option_strings)
+        assert registered_flags == set(GLOBAL_FLAG_OPTIONS)
+        assert registered_values == set(GLOBAL_VALUE_OPTIONS)

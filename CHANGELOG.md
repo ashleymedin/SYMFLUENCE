@@ -9,6 +9,220 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The SYMFLUENCE agent interface** (`symfluence agent`): hands off to an
+  installed coding-agent CLI (Claude Code, Codex, Gemini, ...) primed as the
+  SYMFLUENCE agent through four provider-agnostic layers, each wired through
+  whatever mechanism the CLI declares in the launcher registry: (1) the
+  packaged skills; (2) an identity block with live project context (detected
+  configs, domain directories) and operating house rules, delivered via the
+  CLI's system-prompt flag or the `AGENTS.md` preamble; (3) a dependency-free
+  MCP server (`symfluence agent mcp`); (4) packaged specialist subagents
+  (`calibration-debugger`, `platform-scout`).
+- **Agent modes** (`symfluence agent model` / `symfluence agent code`): two
+  first-class session modes, each a frozen `ModeProfile` (`agent/modes.py`)
+  that shapes priming end to end. *Modelling* primes the operational skills
+  (`explore-platform`, `run-workflow-locally`, `debug-calibration`), both
+  subagents, modelling house rules (never edit platform source; drive
+  everything through the workflow/MCP tools; report in hydrological terms),
+  and a headless tool allowlist for the native chat. *Coding* keeps the full
+  skill set and the host CLI's own permissions. Bare `symfluence agent` opens
+  the TUI agent screen; `agent doctor` diagnoses the setup per mode (with
+  `--json`); `agent mcp --mode` serves one mode's tool profile; skills
+  materialize per-mode and copy whole skill directories.
+- **MCP background jobs and platform-inspection tools**: the agent MCP server
+  exposes 15 tools. `start_workflow_job` / `get_job_status` / `cancel_job` /
+  `list_jobs` run workflow executions as detached background jobs (a stdlib
+  wrapper records the exit code durably; records and logs live in the agent
+  cache; cancellation signals the process group), so a chat session can start
+  an hours-long calibration without blocking the MCP connection.
+  `read_run_log`, `list_domains`, `calibration_status`, `get_results_summary`,
+  `get_plot_paths`, and `compare_experiments` answer the modelling questions
+  (log tails, domain inventory, calibration progress, headline KGE/NSE
+  metrics, figures, cross-experiment ranking) by reading the `domain_*` tree
+  directly with stdlib CSV parsing. `update_config` is the one writer: a
+  line-preserving edit of the user's experiment YAML that must pass typed
+  `SymfluenceConfig` validation and backs the original up first.
+- **Agent home screen with a suspend round-trip**: a minimal Agent home in the
+  TUI (mode `7`) — two mode cards (Model / Code) over two dim context lines
+  (detected config with a cycle key, runtime readiness); diagnostics behind a
+  `d` details modal. Starting a coding session round-trips: the TUI suspends,
+  the primed coding-agent CLI runs full-screen in the same terminal, and the
+  home screen returns when it exits. Terminals that cannot suspend fall back
+  to the classic `AgentHandoff` exec after the TUI exits (`--direct`, a
+  one-shot prompt, no TTY, or a missing TUI extra hand off immediately).
+- **Native modelling chat**: `symfluence agent model` in the TUI opens a
+  SYMFLUENCE-native chat screen driving headless Claude Code over its
+  stream-JSON protocol — one bounded subprocess per turn, resumed via Claude
+  Code's own session store (`agent/headless.py`: tolerant NDJSON parser →
+  typed events; session ids persisted per project+mode). Assistant prose
+  streams into the conversation; tool invocations render as compact
+  expandable cards (never raw JSON); a run sidebar polls the domain tree and
+  background-job records independently of the agent, so an hours-long
+  calibration keeps ticking on screen. `esc` interrupts a turn, `ctrl+e`
+  exports the conversation as Markdown, and each turn's footer shows
+  duration, cost, and the running session total. Codex/Gemini (or a failed
+  stream) fall back to the suspend round-trip with modelling priming.
+  Stdlib-only driver; no new dependencies.
+- **Interactive permission approvals** in the modelling chat: tools outside
+  the modelling allowlist route through a hidden `approve_action`
+  permission-prompt bridge (`agent/approvals.py`) — the MCP server blocks,
+  the chat pops an allow/deny modal, and no reply is a denial. Outside the
+  chat the same tools stay hard-denied. ADR-0004 rewritten for the current
+  architecture (human-in-the-loop at the layer that executes actions).
+- **MESH multi-GRU preprocessing fixes and elevation-band precip correction**:
+  GRU-dependent hydrology parameters (ZSNL/ZPLS/ZPLG/...) expand to one value
+  per GRU so multi-GRU domains initialize; new forcing keys
+  `MESH_PRECIP_LAPSE_RATE` (orographic gradient for elevation-banded forcing)
+  and `MESH_PRECIP_MULTIPLIER` (uniform gauge-undercatch correction), both
+  defaulting to no-op; `SKIP_WARM_START` documented as defaulting to true so
+  calibrations are reproducible regardless of machine history.
+
+### Changed
+- **Logging-protocol overhaul** (ADR-0005 enforcement, from an audit of the
+  paper-run log corpus where WARNING+ERROR lines outnumbered INFO 1.85:1):
+  - One shared protocol module (`core/logging_utils.py`): canonical file
+    format (~46% smaller lines: `TIME LEVEL [logger] message`, filename
+    `symfluence_{domain}_{experiment_id}_{ts}.log`), `log_once` de-duplicated
+    emission, a single third-party suppression table, and one
+    `get_worker_logger` bootstrap replacing four bespoke worker setups.
+  - Milestone-level INFO everywhere: per-item/per-chunk loops now emit one
+    summary line with per-item detail at DEBUG (an ERA5 96-chunk resume drops
+    from ~190 INFO lines to 3); hot-loop conditions that produced tens of
+    thousands of repeated WARNING/ERROR lines emit once and demote to DEBUG;
+    external-model stdout goes to sidecar files referenced by one log line.
+  - Comparable calibration progress: every optimizer emits the fixed schema
+    `{ALG} {i}/{max} {unit} ({pct}%) | Best | Improved | Crashes | Elapsed`
+    with explicit units (evals/gens/epochs/loops) and `[P##]` worker tags;
+    GLUE and NSGA-II now stream progress.
+  - Honest run reporting: `✗ Failed` completions on failed steps,
+    failure-aware workflow end block, `run_summary.json` schema v2 with
+    error/warning totals counted from actual log records, per-step
+    status+duration aligned with the run manifest.
+  - Global `--quiet/-q` flag (console WARNING+; file log unaffected);
+    `--debug` unchanged and dominant.
+  - `setup_logging` is idempotent per (domain, experiment id) — re-use no
+    longer re-opens a new log file per facade construction.
+- **Agent verb consolidation**: `agent launch` is deprecated (alias for
+  `agent code`, to be removed after one release); the already-deprecated
+  `agent start`/`agent run` and the `agent list`/`agent skills` verbs are
+  removed (`agent doctor` covers the last two).
+
+### Fixed
+- **GR4J no longer dies with a Windows access violation the moment it runs the
+  model**: the GR runner built its R script by interpolating `str(Path)` into R
+  string literals, so on Windows R's lexer received
+  `read.csv("C:\Users\...\domain_x\input.csv")` — in which `\U` opens a Unicode
+  escape and `\d` is not an escape at all. Standalone `Rscript` reports that as
+  a parse error; the *embedded* interpreter raises it from inside
+  `R_ParseVector` and takes the process down with `STATUS_ACCESS_VIOLATION`
+  (0xC0000005, reported as exit 139) with no Python frame to trace — after the
+  workflow had already spent ~36 minutes preprocessing. Paths now go through
+  `r_environment.r_path()`, which renders them with forward slashes (accepted by
+  R on every platform), and every generated script is evaluated through
+  `r_environment.run_r_script()`, which refuses source containing an invalid R
+  escape so a regression is an actionable `ModelExecutionError` instead of a
+  bare crash. The same interpolation affected the distributed GR4J path and the
+  GR postprocessor's `load()` of `GR_results.Rdata`.
+- **GR4J no longer segfaults on Windows because the embedded R cannot load its
+  own packages**: rpy2 registers `R_HOME/bin/x64` only via
+  `os.add_dll_directory()`, which R's internal `dyn.load()` does not consult, so
+  `stats.dll` could not resolve `Rlapack.dll` and *every* compiled R package —
+  airGR included — failed to load, while standalone `Rscript` worked fine. R
+  reported this as the misleading `package 'stats' in options("defaultPackages")
+  was not found`. The new `models/gr/r_environment.py` puts R's binary directory
+  on `PATH` (locating R from `R_HOME`, `PATH`, the registry, or `Program Files`)
+  before rpy2 starts the interpreter. The GR runner also no longer answers a
+  failed `library(airGR)` with `install.packages()` against CRAN: on an offline
+  machine that wedged the interpreter into a SIGSEGV 53 minutes into a run.
+  airGR is now verified up front, and an unusable one raises an actionable error
+  quoting the embedded R's own `R.home()`, `.libPaths()` and load error.
+- **Models that build to `<name>.exe` on Windows are found again**: model
+  definitions declare POSIX-style executable names (`gsflow`, `prms`) because
+  the build scripts run under MSYS bash, where `[ -f bin/gsflow ]` and
+  `cp x bin/gsflow` transparently resolve to `gsflow.exe`. `Path.exists()` does
+  not, so a GSFLOW that had compiled and linked perfectly well was reported as
+  `Model executable not found`. `BaseModelRunner.get_model_executable` now tries
+  the `.exe` variant on Windows — matching the `exists_any` rule the install
+  verifier already used — and the error lists every name it searched. GSFLOW's
+  calibration worker, which resolves the path by hand, got the same treatment,
+  and its runner now passes `exe_name_key='GSFLOW_EXE'` so dict-style configs
+  can override the name.
+- **Windows model processes no longer deadlock at exit**: the Windows release
+  job now rebuilds netCDF-C without the AWS S3 SDK
+  (`scripts/build_netcdf_no_s3_mingw.sh`) instead of shipping MSYS2's stock
+  package. netCDF's `DLL_PROCESS_DETACH` hook called `Aws::ShutdownAPI`, which
+  waits on AWS CRT worker threads that `RtlExitUserProcess` has already
+  terminated — so every SUMMA/FUSE/HYPE run left an unkillable process that
+  never signalled, kept its output NetCDF handles locked, and broke subsequent
+  calibration evaluations. Byte-range, DAP and NCZarr support are unchanged, and
+  the build asserts the result is a drop-in (export-table diff plus a check that
+  every symbol `libnetcdff-7.dll` imports is still exported). Linux and macOS
+  are untouched: the deadlock needs ExitProcess semantics, and Debian's netCDF
+  is already built without the AWS SDK.
+- **Every packaged Windows tool now ships the DLLs it imports**: the release
+  bundler enumerated images with an `*.exe` glob while staging deliberately
+  drops the `.exe` suffix from tool names, so every Fortran model was skipped
+  and `libnetcdff-7.dll` was never bundled. Images are now detected by content,
+  and `scripts/check_windows_dll_closure.sh` walks each packaged binary's import
+  table and fails the release if anything is unresolvable — a missing DLL aborts
+  a Windows process with `0xC0000135` before `main()` with no output at all,
+  which calibration recorded as a `-9999` score rather than a failure (observed:
+  seven native HYPE calibrations silently lost).
+- **Stale plugins no longer vanish silently**: a plugin whose `register()`
+  fails on SYMFLUENCE API drift (e.g. importing a removed alias) now logs a
+  WARNING naming the incompatible package instead of disappearing from the
+  registry at DEBUG level; a worker-contract test sweep (AST-resolved method
+  calls on every in-repo worker class) guards against the API-drift class of
+  calibration-voiding AttributeErrors observed in the paper-run logs.
+- **Review follow-ups to the agent interface and CLI option handling** (#300,
+  #299): `--dry-run binary <tool>` now previews instead of executing; global
+  option normalization no longer steals host-CLI flags from agent-session
+  pass-through (structure-aware boundary at REMAINDER subcommands, option
+  names derived from a single spec); the MCP server survives non-object
+  JSON-RPC input and bounds subprocess output via a temp file; the agent
+  screen forwards `--` pass-through args and validates the preselected
+  runtime; priming failures degrade with visible warnings and the launch card
+  only claims layers that actually activated (a SYMFLUENCE-generated
+  `AGENTS.md` is refreshed, a user-authored one is reported as blocking
+  injection); frontmatter parsing consolidated into
+  `resources.parse_frontmatter`.
+
+---
+
+## [0.9.2] - 2026-07-07
+
+Archival release accompanying the SYMFLUENCE paper series
+("Out-standing in Every Field", "The Registry as Social Contract",
+"From Configuration to Prediction"; Eythorsson et al., 2026, Water
+Resources Research, submitted). First release archived on Zenodo via the
+GitHub integration.
+
+### Added
+- **Citation metadata**: `CITATION.cff` (GitHub "Cite this repository") and
+  `.zenodo.json` (Zenodo deposit metadata) with the full author list and
+  ORCIDs (#269).
+- Guard test validating every shipped paper calibration config against the
+  strict config schema.
+
+### Changed
+- **Paper supplementary configs trimmed to the final manuscript** (#268):
+  removed the four cut experiments (decision ensemble, sensitivity analysis,
+  large-sample and large-domain Iceland calibration), reduced the forcing
+  ensemble to the four reported products (ERA5, RDRS, AORC, CONUS404), and
+  kept only the 130 fixed-seed (42) calibration combinations the paper
+  reports; all READMEs updated to the manuscript's section and figure
+  numbering.
+
+### Fixed
+- Shipped calibration configs for the five JAX-native models (HBV, HEC-HMS,
+  SAC-SMA, TOPMODEL, Xinanjiang) failed strict validation due to stale keys
+  from older plugin schemas (`initial_params`; HBV also `smoothing`,
+  `smoothing_factor`) and could not be loaded; the stale keys are removed
+  (85 configs).
+- Paper-config seed guard repointed after the #268 trim removed the config
+  it loaded (#270).
+
 ---
 
 ## [0.9.1] - 2026-06-14

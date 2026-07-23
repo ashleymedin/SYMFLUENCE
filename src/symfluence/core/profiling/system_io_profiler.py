@@ -42,6 +42,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from symfluence.core.process_exec import run as run_subprocess
+from symfluence.core.process_exec import wait as wait_for_exit
+
 from .platform_monitors import create_process_monitor, get_platform_capabilities
 
 
@@ -511,9 +514,12 @@ class _SubprocessProfiler:
             monitor = create_process_monitor(process.pid, sample_interval=0.5)
             monitor.start()
 
-            # Wait for completion
+            # Wait for completion via the shim rather than the stdlib: on
+            # Windows a model binary can exit without signaling its process
+            # object, and a plain wait would then block until the timeout
+            # regardless (see symfluence.core.process_exec).
             try:
-                return_code = process.wait(timeout=timeout)
+                return_code = wait_for_exit(process, timeout=timeout)
             finally:
                 # Stop monitoring
                 monitor_stats = monitor.stop()
@@ -597,7 +603,7 @@ class _DummySubprocessProfiler:
         if self.env:
             run_env.update(self.env)
 
-        return subprocess.run(
+        return run_subprocess(
             self.command,
             stdout=stdout,
             stderr=stderr,

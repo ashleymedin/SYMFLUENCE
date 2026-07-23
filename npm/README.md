@@ -4,13 +4,27 @@ Pre-compiled hydrological modeling tools for SYMFLUENCE framework.
 
 ## What's Included
 
-This package provides pre-built binaries for:
+This package downloads the pre-built tool bundle for your platform. The release
+pipeline builds and stages:
 
 - **SUMMA** - Structure for Unifying Multiple Modeling Alternatives
 - **mizuRoute** - Multi-scale routing model
 - **FUSE** - Framework for Understanding Structural Errors
 - **NGEN** - NOAA Next Generation Water Resources Modeling Framework
 - **TauDEM** - Terrain Analysis Using Digital Elevation Models
+- **HYPE**, **MESH**, **CRHM**, **mHM**, **PRMS**, **SWAT**, **GSFLOW**,
+  **RHESSys** - the remaining paper-reproduction models
+- **VIC**, **WRF-Hydro**, **WATFLOOD**, **MODFLOW 6**, **ParFlow**,
+  **CLM-ParFlow**, **PIHM**, **CLM**, **NoahMP**, **WMFire**
+
+Not every model builds on every platform. The bundle's `toolchain.json` and the
+staging summary in the release logs record exactly what shipped; `symfluence
+binary info` reports what is present locally.
+
+> **RHESSys note:** the bundled RHESSys is the upstream build. The paper's
+> subsurface-groundwater patch is applied only by
+> `symfluence binary install rhessys --patched` (or `--paper-repro`), so
+> reproducing the paper's RHESSys results still requires a source build.
 
 ## Installation
 
@@ -24,6 +38,21 @@ This will:
 1. Download platform-specific pre-compiled binaries (~50-100 MB)
 2. Extract them to your global npm directory
 3. Make the `symfluence` command available
+4. Install the SYMFLUENCE Python package automatically, pinned to the same
+   version as the npm package (via `uv`, `pip3`, or `pip` — whichever is found)
+5. Verify the installed Python CLI version matches the npm package
+
+No separate `pip install symfluence` is needed. For the PyTorch-based
+features (LSTM/GNN models, differentiable coupling), add the ML extra
+afterwards: `pip install "symfluence[ml]"`.
+
+Opt-out environment variables:
+
+| Variable | Effect |
+| --- | --- |
+| `SYMFLUENCE_SKIP_SYSTEM_DEPS=1` | Skip the NetCDF/HDF5/GDAL system-library check entirely |
+| `SYMFLUENCE_AUTO_SYSDEPS=1` | Allow the installer to run `sudo apt-get`/`dnf` for missing libraries (default: it prints the command instead; brew/conda/root installs never need this) |
+| `SYMFLUENCE_OPTIONAL_PYTHON=1` | Install the binary bundle only (built-in commands only) |
 
 ### Local Installation
 
@@ -35,6 +64,11 @@ npm install symfluence
 
 - **Linux**: x86_64 (Ubuntu 22.04+, RHEL 9+, Debian 12+)
 - **macOS**: ARM64 (Apple Silicon M1/M2/M3, macOS 12+)
+- **Windows**: x86_64 (Windows 10+; runtime libraries bundled in the tarball)
+
+Other combinations (Intel macOS, Linux ARM64) have no pre-built bundle — the
+installer fails fast with a clear message; build from source instead
+(`symfluence binary install`).
 
 ## System Requirements
 
@@ -100,9 +134,14 @@ $(npm root -g)/symfluence/dist/bin/summa --version
 
 #### Option 3: Use with SYMFLUENCE Python Package
 
+The Python package is installed automatically by `npm install` (see above),
+and the `symfluence` command forwards all non-built-in commands to it with
+the npm-shipped binaries already on PATH. Manual setup is only needed if you
+opted out with `SYMFLUENCE_OPTIONAL_PYTHON=1`:
+
 ```bash
-# Install Python package
-pip install symfluence
+# Install Python package manually (match the npm package version)
+pip install "symfluence==$(symfluence version)"
 
 # Configure to use npm-installed binaries
 export SYMFLUENCE_DATA="$(npm root -g)/symfluence/dist"
@@ -117,10 +156,38 @@ symfluence path
 ## Commands
 
 ```bash
-symfluence info       # Show installation info and available tools
+symfluence info       # Show installation info, available tools, Python CLI version
 symfluence version    # Show version
 symfluence path       # Show binary directory path
 symfluence help       # Show help
+```
+
+All other commands (`workflow`, `binary`, ...) are forwarded to the Python
+CLI. If the Python package version ever drifts from the npm package (e.g. an
+old pip install survived an npm upgrade), every forwarded command prints a
+warning with the exact command to re-sync.
+
+## Upgrading
+
+```bash
+npm update -g symfluence
+```
+
+This re-runs the installer: binaries are replaced with the new release and
+the Python package is upgraded in place to the matching pinned version.
+
+## Uninstalling
+
+```bash
+npm uninstall -g symfluence
+```
+
+This removes the binaries and the tool shims. The Python package installed
+with system pip/uv is not removed — remove it separately; the uninstaller
+prints a reminder when it detects one:
+
+```bash
+pip uninstall symfluence
 ```
 
 ## Troubleshooting
@@ -131,7 +198,7 @@ symfluence help       # Show help
    ```bash
    node -e "console.log(process.platform, process.arch)"
    ```
-   Must be `linux x64` or `darwin arm64`
+   Must be `linux x64`, `darwin arm64`, or `win32 x64`
 
 2. **Check internet connection**: Downloads from GitHub Releases
 
@@ -183,7 +250,6 @@ npm publish
 
 - **Repository**: https://github.com/symfluence-org/SYMFLUENCE
 - **System Requirements**: [docs/SYSTEM_REQUIREMENTS.md](https://github.com/symfluence-org/SYMFLUENCE/blob/main/docs/SYSTEM_REQUIREMENTS.md)
-- **Dynamic Linking Strategy**: [docs/DYNAMIC_LINKING_STRATEGY.md](https://github.com/symfluence-org/SYMFLUENCE/blob/main/docs/DYNAMIC_LINKING_STRATEGY.md)
 - **Issues**: https://github.com/symfluence-org/SYMFLUENCE/issues
 
 ## License

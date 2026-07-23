@@ -143,7 +143,7 @@ class MESHDrainageDatabase(ConfigMixin):
                         self.logger.warning(f"Topology broken: all {n_size} GRUs have Next=0")
 
                 if not needs_fix:
-                    self.logger.info("Drainage topology appears valid")
+                    self.logger.debug("Drainage topology appears valid")
                     return
 
             # Rebuild topology
@@ -355,7 +355,7 @@ class MESHDrainageDatabase(ConfigMixin):
             # Fix: Set Next=1 (self-reference) for single-cell domains.
             if n_grus == 1 and next_arr_remapped[0] == 0:
                 next_arr_remapped[0] = 1
-                self.logger.info("Single-cell domain: set Next=1 (self-reference) for MESH array sizing")
+                self.logger.debug("Single-cell domain: set Next=1 (self-reference) for MESH array sizing")
 
             ds_new['Next'] = xr.DataArray(
                 next_arr_remapped,
@@ -434,7 +434,7 @@ class MESHDrainageDatabase(ConfigMixin):
     ) -> Tuple[xr.Dataset, str, bool]:
         target_n_dim = 'subbasin'
         if n_dim != target_n_dim:
-            self.logger.info(f"Renaming spatial dimension '{n_dim}' to '{target_n_dim}'")
+            self.logger.debug(f"Renaming spatial dimension '{n_dim}' to '{target_n_dim}'")
             ds = ds.rename({n_dim: target_n_dim})
             n_dim = target_n_dim
             modified = True
@@ -453,7 +453,7 @@ class MESHDrainageDatabase(ConfigMixin):
 
         old_lc_dim = 'land' if 'land' in ds.dims else None
         if old_lc_dim:
-            self.logger.info(f"Renaming dimension '{old_lc_dim}' to 'NGRU'")
+            self.logger.debug(f"Renaming dimension '{old_lc_dim}' to 'NGRU'")
             ds = ds.rename({old_lc_dim: 'NGRU'})
             modified = True
 
@@ -508,7 +508,7 @@ class MESHDrainageDatabase(ConfigMixin):
                 modified = True
 
         elif 'NGRU' in ds:
-            self.logger.info("Found 'NGRU' variable without GRU; renaming to GRU")
+            self.logger.debug("Found 'NGRU' variable without GRU; renaming to GRU")
             ds['GRU'] = ((n_dim, 'NGRU'), ds['NGRU'].values, ds['NGRU'].attrs)
             ds = ds.drop_vars('NGRU')
             ds['GRU'].attrs['grid_mapping'] = 'crs'
@@ -524,7 +524,7 @@ class MESHDrainageDatabase(ConfigMixin):
                 )
                 modified = True
         else:
-            self.logger.info("Creating GRU variable for lumped mode (1 landclass, 100% coverage)")
+            self.logger.debug("Creating GRU variable for lumped mode (1 landclass, 100% coverage)")
             ds['GRU'] = ((n_dim, 'NGRU'), np.ones((n_size, 1), dtype=np.float64), {
                 'long_name': 'Land cover class fractions',
                 'units': '1',
@@ -650,7 +650,7 @@ class MESHDrainageDatabase(ConfigMixin):
             n_original = len(nonzero_mask)
 
             if n_nonzero < n_original:
-                self.logger.info(
+                self.logger.debug(
                     f"Trimming {n_original - n_nonzero} zero-fraction GRU(s) (keeping {n_nonzero} of {n_original})"
                 )
                 ds = ds.isel(NGRU=nonzero_mask)
@@ -668,7 +668,7 @@ class MESHDrainageDatabase(ConfigMixin):
 
         if 'NGRU' in ds.dims and 'NGRU' in ds.coords:
             ds = ds.drop_vars('NGRU')
-            self.logger.info("Removed NGRU coordinate variable (MESH expects dimension only)")
+            self.logger.debug("Removed NGRU coordinate variable (MESH expects dimension only)")
             modified = True
 
         if should_force_single_gru(self.config_dict) and 'NGRU' in ds.dims and 'GRU' in ds and ds.sizes['NGRU'] > 2:
@@ -695,6 +695,56 @@ class MESHDrainageDatabase(ConfigMixin):
 
         return ds, modified
 
+    def _correct_gridarea_scale(self, ds: xr.Dataset) -> None:
+        """Rescale a uniformly mis-projected GridArea to the true catchment area.
+
+        meshflow occasionally emits subbasin areas off by a constant factor (a
+        projection/units mismatch). When the total departs from the authoritative
+        catchment area — the sum of ``GRU_area`` in the riverBasins shapefile
+        meshflow consumed — by more than 5%, and the per-cell error is uniform,
+        every cell is rescaled by the single correcting factor so ``GridArea``
+        sums to the true area while preserving relative subbasin proportions.
+        Mutates ``ds['GridArea']`` in place; no-op when already correct or when
+        the reference area cannot be read.
+        """
+        import glob
+
+        try:
+            grid_area = np.asarray(ds['GridArea'].values, dtype=float)
+            current_total = float(np.nansum(grid_area))
+            if current_total <= 0:
+                return
+
+            candidates = glob.glob(str(self.forcing_dir / '*riverBasins*.shp'))
+            if not candidates:
+                return
+            import geopandas as gpd
+            gdf = gpd.read_file(candidates[0])
+            if 'GRU_area' in gdf.columns:
+                true_total = float(np.nansum(gdf['GRU_area'].values))
+            else:
+                # Fall back to an equal-area geometric measure.
+                true_total = float(gdf.to_crs('EPSG:6933').geometry.area.sum())
+            if true_total <= 0:
+                return
+
+            ratio = true_total / current_total
+            if abs(ratio - 1.0) <= 0.05:
+                return  # already consistent
+
+            ds['GridArea'] = xr.DataArray(
+                grid_area * ratio,
+                dims=ds['GridArea'].dims,
+                attrs=dict(ds['GridArea'].attrs),
+            )
+            self.logger.info(
+                f"Corrected GridArea scale by x{ratio:.3f}: "
+                f"{current_total / 1e6:.1f} km2 -> {true_total / 1e6:.1f} km2 "
+                f"(matched to riverBasins shapefile area)"
+            )
+        except Exception as e:  # noqa: BLE001 — model execution resilience
+            self.logger.warning(f"Could not correct GridArea scale: {e}", exc_info=True)
+
     def _ensure_required_mesh_variables(
         self,
         ds: xr.Dataset,
@@ -709,7 +759,7 @@ class MESHDrainageDatabase(ConfigMixin):
                 attrs={'long_name': 'Reservoir ID', 'units': '1'}
             )
             modified = True
-            self.logger.info("Added IREACH to drainage database")
+            self.logger.debug("Added IREACH to drainage database")
         elif '_FillValue' in ds['IREACH'].attrs:
             ireach_vals = ds['IREACH'].values.copy()
             fill_val = ds['IREACH'].attrs['_FillValue']
@@ -721,7 +771,7 @@ class MESHDrainageDatabase(ConfigMixin):
                 attrs={'long_name': 'Reservoir ID', 'units': '1'}
             )
             modified = True
-            self.logger.info("Fixed IREACH encoding (removed problematic _FillValue)")
+            self.logger.debug("Fixed IREACH encoding (removed problematic _FillValue)")
 
         if 'IAK' not in ds:
             ds['IAK'] = xr.DataArray(
@@ -730,7 +780,7 @@ class MESHDrainageDatabase(ConfigMixin):
                 attrs={'long_name': 'River class', 'units': '1'}
             )
             modified = True
-            self.logger.info("Added IAK to drainage database")
+            self.logger.debug("Added IAK to drainage database")
         elif '_FillValue' in ds['IAK'].attrs:
             iak_vals = ds['IAK'].values.copy()
             fill_val = ds['IAK'].attrs['_FillValue']
@@ -741,7 +791,17 @@ class MESHDrainageDatabase(ConfigMixin):
                 attrs={'long_name': 'River class', 'units': '1'}
             )
             modified = True
-            self.logger.info("Fixed IAK encoding (removed problematic _FillValue)")
+            self.logger.debug("Fixed IAK encoding (removed problematic _FillValue)")
+
+        # Correct GridArea if meshflow computed subbasin areas in the wrong
+        # projection. meshflow's areas can come out uniformly scaled (observed
+        # ~5.2x too small on a UTM/degree mismatch), which leaves the basin-average
+        # water-balance DEPTHS correct (the scaling cancels in the area weights) but
+        # makes every mm->m3/s conversion — routed streamflow AND the calibration
+        # worker's discharge — wrong by that factor. Rescale to the authoritative
+        # catchment area from the riverBasins shapefile meshflow itself consumed.
+        if 'GridArea' in ds:
+            self._correct_gridarea_scale(ds)
 
         if 'AL' not in ds and 'GridArea' in ds:
             grid_area = ds['GridArea'].values
@@ -769,7 +829,7 @@ class MESHDrainageDatabase(ConfigMixin):
                 attrs={'long_name': 'Characteristic length of grid', 'units': 'm', '_FillValue': np.nan}
             )
             modified = True
-            self.logger.info(f"Added AL ({method}): min={char_length.min():.1f}m, max={char_length.max():.1f}m")
+            self.logger.debug(f"Added AL ({method}): min={char_length.min():.1f}m, max={char_length.max():.1f}m")
 
         if 'DA' not in ds and 'GridArea' in ds and 'Next' in ds and 'Rank' in ds:
             ds['DA'] = self._compute_drainage_area(ds, n_dim, n_size)
@@ -782,7 +842,7 @@ class MESHDrainageDatabase(ConfigMixin):
                 attrs={'long_name': 'Grid area', 'units': 'm2'}
             )
             modified = True
-            self.logger.info("Added Area (alias of GridArea) to drainage database")
+            self.logger.debug("Added Area (alias of GridArea) to drainage database")
 
         if 'Slope' not in ds:
             slope_vals = ds['ChnlSlope'].values if 'ChnlSlope' in ds else np.full(n_size, 0.001, dtype=np.float64)
@@ -794,7 +854,7 @@ class MESHDrainageDatabase(ConfigMixin):
                 attrs={'long_name': 'Mean basin slope', 'units': '1'}
             )
             modified = True
-            self.logger.info("Added Slope to drainage database")
+            self.logger.debug("Added Slope to drainage database")
 
         if 'ChnlLen' not in ds and 'ChnlLength' in ds:
             ds['ChnlLen'] = xr.DataArray(
@@ -803,7 +863,7 @@ class MESHDrainageDatabase(ConfigMixin):
                 attrs={'long_name': 'Channel length', 'units': 'm'}
             )
             modified = True
-            self.logger.info("Added ChnlLen (alias of ChnlLength) to drainage database")
+            self.logger.debug("Added ChnlLen (alias of ChnlLength) to drainage database")
 
         return ds, modified
 
@@ -816,7 +876,7 @@ class MESHDrainageDatabase(ConfigMixin):
             if name in ds and ds[name].dtype != np.int32:
                 ds[name] = ds[name].astype(np.int32)
                 modified = True
-                self.logger.info(f"Coerced {name} to int32 in drainage database")
+                self.logger.debug(f"Coerced {name} to int32 in drainage database")
         return ds, modified
 
     def _write_ddb_if_modified(self, ds: xr.Dataset, modified: bool) -> None:
@@ -878,7 +938,7 @@ class MESHDrainageDatabase(ConfigMixin):
             if not changed:
                 break
 
-        self.logger.info(f"Added DA: max={da.max()/1e6:.1f} km²")
+        self.logger.debug(f"Added DA: max={da.max()/1e6:.1f} km²")
 
         return xr.DataArray(
             da,
@@ -999,7 +1059,7 @@ class MESHDrainageDatabase(ConfigMixin):
                         dims=[n_dim, 'NGRU'],
                         attrs={'long_name': 'Group Response Unit', 'standard_name': 'GRU', 'grid_mapping': 'crs'}
                     )
-                    self.logger.info(f"Created GRU with shape {gru_data.shape} (NGRU=2 for MESH to see 1)")
+                    self.logger.debug(f"Created GRU with shape {gru_data.shape} (NGRU=2 for MESH to see 1)")
 
                 # Ensure GRU has proper attributes that MESH expects
                 if 'GRU' in ds_new:
@@ -1075,7 +1135,7 @@ class MESHDrainageDatabase(ConfigMixin):
         try:
             # Read elevation band HRU shapefile
             gdf = gpd.read_file(hru_shapefile)
-            self.logger.info(f"Read elevation band shapefile with {len(gdf)} HRUs")
+            self.logger.debug(f"Read elevation band shapefile with {len(gdf)} HRUs")
 
             # Get area column name
             area_col = 'HRU_area' if 'HRU_area' in gdf.columns else 'area'
@@ -1089,7 +1149,7 @@ class MESHDrainageDatabase(ConfigMixin):
             n_elev_bands = len(gdf)
 
             elev_fractions = (gdf[area_col] / total_area).values
-            self.logger.info(
+            self.logger.debug(
                 f"Elevation band fractions: {[f'{f:.3f}' for f in elev_fractions]}"
             )
 
@@ -1101,7 +1161,7 @@ class MESHDrainageDatabase(ConfigMixin):
                 # Default elevations if not available
                 mean_elevs = [1500 + i * 400 for i in range(n_elev_bands)]
 
-            self.logger.info(
+            self.logger.debug(
                 f"Elevation band means: {[f'{e:.0f}m' for e in mean_elevs]}"
             )
 
@@ -1183,7 +1243,7 @@ class MESHDrainageDatabase(ConfigMixin):
         try:
             # Read elevation band HRU shapefile
             gdf = gpd.read_file(hru_shapefile)
-            self.logger.info(f"Read elevation band shapefile with {len(gdf)} HRUs")
+            self.logger.debug(f"Read elevation band shapefile with {len(gdf)} HRUs")
 
             # Get area column name
             area_col = 'HRU_area' if 'HRU_area' in gdf.columns else 'area'
@@ -1202,7 +1262,7 @@ class MESHDrainageDatabase(ConfigMixin):
             else:
                 mean_elevs = np.array([1500 + i * 400 for i in range(n_bands)])
 
-            self.logger.info(
+            self.logger.debug(
                 f"Elevation bands: {n_bands} bands, "
                 f"elevations={[f'{e:.0f}m' for e in mean_elevs]}, "
                 f"fractions={[f'{f:.3f}' for f in band_fractions]}"
@@ -1243,8 +1303,19 @@ class MESHDrainageDatabase(ConfigMixin):
             for i in range(n_bands):
                 gru_data[i, i] = 1.0  # Each subbasin has exactly one active GRU
 
-            # Spatial arrays
-            grid_area = orig_total_area * band_fractions
+            # Spatial arrays. Use the catchment area from the HRU shapefile, not
+            # the single-subbasin DDB's GridArea: meshflow can compute the latter
+            # in the wrong projection (observed ~5x too small), which would make
+            # every band area — and thus all downstream mm->m3/s discharge — wrong.
+            # total_area_from_shp * band_fractions == the shapefile HRU areas.
+            if total_area_from_shp > 0 and abs(orig_total_area - total_area_from_shp) / total_area_from_shp > 0.05:
+                self.logger.info(
+                    f"Band GridArea from HRU shapefile area {total_area_from_shp/1e6:.1f} km² "
+                    f"(single-subbasin DDB GridArea was {orig_total_area/1e6:.1f} km² — "
+                    f"meshflow projection mismatch, corrected)"
+                )
+            area_basis = total_area_from_shp if total_area_from_shp > 0 else orig_total_area
+            grid_area = area_basis * band_fractions
             lat_arr = np.full(n_bands, orig_lat, dtype=np.float64)
             lon_arr = np.full(n_bands, orig_lon, dtype=np.float64)
 

@@ -320,7 +320,7 @@ class TWSEvaluator(ModelEvaluator):
                 if 'basin__StorageChange' in ds.data_vars:
                     total_tws = ds['basin__StorageChange']
                     total_tws = np.where(total_tws < -999, np.nan, total_tws)
-                    # integrate: kg/m²/s * seconds -> mm per timestep, then cumulative sum over time
+                    # integrate: mm/s * seconds -> mm per timestep, then cumulative sum over time
                     dt = self._get_config_value(
                         lambda: self.config.forcing.time_step_size,
                         default=1,

@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 
 from symfluence.core.constants import ModelDefaults
+from symfluence.core.logging_utils import log_once
 
 from .task_builder import TaskBuilder
 
@@ -41,7 +42,8 @@ class PopulationEvaluator:
         use_parallel: bool,
         num_processes: int,
         model_name: str,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
+        metrics_tracker: Optional[Any] = None
     ):
         """
         Initialize population evaluator.
@@ -54,6 +56,12 @@ class PopulationEvaluator:
             num_processes: Number of parallel processes
             model_name: Model name (e.g., 'SUMMA', 'FUSE')
             logger: Optional logger instance
+            metrics_tracker: Optional EvaluationMetricsTracker. Batch
+                evaluations report each individual's outcome to it, so
+                population-based algorithms count crashes like the
+                single-solution path already does. Without it the progress
+                line reports ``Crashes: 0/0`` no matter how many individuals
+                crashed.
         """
         self.task_builder = task_builder
         self.worker = worker
@@ -62,6 +70,65 @@ class PopulationEvaluator:
         self.num_processes = num_processes
         self.model_name = model_name
         self.logger = logger or logging.getLogger(__name__)
+        self.metrics_tracker = metrics_tracker
+        # Occurrence counters for identical task-error messages, so a broken
+        # setup that fails every evaluation logs one ERROR instead of thousands
+        # of identical WARNINGs.
+        self._task_error_counts: Dict[str, int] = {}
+
+    def _track_batch(self, scores: np.ndarray) -> None:
+        """Report one batch of evaluation outcomes to the metrics tracker.
+
+        ``scores`` holds the primary score per individual, already defaulted to
+        the penalty score for anything that crashed or returned nothing, which
+        is exactly what the tracker treats as a crash.
+        """
+        if self.metrics_tracker is None:
+            return
+        for score in scores:
+            self.metrics_tracker.track_evaluation(float(score))
+
+    def _log_task_error(self, idx: Any, error: Any, result: Dict) -> None:
+        """
+        Log a worker task error, de-duplicated by exception message.
+
+        The first occurrence of a given message is logged at ERROR (with the
+        worker traceback when the result carries one); identical repeats are
+        logged at DEBUG with an occurrence counter.
+        """
+        error_str = str(error)
+        count = self._task_error_counts.get(error_str, 0) + 1
+        self._task_error_counts[error_str] = count
+
+        truncated = error_str[:500] if len(error_str) > 500 else error_str
+        if count == 1:
+            traceback_str = result.get('traceback')
+            message = f"Task {idx} worker error: {truncated}"
+            if traceback_str:
+                message += f"\n{traceback_str}"
+            self.logger.error(message)
+        else:
+            self.logger.debug(
+                f"Task {idx} worker error (repeat #{count} of identical message): {truncated}"
+            )
+
+    def _log_all_penalty_batch(self, n_results: int, kind: str) -> None:
+        """
+        Emit one actionable ERROR when an entire batch returned only penalty
+        values (first occurrence only; repeats at DEBUG via log_once).
+        """
+        log_once(
+            self.logger,
+            logging.ERROR,
+            key=f'population-all-penalty-{kind}',
+            message=(
+                f"All {n_results} individuals in this population returned penalty "
+                f"{kind}. This indicates a broken model or forcing setup for this "
+                f"run rather than a poor parameter region - check the first task "
+                f"error logged above, and verify the model runs outside calibration "
+                f"before continuing."
+            ),
+        )
 
     def _resolve_worker_function(self) -> Callable:
         """
@@ -115,21 +182,61 @@ class PopulationEvaluator:
             error = result.get('error')
 
             if error:
-                error_str = str(error)
-                self.logger.debug(f"Task {idx} full error: {error_str}")
-                self.logger.warning(
-                    f"Task {idx} error: {error_str[:500] if len(error_str) > 500 else error_str}"
-                )
+                self._log_task_error(idx, error, result)
 
             if score is not None and not np.isnan(score):
                 fitness[idx] = score
                 if score != self.DEFAULT_PENALTY_SCORE:
                     valid_count += 1
             else:
-                self.logger.warning(f"Task {idx} returned score={score}")
+                self.logger.debug(f"Task {idx} returned score={score}")
 
         self.logger.debug(f"Batch results: {len(results)} returned, {valid_count} valid scores")
+        if results and valid_count == 0:
+            self._log_all_penalty_batch(len(results), 'scores')
+        self._track_batch(fitness)
         return fitness
+
+    def _warn_on_dead_objectives(
+        self,
+        objectives: np.ndarray,
+        objective_names: Optional[List[str]] = None,
+    ) -> None:
+        """Warn when a secondary objective carries no selection pressure.
+
+        Validity above is judged on the *primary* objective only, so a
+        secondary objective that is identical across the whole population —
+        typically every individual falling back to the penalty score because
+        its observations are missing — passes silently and quietly demotes a
+        multi-objective calibration to a single-objective one. Observed with a
+        multivariate streamflow+TWS experiment whose GRACE download had been
+        interrupted: the TWS axis sat at the penalty value for every
+        generation, and the run completed with no indication that half the
+        objective had been inert.
+        """
+        if objectives.ndim != 2 or objectives.shape[1] < 2 or not len(objectives):
+            return
+        for j in range(1, objectives.shape[1]):
+            col = objectives[:, j]
+            if not np.all(col == col[0]):
+                continue
+            name = (objective_names[j] if objective_names
+                    and j < len(objective_names) else f"#{j + 1}")
+            is_penalty = col[0] == self.DEFAULT_PENALTY_SCORE
+            log_once(
+                self.logger,
+                logging.ERROR if is_penalty else logging.WARNING,
+                key=f'dead-objective-{j}',
+                message=(
+                    f"Objective {name} is identical ({col[0]:g}) across all "
+                    f"{len(col)} individuals"
+                    + (" and equals the penalty score, which usually means its "
+                       "observations are missing or unreadable"
+                       if is_penalty else "")
+                    + ". It exerts no selection pressure, so this run is "
+                      "effectively optimizing the remaining objective(s) only."
+                ),
+            )
 
     def _extract_objectives(
         self,
@@ -164,11 +271,7 @@ class PopulationEvaluator:
             error = result.get('error')
 
             if error:
-                error_str = str(error)
-                self.logger.debug(f"Task {idx} full error: {error_str}")
-                self.logger.warning(
-                    f"Task {idx} error: {error_str[:500] if len(error_str) > 500 else error_str}"
-                )
+                self._log_task_error(idx, error, result)
 
             if obj and len(obj) == n_objectives:
                 # Explicit objectives list (SUMMA workers)
@@ -184,7 +287,7 @@ class PopulationEvaluator:
                     extracted.append(float(val) if val is not None else self.DEFAULT_PENALTY_SCORE)
                 objectives[idx] = np.array(extracted, dtype=float)
             else:
-                self.logger.warning(f"Task {idx} returned objectives={obj}")
+                self.logger.debug(f"Task {idx} returned objectives={obj}")
 
             if not np.any(np.isnan(objectives[idx])) and objectives[idx][0] != self.DEFAULT_PENALTY_SCORE:
                 valid_count += 1
@@ -192,6 +295,12 @@ class PopulationEvaluator:
         self.logger.debug(
             f"Batch objectives: {len(results)} returned, {valid_count} valid objective sets"
         )
+        if results and valid_count == 0:
+            self._log_all_penalty_batch(len(results), 'objectives')
+        self._warn_on_dead_objectives(objectives, objective_names)
+        # Track on the primary objective — an individual whose first objective
+        # is the penalty score is one whose model run failed.
+        self._track_batch(objectives[:, 0])
         return objectives
 
     def evaluate_solution(
@@ -343,11 +452,7 @@ class PopulationEvaluator:
                 error = result.get('error')
 
                 if error:
-                    error_str = str(error)
-                    self.logger.debug(f"Task {idx} full error: {error_str}")
-                    self.logger.warning(
-                        f"Task {idx} error: {error_str[:500] if len(error_str) > 500 else error_str}"
-                    )
+                    self._log_task_error(idx, error, result)
 
                 if score is not None and not np.isnan(score):
                     if idx in trial_indices:

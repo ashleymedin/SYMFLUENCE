@@ -13,9 +13,10 @@ Handles preparation of mHM model inputs including:
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import geopandas as gpd
 import netCDF4 as nc4
@@ -23,6 +24,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from symfluence.core.exceptions import FileOperationError
+from symfluence.core.process_exec import run as run_subprocess
 from symfluence.core.registries import R
 from symfluence.geospatial.geometry_utils import calculate_catchment_centroid
 from symfluence.models.base.base_preprocessor import BaseModelPreProcessor
@@ -118,7 +121,6 @@ class MHMPreProcessor(BaseModelPreProcessor):  # type: ignore[misc]
         exits 127). The configured TAUDEM_DIR wins if set; otherwise the first
         runnable candidate is returned, falling back to the framework default.
         """
-        import subprocess
         td = self._get_config_value(lambda: self.config.paths.taudem_dir,
                                     default='default', dict_key='TAUDEM_DIR')
         if td != 'default':
@@ -143,7 +145,7 @@ class MHMPreProcessor(BaseModelPreProcessor):  # type: ignore[misc]
             if not exe.exists():
                 continue
             try:
-                rc = subprocess.run([str(exe)], capture_output=True).returncode
+                rc = run_subprocess([str(exe)], capture_output=True).returncode
             except OSError:
                 continue
             if rc not in (126, 127):   # 127/126 => dylib/load failure
@@ -374,12 +376,34 @@ class MHMPreProcessor(BaseModelPreProcessor):  # type: ignore[misc]
 
         start_date, end_date = self._get_simulation_dates()
 
-        # Try to load forcing data
+        # Load the real forcing. Fabricating weather when it cannot be read is
+        # never acceptable in a real run: a stray, incompatibly-shaped forcing
+        # file once made this fall back silently, and mHM then calibrated 1500
+        # iterations against a sine-wave temperature and random-exponential
+        # precipitation, reporting a plausible-looking KGE of -0.17 with no
+        # sign that the weather was fake. Let the read error propagate so the
+        # bad input is fixed, not papered over. Synthetic forcing stays
+        # available for tests behind an explicit opt-in.
+        if os.environ.get("SYMFLUENCE_MHM_ALLOW_SYNTHETIC_FORCING") != "1":
+            # Default (real) path: any read failure propagates with its full
+            # traceback. No blanket except — a bad input must be fixed, and a
+            # forcing that cannot be read must never be replaced by fabricated
+            # weather.
+            forcing_ds = self._load_forcing_data()
+            self._write_mhm_forcing(forcing_ds, start_date, end_date)
+            return
+
+        # Opt-in smoke-test path only: fall back to synthetic forcing.
         try:
             forcing_ds = self._load_forcing_data()
             self._write_mhm_forcing(forcing_ds, start_date, end_date)
-        except Exception as e:  # noqa: BLE001 — model execution resilience
-            logger.warning(f"Could not load forcing data: {e}, using synthetic", exc_info=True)
+        except Exception as e:  # noqa: BLE001 — smoke-test fallback only
+            logger.warning(
+                "Could not load mHM forcing (%s); SYMFLUENCE_MHM_ALLOW_"
+                "SYNTHETIC_FORCING=1 is set, generating SYNTHETIC forcing — "
+                "results are meaningless for anything but a smoke test.",
+                e, exc_info=True,
+            )
             self._generate_synthetic_forcing(start_date, end_date)
 
     def _load_forcing_data(self) -> xr.Dataset:
@@ -394,7 +418,13 @@ class MHMPreProcessor(BaseModelPreProcessor):  # type: ignore[misc]
         if not forcing_files:
             raise FileNotFoundError(f"No forcing data found in {self.forcing_basin_path}")
 
-        logger.info(f"Loading forcing from {len(forcing_files)} files")
+        # The basin forcing store is shared across every model in a domain and
+        # may hold more than one .nc. Choose deterministically by (active forcing
+        # dataset, spatial mode) instead of merging whatever globs -- merging a
+        # stray remap crashes on hru alignment ({1, 12}) and once triggered a
+        # silent synthetic-forcing fallback.
+        forcing_files = self._select_forcing_files(forcing_files)
+        logger.info(f"Loading forcing from {len(forcing_files)} file(s)")
 
         # Read through the canonical model-ready forcing reader: variables come
         # back under the canonical vocabulary (pptrate/airtemp/...) with the
@@ -404,6 +434,93 @@ class MHMPreProcessor(BaseModelPreProcessor):  # type: ignore[misc]
         ds = open_canonical_forcing(forcing_files)
         ds = self.subset_to_simulation_time(ds, "Forcing")
         return ds
+
+    def _select_forcing_files(self, forcing_files: List[Path]) -> List[Path]:
+        """Deterministically choose the forcing file(s) for this domain and mode.
+
+        The basin-averaged forcing store is a domain-shared product that can
+        accumulate several NetCDFs: a different forcing dataset (RDRS alongside
+        ERA5), a remap produced under a different discretization (a 12-band
+        elevation split alongside the 1-HRU lumped basin), or a stale artefact
+        from an earlier run. ``open_canonical_forcing`` merges/aligns everything
+        it is handed, so an incompatible file either corrupts the merge or
+        crashes on dimension alignment (the ``{1, 12}`` hru mismatch that once
+        made mHM fall back to fabricated weather).
+
+        Selection reuses the framework's established remap naming convention
+        ``{domain}_{forcing_dataset}_remapped_*`` (see
+        ``resampling.file_processor.determine_output_filename`` and SUMMA's
+        ``startswith(domain)`` file discovery) and the domain's spatial mode.
+        Genuine multi-file forcing of one shape (e.g. per-period time chunks) is
+        still merged; genuinely ambiguous, incompatibly-shaped candidates raise a
+        clear error listing them rather than being merged blindly.
+
+        Args:
+            forcing_files: every ``*.nc`` discovered in the forcing store.
+
+        Returns:
+            The spatially-compatible subset to hand to ``open_canonical_forcing``.
+
+        Raises:
+            FileOperationError: if more than one incompatibly-shaped candidate
+                remains after filtering.
+        """
+        files = sorted(forcing_files)
+        if len(files) == 1:
+            return files
+
+        domain = self.domain_name.lower()
+        dataset = self.forcing_dataset.lower()
+
+        # 1. Prefer the canonical remap naming for the active (domain, dataset).
+        #    Progressive fallbacks keep non-standard stores working: any file
+        #    naming this dataset, then any naming this domain, then everything.
+        candidates = [f for f in files if f.name.lower().startswith(f"{domain}_{dataset}_remapped")]
+        if not candidates and dataset:
+            candidates = [f for f in files if dataset in f.name.lower()]
+        if not candidates:
+            candidates = [f for f in files if f.name.lower().startswith(domain)]
+        if not candidates:
+            candidates = files
+        if len(candidates) == 1:
+            return candidates
+
+        # 2. Disambiguate by spatial mode. A lumped domain must resolve to a
+        #    single spatial point, so drop any candidate remapped onto a
+        #    multi-HRU geofabric when a single-HRU one is present.
+        sizes = {f: self._forcing_spatial_size(f) for f in candidates}
+        if self.spatial_mode == 'lumped':
+            lumped = [f for f in candidates if sizes[f] == 1]
+            if lumped:
+                candidates = lumped
+
+        # 3. Whatever remains must be spatially compatible to merge (e.g. genuine
+        #    per-period time chunks of one grid). Refuse to merge mixed shapes.
+        distinct = {sizes[f] for f in candidates}
+        if len(distinct) > 1:
+            listing = "\n".join(
+                f"  {f.name}: {sizes[f]} spatial point(s)" for f in candidates
+            )
+            raise FileOperationError(
+                f"Ambiguous mHM forcing in {self.forcing_basin_path}: "
+                f"{len(candidates)} files match (domain={self.domain_name}, "
+                f"forcing={self.forcing_dataset}, spatial_mode={self.spatial_mode}) "
+                f"but have incompatible spatial shapes; refusing to merge them.\n"
+                f"{listing}\n"
+                "Remove the stale/incompatible forcing file(s), or set the "
+                "correct forcing dataset for this run."
+            )
+        return candidates
+
+    @staticmethod
+    def _forcing_spatial_size(path: Path) -> int:
+        """Return the number of spatial points (product of non-time dims)."""
+        with xr.open_dataset(path) as ds:
+            size = 1
+            for dim, length in ds.sizes.items():
+                if dim != 'time':
+                    size *= int(length)
+            return size
 
     def _write_mhm_forcing_nc(
         self,
@@ -660,7 +777,12 @@ class MHMPreProcessor(BaseModelPreProcessor):  # type: ignore[misc]
             f"cellsize      {t.a:.8f}\nNODATA_value  -9999\n", encoding='utf-8')
 
     def _generate_synthetic_forcing(self, start_date: datetime, end_date: datetime) -> None:
-        """Generate synthetic forcing data for testing."""
+        """Generate synthetic forcing data for smoke tests ONLY.
+
+        Sine-wave temperature and random precipitation — physically meaningless.
+        Only reachable via SYMFLUENCE_MHM_ALLOW_SYNTHETIC_FORCING=1; a real run
+        raises instead of calling this (see _generate_forcing_files).
+        """
         props = self._get_catchment_properties()
         dates = pd.date_range(start_date, end_date, freq='D')
         n = len(dates)

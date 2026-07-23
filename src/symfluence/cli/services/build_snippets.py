@@ -11,7 +11,7 @@ by the CLI without loading pandas, xarray, etc.
 """
 from __future__ import annotations
 
-from typing import Dict
+from symfluence.cli.services.build_snippet_catalog import BuildSnippetCatalog
 
 
 def get_common_build_environment() -> str:
@@ -406,6 +406,36 @@ configure_libraries
 export NCORES="${NCORES:-4}"
 
 # ================================================================
+# Windows: temp dir for native toolchains spawned by make
+# ================================================================
+# On Windows the build bash (e.g. Git Bash) and MSYS2's make.exe link
+# against DIFFERENT msys-2.0.dll runtimes.  Each runtime converts the
+# path-like variables TMPDIR/TMP/TEMP between POSIX and Windows form at
+# every process hop; across mismatched runtimes the conversion fails and
+# make's child processes see them EMPTY.  Native mingw-w64 gfortran then
+# falls back to the unwritable C:\Windows and dies with
+# "Cannot create temporary file in C:\Windows\: Permission denied".
+# Environment exports cannot survive that hop, but make command-line
+# arguments (plain argv) do — and GNU make exports command-line variables
+# to the environment of its recipes.  Build recipes on Windows should
+# therefore invoke make as:  make "${SYMF_MAKE_TMP[@]}" ...
+# (On non-Windows the array is empty and expands to nothing.)
+SYMF_MAKE_TMP=()
+case "$(uname -s 2>/dev/null)" in
+    MSYS*|MINGW*|CYGWIN*)
+        # cygpath resolves /tmp with the mount table of whichever runtime
+        # is first on PATH — the same runtime whose make we will invoke —
+        # so the result is a Windows-form (C:/...) directory that native
+        # child processes can use directly.
+        _symf_ntmp="$(cygpath -m /tmp 2>/dev/null || true)"
+        if [ -n "$_symf_ntmp" ] && [ -d "$_symf_ntmp" ]; then
+            SYMF_MAKE_TMP=(TMPDIR="$_symf_ntmp" TMP="$_symf_ntmp" TEMP="$_symf_ntmp")
+            echo "Windows: native temp for make children: $_symf_ntmp"
+        fi
+        ;;
+esac
+
+# ================================================================
 # Portable in-place sed
 # ================================================================
 # macOS sed requires an explicit backup extension with -i (e.g. sed -i ''),
@@ -680,6 +710,83 @@ detect_netcdf_lib_paths() {
     export NETCDF_LIB_DIR NETCDF_C_LIB_DIR
 }
 detect_netcdf_lib_paths
+    '''.strip()
+
+
+def get_safe_build_path() -> str:
+    """
+    Get a snippet that makes the build reachable via a Make/shell-safe path.
+
+    Some tools (mizuRoute, FUSE) ship hand-written Fortran Makefiles that pass
+    space-separated *unquoted* source-file lists to the compiler and use perl
+    substitutions to inject the build path. When the install directory contains
+    a space or an ``@`` -- as Google Drive mounts do
+    (``GoogleDrive-user@gmail.com/My Drive/...``) -- both break:
+
+    * a space splits every source path into two bogus arguments
+      (``.../My Drive/foo.f90`` -> ``.../My`` + ``Drive/foo.f90``), and
+    * a perl replacement string interpolates ``@name`` as an (empty) array,
+      silently deleting the ``@gmail`` component of the path.
+
+    This snippet defines ``symfluence_safe_build_dir`` and calls it from the
+    tool's install root. If the real path contains any character outside the
+    safe set ``[A-Za-z0-9/._-]`` it creates a symlink with a clean name under a
+    safe base directory and ``cd``s into it, so every downstream ``$(pwd)`` /
+    ``$(cd .. && pwd)`` -- and therefore every path fed to Make -- is safe.
+    When the path is already safe it is a no-op, so tools on ordinary paths are
+    unaffected. Override the link location with ``SYMFLUENCE_BUILD_LINK_DIR``.
+
+    Include this AFTER ``get_common_build_environment`` and BEFORE the tool's
+    own build snippet, while the shell is still at the install root.
+
+    Returns:
+        Shell script snippet that relocates the build onto a safe path.
+    """
+    return r'''
+# === Safe build path (spaces / '@' in the install path, e.g. Google Drive) ===
+symfluence_safe_build_dir() {
+    local real clean_base link tag c
+    real="$(pwd -P)"
+
+    # Already reachable via a Make/shell-safe path -> nothing to do.
+    case "$real" in
+        *[!A-Za-z0-9/._-]*) : ;;   # contains a hostile character, sanitize
+        *) return 0 ;;
+    esac
+
+    # Pick a base directory that is itself safe and writable.
+    clean_base=""
+    for c in "${SYMFLUENCE_BUILD_LINK_DIR:-}" "$HOME/.symfluence/build-links" "${TMPDIR:-}" "/tmp"; do
+        [ -n "$c" ] || continue
+        case "$c" in *[!A-Za-z0-9/._-]*) continue ;; esac
+        clean_base="$c"
+        break
+    done
+    : "${clean_base:=/tmp}"
+    mkdir -p "$clean_base" 2>/dev/null || true
+
+    tag="$(basename "$real")"
+    case "$tag" in *[!A-Za-z0-9._-]*) tag="build" ;; esac
+    link="$clean_base/symfluence-$tag-$$"
+
+    rm -f "$link" 2>/dev/null || true
+    if ln -s "$real" "$link" 2>/dev/null && [ -d "$link" ]; then
+        # Track for cleanup, then switch into the clean path. A logical cd
+        # keeps $PWD == $link, so pwd returns the safe path from here on.
+        SYMFLUENCE_BUILD_LINKS="${SYMFLUENCE_BUILD_LINKS:+$SYMFLUENCE_BUILD_LINKS }$link"
+        trap 'for _l in $SYMFLUENCE_BUILD_LINKS; do rm -f "$_l"; done' EXIT
+        cd "$link" || return 1
+        echo "SYMFLUENCE: building via clean symlink to avoid spaces/'@' in path:"
+        echo "  $link -> $real"
+    else
+        echo "SYMFLUENCE WARNING: the build path contains a space or '@' and a" >&2
+        echo "  clean symlink could not be created under '$clean_base'. The" >&2
+        echo "  Fortran Makefile build may fail. Set SYMFLUENCE_BUILD_LINK_DIR" >&2
+        echo "  to a writable path without spaces or '@' to work around this." >&2
+    fi
+    return 0
+}
+symfluence_safe_build_dir
     '''.strip()
 
 
@@ -1351,20 +1458,21 @@ detect_or_build_flex
     '''.strip()
 
 
-def get_all_snippets() -> Dict[str, str]:
+def get_all_snippets() -> dict[str, str]:
     """
     Return all snippets as a dictionary for easy access.
 
     Returns:
         Dictionary mapping snippet names to their shell script content.
     """
-    return {
-        'common_env': get_common_build_environment(),
-        'netcdf_detect': get_netcdf_detection(),
-        'hdf5_detect': get_hdf5_detection(),
-        'netcdf_lib_detect': get_netcdf_lib_detection(),
-        'geos_proj_detect': get_geos_proj_detection(),
-        'udunits2_detect_build': get_udunits2_detection_and_build(),
-        'bison_detect_build': get_bison_detection_and_build(),
-        'flex_detect_build': get_flex_detection_and_build(),
-    }
+    return BuildSnippetCatalog({
+        'common_env': get_common_build_environment,
+        'netcdf_detect': get_netcdf_detection,
+        'hdf5_detect': get_hdf5_detection,
+        'netcdf_lib_detect': get_netcdf_lib_detection,
+        'safe_build_path': get_safe_build_path,
+        'geos_proj_detect': get_geos_proj_detection,
+        'udunits2_detect_build': get_udunits2_detection_and_build,
+        'bison_detect_build': get_bison_detection_and_build,
+        'flex_detect_build': get_flex_detection_and_build,
+    }).render()

@@ -195,7 +195,11 @@ class InitializationService(BaseService):
                     missing_config_names.append('FORCING_DATASET')
                 raise ValueError(
                     "Config validation failed:\n" +
-                    "\n".join(f"  - Missing required field: {f}" for f in missing_config_names)
+                    "\n".join(f"  - Missing required field: {f}" for f in missing_config_names) +
+                    "\n\nStart from a preset (e.g. 'symfluence project init bow-river';"
+                    " see 'symfluence project list-presets'),\n"
+                    "or pass --domain and --forcing:"
+                    " 'symfluence project init --domain MyBasin --forcing ERA5'"
                 )
 
         # Step 1: Load base template
@@ -225,6 +229,14 @@ class InitializationService(BaseService):
         # Step 3: Apply CLI overrides
         cli_config = self._parse_cli_overrides(cli_overrides)
         config.update(cli_config)
+
+        # A user-supplied simulation window invalidates the template's canned
+        # spinup/calibration/evaluation periods; clear them so the generated
+        # config passes period-consistency validation.
+        if cli_overrides.get("start_date") or cli_overrides.get("end_date"):
+            for period_key in ("SPINUP_PERIOD", "CALIBRATION_PERIOD", "EVALUATION_PERIOD"):
+                if config.get(period_key):
+                    config[period_key] = None
 
         # Step 4: Apply smart defaults based on model/forcing
         self._apply_smart_defaults(config)

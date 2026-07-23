@@ -1,0 +1,43 @@
+# Experiment 1: Iceland + coastal - semi-distributed + elevation bands
+# Iceland + coastal + elevation-band HRUs (Section 2.1, Fig. 3c, Table 1)
+# Coastal GRUs + elevation-band HRUs (counts regenerated from the pinned recipe)
+# Maximum Iceland configuration: coastal watersheds with elevation-band HRUs
+
+system:
+  # Steps this experiment runs (self-scoping; see `symfluence workflow list-steps`)
+  workflow_steps:
+  - setup_project
+  - create_pour_point
+  - acquire_attributes
+  - define_domain
+  - discretize_domain
+  data_dir: default
+  code_dir: default
+domain:
+  name: Iceland_coastal_elev
+  definition_method: semidistributed
+  bounding_box_coords: 66.6/-24.6/63.2/-13.2
+  pour_point_coords: 63.93/-21.03
+  # Delineated with TauDEM from the Copernicus 90 m DEM, threshold 5000 cells
+  # (the Iceland_National run recipe; tractable on a laptop).
+  dem_source: copdem90
+  delineation:
+    routing: distributed
+    method: stream_threshold
+    stream_threshold: 5000
+    delineate_by_pourpoint: false
+    delineate_coastal_watersheds: true
+  discretization: elevation
+  elevation_band_size: 200
+  time_start: 2000-01-01 03:00
+  time_end: 2008-12-31 21:00
+  experiment_id: Iceland_coastal_elev
+forcing:
+  dataset: ERA5
+  apply_lapse_rate: true
+  lapse_rate: 0.0065
+model:
+  hydrological_model: FUSE
+  routing_model: mizuRoute
+  fuse:
+    spatial_mode: distributed

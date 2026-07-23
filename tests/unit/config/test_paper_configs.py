@@ -5,7 +5,7 @@
 Unit tests for paper case study configuration files.
 
 Pins reproducibility-critical properties in
-examples/paper_case_studies/configs/configs_nested/* so that accidental
+examples/paper_case_studies/configs/* so that accidental
 removal of required fields (e.g. random_seed on stochastic experiments)
 is caught in CI rather than in downstream reproducibility runs.
 """
@@ -22,7 +22,7 @@ from symfluence.core.config.models.optimization import MultiGaugeConfig
 pytestmark = [pytest.mark.unit, pytest.mark.quick]
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-CONFIGS_NESTED = REPO_ROOT / "examples" / "paper_case_studies" / "configs" / "configs_nested"
+CONFIGS = REPO_ROOT / "examples" / "paper_case_studies" / "configs"
 
 
 def _load(path: Path) -> SymfluenceConfig:
@@ -31,30 +31,31 @@ def _load(path: Path) -> SymfluenceConfig:
     return SymfluenceConfig.model_validate(data)
 
 
-def test_decision_ensemble_sets_random_seed():
-    """Decision ensemble must pin a random_seed for paper reproducibility.
+def test_calibration_ensemble_sets_random_seed():
+    """Calibration-ensemble configs must pin a random_seed for reproducibility.
 
     PW reported best-run performance diverging from the paper (0.89 vs 0.86)
-    with three different decision choices. Root cause: DDS initialized with
-    unseeded RNG. This test prevents the seed from being silently dropped.
+    when DDS was initialized with an unseeded RNG (originally caught on the
+    since-removed decision-ensemble config, also FUSE + DDS). The shipped paper configs report
+    single fixed-seed runs, so this guards the seed from being silently
+    dropped from the calibration comparison.
     """
-    cfg = _load(CONFIGS_NESTED / "06_decision_ensemble" / "config_fuse_decisions.yaml")
+    cfg = _load(
+        CONFIGS / "04_calibration_ensemble" / "fuse" / "config_bow_fuse_dds.yaml"
+    )
     assert cfg.system.random_seed is not None, (
-        "06_decision_ensemble config must set system.random_seed for "
-        "reproducibility of DDS-driven decision enumeration."
+        "04_calibration_ensemble configs must set system.random_seed for "
+        "reproducibility of the DDS-driven algorithm comparison."
     )
     assert isinstance(cfg.system.random_seed, int)
 
 
-# Benchmark configs — one per model family. PW reported that 05_benchmarking
-# only shipped a SUMMA config, making it impossible to reproduce Figure 8's
-# other model points without copy-paste. The variants below close that gap.
+# Benchmarking (Fig. 8) is model-agnostic: the Benchmarker derives reference
+# predictors from observations and forcing only, and the config's
+# WORKFLOW_STEPS stop before any model-specific step. One config is the
+# whole experiment (per-model variants were removed with the paper-scope trim).
 BENCHMARK_CONFIGS = [
-    ("config_bow_benchmark.yaml",       "SUMMA"),
-    ("config_bow_benchmark_fuse.yaml",  "FUSE"),
-    ("config_bow_benchmark_hbv.yaml",   "HBV"),
-    ("config_bow_benchmark_gr4j.yaml",  "GR4J"),
-    ("config_bow_benchmark_hype.yaml",  "HYPE"),
+    ("config_bow_benchmark.yaml", "SUMMA"),
 ]
 
 
@@ -89,7 +90,7 @@ def test_benchmark_config_loads(filename, expected_model):
     """Each 05_benchmarking variant must parse, target the right model, and
     enable the benchmarking analysis. Removing the analysis or swapping the
     model field would silently invalidate the experiment."""
-    cfg = _load(CONFIGS_NESTED / "05_benchmarking" / filename)
+    cfg = _load(CONFIGS / "05_benchmarking" / filename)
     assert str(cfg.model.hydrological_model).upper() == expected_model.upper(), (
         f"{filename} must target {expected_model}; got {cfg.model.hydrological_model}"
     )
@@ -99,3 +100,41 @@ def test_benchmark_config_loads(filename, expected_model):
         f"{filename} must include 'benchmarking' in evaluation.analyses; "
         f"got {analyses}"
     )
+_CALIBRATION_CONFIGS = sorted(
+    (CONFIGS / "04_calibration_ensemble").glob("*/config_bow_*.yaml")
+)
+
+_ALL_PAPER_CONFIGS = sorted(CONFIGS.rglob("*.yaml")) + sorted(CONFIGS.rglob("*.yml"))
+
+
+@pytest.mark.parametrize(
+    "config_path", _ALL_PAPER_CONFIGS, ids=lambda p: str(p.relative_to(CONFIGS))
+)
+def test_paper_configs_have_no_unknown_nested_keys(config_path: Path):
+    """Every paper config must contain only keys the config models recognize.
+
+    Pydantic's ``extra='allow'`` silently absorbs misspelled nested keys (e.g.
+    ``evaluation.snotel.station_id`` for the ``station`` field), which breaks
+    experiments at runtime without any validation error. This walks each config
+    against the model tree and fails on any unknown dotted path.
+    """
+    from symfluence.core.config.key_validation import find_unknown_nested_keys
+
+    with config_path.open() as fh:
+        data = yaml.safe_load(fh)
+    assert isinstance(data, dict)
+    assert find_unknown_nested_keys(data) == []
+
+
+@pytest.mark.parametrize(
+    "config_path", _CALIBRATION_CONFIGS, ids=lambda p: f"{p.parent.name}/{p.name}"
+)
+def test_calibration_configs_validate_strictly(config_path: Path):
+    """Every shipped calibration config must pass strict schema validation.
+
+    The paper's reproducibility claim depends on these configs loading as-is;
+    stale keys from older plugin schemas (e.g. model.hbv.initial_params) made
+    five models' configs unloadable without CI noticing, because the strict
+    shipped-configs guard does not cover examples/.
+    """
+    _load(config_path)

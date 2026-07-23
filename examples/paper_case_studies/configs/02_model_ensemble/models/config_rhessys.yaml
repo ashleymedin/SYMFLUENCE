@@ -1,0 +1,87 @@
+# RHESSys - Multi-Model Ensemble (Section 4.2.1, Fig. 7)
+# Regional Hydro-Ecologic Simulation System
+
+system:
+  # Steps this experiment runs (self-scoping; see `symfluence workflow list-steps`)
+  workflow_steps:
+  - setup_project
+  - create_pour_point
+  - acquire_attributes
+  - define_domain
+  - discretize_domain
+  - process_observed_data
+  - acquire_forcings
+  - model_agnostic_preprocessing
+  - build_model_ready_store
+  - model_specific_preprocessing
+  - run_model
+  - calibrate_model
+  data_dir: default
+  code_dir: default
+  random_seed: 42
+domain:
+  name: Bow_at_Banff_lumped_era5
+  pour_point_coords: 51.1722/-115.5717
+  bounding_box_coords: 51.76/-116.55/50.95/-115.5
+  definition_method: lumped
+  delineation:
+    routing: lumped
+    geofabric_type: TDX
+    stream_threshold: 5000
+  time_start: 2002-01-01 01:00
+  time_end: 2009-12-31 23:00
+  calibration_period: 2004-01-01, 2007-12-31
+  evaluation_period: 2008-01-01, 2009-12-31
+  spinup_period: 2002-01-01, 2003-12-31
+  discretization: GRUs
+  experiment_id: run_1
+data:
+  streamflow_data_provider: WSC
+forcing:
+  dataset: ERA5
+  time_step_size: 3600
+model:
+  hydrological_model: RHESSYS
+  routing_model: none
+  rhessys:
+    params_to_calibrate: sat_to_gw_coeff,gw_loss_coeff,gw_loss_fast_coeff,gw_loss_fast_threshold,m,Ksat_0,Ksat_0_v,porosity_0,porosity_decay,soil_depth,m_z,active_zone_z,snow_melt_Tcoef,snow_water_capacity,max_snow_temp,min_rain_temp,maximum_snow_energy_deficit,epc.gl_smax,epc.max_lai
+    skip_calibration: false
+    # Frozen-run search space (RHESSYS_PARAM_BOUNDS): the Fig. 7 optimum lies outside
+    # the registry default bounds (e.g. sat_to_gw_coeff 0.98, gw_loss_coeff 4.5,
+    # snow_melt_Tcoef 13.6), so the wide bounds are part of the experiment definition.
+    param_bounds:
+      sat_to_gw_coeff: [0.005, 0.99]
+      gw_loss_coeff: [0.05, 25.0]
+      gw_loss_fast_coeff: [0.05, 25.0]
+      gw_loss_fast_threshold: [0.0005, 2.0]
+      m: [0.03, 2.5]
+      Ksat_0: [0.0001, 1.0]
+      Ksat_0_v: [0.001, 15.0]
+      porosity_0: [0.25, 0.7]
+      porosity_decay: [0.05, 0.9]
+      soil_depth: [0.3, 5.0]
+      m_z: [0.1, 4.0]
+      active_zone_z: [0.2, 3.0]
+      snow_melt_Tcoef: [0.3, 15.0]
+      snow_water_capacity: [0.1, 8.0]
+      max_snow_temp: [-8.0, 8.0]
+      min_rain_temp: [-12.0, 4.0]
+      maximum_snow_energy_deficit: [-800.0, -10.0]
+      epc.gl_smax: [0.0003, 0.03]
+      epc.gl_c: [5.0e-06, 0.01]
+      epc.vpd_open: [50.0, 2500.0]
+      epc.vpd_close: [1000.0, 7000.0]
+      epc.max_lai: [0.3, 10.0]
+    # Frozen-run TWI/lna caps used when the worldfile is generated
+    lna_area_cap_m2: 100000.0
+    lna_min: 5.0
+    lna_max: 12.0
+optimization:
+  methods:
+  - iteration
+  algorithm: DDS
+  iterations: 1000
+  metric: KGE
+evaluation:
+  streamflow:
+    station_id: 05BB001

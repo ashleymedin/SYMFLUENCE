@@ -14,6 +14,8 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from symfluence.core.logging_utils import log_once
+from symfluence.core.process_exec import run as run_subprocess
 from symfluence.core.registries import R
 from symfluence.evaluation.metrics import kge, nse
 from symfluence.evaluation.utilities import StreamflowMetrics
@@ -92,7 +94,8 @@ class HYPEWorker(BaseWorker):
         try:
             reg = self._get_regionalization(config, settings_dir)
             if reg is None:
-                self.logger.warning("GeoClass.txt not found for coefficient expansion")
+                log_once(self.logger, logging.WARNING, key='hype-geoclass-missing',
+                         message="GeoClass.txt not found for coefficient expansion")
                 return None
             return reg.expand_to_par_values(params)
         except Exception as e:  # noqa: BLE001
@@ -278,7 +281,8 @@ class HYPEWorker(BaseWorker):
                     if param_name in par_content:
                         self.logger.debug(f"Parameter {param_name} found in par.txt")
                     else:
-                        self.logger.warning(f"Parameter {param_name} NOT found in par.txt")
+                        log_once(self.logger, logging.WARNING, key=f'hype-param-missing-{param_name}',
+                                 message=f"Parameter {param_name} NOT found in par.txt")
 
             return True
 
@@ -308,7 +312,6 @@ class HYPEWorker(BaseWorker):
             True if model ran successfully
         """
         try:
-            import subprocess
 
             settings_dir = Path(settings_dir) if not isinstance(settings_dir, Path) else settings_dir
             output_dir = Path(output_dir) if not isinstance(output_dir, Path) else output_dir
@@ -317,7 +320,7 @@ class HYPEWorker(BaseWorker):
             hype_exe = self._hype_exe
 
             cmd = [str(hype_exe), str(settings_dir).rstrip('/') + '/']
-            result = subprocess.run(
+            result = run_subprocess(
                 cmd, capture_output=True, text=True, timeout=7200
             )
 
@@ -397,7 +400,7 @@ class HYPEWorker(BaseWorker):
                 subbasin_means = sim_df[subbasin_cols].mean()
                 outlet_col = subbasin_means.idxmax()
                 sim_series = sim_df[outlet_col]
-                self.logger.info(
+                self.logger.debug(
                     f"Auto-selected outlet '{outlet_col}' from {len(subbasin_cols)} subbasins "
                     f"(highest mean discharge: {subbasin_means[outlet_col]:.3f} m³/s)"
                 )
@@ -498,9 +501,13 @@ class HYPEWorker(BaseWorker):
             obs_nan_count = pd.isna(obs_aligned).sum()
             sim_nan_count = pd.isna(sim_aligned).sum()
             if obs_nan_count > 0 or sim_nan_count > 0:
-                self.logger.warning(
-                    f"NaN values detected: {obs_nan_count} in observations, {sim_nan_count} in simulation. "
-                    f"Removing NaN pairs for metric calculation."
+                log_once(
+                    self.logger, logging.WARNING,
+                    key='hype-nan-pairs',
+                    message=(
+                        f"NaN values detected: {obs_nan_count} in observations, {sim_nan_count} in simulation. "
+                        f"Removing NaN pairs for metric calculation."
+                    ),
                 )
                 # Remove NaN pairs
                 valid_mask = ~(pd.isna(obs_aligned) | pd.isna(sim_aligned))
@@ -512,7 +519,8 @@ class HYPEWorker(BaseWorker):
 
             # Check for all-zero simulations (model didn't produce discharge)
             if sim_aligned.sum() == 0:
-                self.logger.warning("HYPE simulation produced zero discharge - check model parameters")
+                log_once(self.logger, logging.WARNING, key='hype-zero-discharge',
+                     message="HYPE simulation produced zero discharge - check model parameters")
                 return {'kge': self.penalty_score, 'error': 'Zero discharge from model'}
 
             kge_val = kge(obs_aligned, sim_aligned, transfo=1)

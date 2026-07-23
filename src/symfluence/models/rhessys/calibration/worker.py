@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 
 from symfluence.core.constants import ModelDefaults
+from symfluence.core.logging_utils import log_once
+from symfluence.core.process_exec import run as run_subprocess
 from symfluence.core.registries import R
 from symfluence.evaluation.utilities import StreamflowMetrics
 from symfluence.optimization.workers.base_worker import BaseWorker, WorkerTask
@@ -164,7 +166,8 @@ class RHESSysWorker(BaseWorker):
                     params_by_file[def_file_name] = {}
                 params_by_file[def_file_name][param_name] = value
             else:
-                self.logger.warning(f"Unknown RHESSys parameter '{param_name}' - not in PARAM_FILE_MAP")
+                log_once(self.logger, logging.WARNING, key=f'rhessys-unknown-param-{param_name}',
+                         message=f"Unknown RHESSys parameter '{param_name}' - not in PARAM_FILE_MAP")
 
         total_params_updated = 0
 
@@ -172,7 +175,8 @@ class RHESSysWorker(BaseWorker):
         for def_file_name, file_params in params_by_file.items():
             def_file = defs_dir / def_file_name
             if not def_file.exists():
-                self.logger.warning(f"Definition file not found: {def_file}")
+                log_once(self.logger, logging.WARNING, key=f'rhessys-def-missing-{def_file}',
+                         message=f"Definition file not found: {def_file}")
                 continue
 
             with open(def_file, 'r', encoding='utf-8') as f:
@@ -223,9 +227,13 @@ class RHESSysWorker(BaseWorker):
             # Check for unmatched parameters - use INFO level to ensure visibility
             unmatched = set(file_params.keys()) - params_matched
             if unmatched:
-                self.logger.info(
-                    f"RHESSys params NOT FOUND in {def_file_name}: {unmatched}. "
-                    f"Looking for pattern: 'value<whitespace>param_name'"
+                log_once(
+                    self.logger, logging.INFO,
+                    key=f'rhessys-params-unmatched-{def_file_name}',
+                    message=(
+                        f"RHESSys params NOT FOUND in {def_file_name}: {unmatched}. "
+                        f"Looking for pattern: 'value<whitespace>param_name'"
+                    ),
                 )
 
             total_params_updated += len(params_matched)
@@ -323,7 +331,7 @@ class RHESSysWorker(BaseWorker):
 
             try:
                 with open(stdout_file, 'w', encoding='utf-8') as stdout_f, open(stderr_file, 'w', encoding='utf-8') as stderr_f:
-                    result = subprocess.run(
+                    result = run_subprocess(
                         cmd,
                         cwd=str(rhessys_output_dir),
                         env=env,
@@ -391,19 +399,19 @@ class RHESSysWorker(BaseWorker):
         if hasattr(self, cache_key):
             return getattr(self, cache_key)
         try:
-            result = subprocess.run(
+            result = run_subprocess(
                 [str(exe), '-subsurfacegw', '-w', '/dev/null'],
                 capture_output=True, text=True, timeout=5,
             )
             stderr = result.stderr + result.stdout
             supported = not ('invalid' in stderr.lower() and 'subsurfacegw' in stderr.lower())
             if not supported:
-                self.logger.info(
+                self.logger.debug(
                     "RHESSys binary does not support -subsurfacegw; "
                     "calibrating without subsurface-to-GW recharge pathway"
                 )
             else:
-                self.logger.info("RHESSys binary supports -subsurfacegw (SYMFLUENCE-patched)")
+                self.logger.debug("RHESSys binary supports -subsurfacegw (SYMFLUENCE-patched)")
             setattr(self, cache_key, supported)
             return supported
         except Exception:  # noqa: BLE001 — calibration resilience
@@ -464,7 +472,8 @@ class RHESSysWorker(BaseWorker):
                 self._create_worker_header(original_hdr, worker_hdr, worker_defs_dir, rhessys_input_dir)
                 self.logger.debug(f"Created/updated worker header: {worker_hdr}")
         else:
-            self.logger.warning(f"Worker defs directory does not exist: {worker_defs_dir}")
+            log_once(self.logger, logging.WARNING, key=f'rhessys-defs-dir-missing-{worker_defs_dir}',
+                     message=f"Worker defs directory does not exist: {worker_defs_dir}")
 
         # Parse dates
         start_str = config.get('EXPERIMENT_TIME_START', '2004-01-01 01:00')
@@ -567,9 +576,13 @@ class RHESSysWorker(BaseWorker):
                 cmd.extend(["-firespread", str(resolution), str(patch_grid), str(dem_grid)])
                 self.logger.debug(f"WMFire fire spread enabled: {resolution}m resolution")
             else:
-                self.logger.warning(
-                    f"WMFire is enabled but fire grid files not found at {fire_dir}. "
-                    "Fire spread will be disabled for calibration."
+                log_once(
+                    self.logger, logging.WARNING,
+                    key=f'rhessys-wmfire-grids-missing-{fire_dir}',
+                    message=(
+                        f"WMFire is enabled but fire grid files not found at {fire_dir}. "
+                        "Fire spread will be disabled for calibration."
+                    ),
                 )
 
         # Subgrid variability for lumped mode (-stdev enables variance-based return flow)
@@ -643,9 +656,13 @@ class RHESSysWorker(BaseWorker):
                 new_lines.append(line)
 
         if replacements == 0:
-            self.logger.warning(
-                f"No .def path replacements made in header file. "
-                f"Header content: '{(''.join(lines))[:500]}...'"
+            log_once(
+                self.logger, logging.WARNING,
+                key='rhessys-header-no-def-paths',
+                message=(
+                    f"No .def path replacements made in header file. "
+                    f"Header content: '{(''.join(lines))[:500]}...'"
+                ),
             )
         else:
             self.logger.debug(
@@ -687,7 +704,8 @@ class RHESSysWorker(BaseWorker):
                     files_removed += 1
                     self.logger.debug(f"Removed stale output: {direct_file}")
                 except (OSError, IOError) as e:
-                    self.logger.warning(f"Could not remove stale file {direct_file}: {e}")
+                    log_once(self.logger, logging.WARNING, key=f'rhessys-stale-file-{direct_file}',
+                                  message=f"Could not remove stale file {direct_file}: {e}")
 
         # Clean the RHESSys-specific output file with wildcard
         for file_path in output_dir.glob('rhessys_*.daily'):
@@ -695,14 +713,16 @@ class RHESSysWorker(BaseWorker):
                 file_path.unlink()
                 files_removed += 1
             except (OSError, IOError) as e:
-                self.logger.warning(f"Could not remove stale file {file_path}: {e}")
+                log_once(self.logger, logging.WARNING, key=f'rhessys-stale-file-{file_path}',
+                          message=f"Could not remove stale file {file_path}: {e}")
 
         for file_path in output_dir.glob('rhessys_*.hourly'):
             try:
                 file_path.unlink()
                 files_removed += 1
             except (OSError, IOError) as e:
-                self.logger.warning(f"Could not remove stale file {file_path}: {e}")
+                log_once(self.logger, logging.WARNING, key=f'rhessys-stale-file-{file_path}',
+                          message=f"Could not remove stale file {file_path}: {e}")
 
         if files_removed > 0:
             self.logger.debug(f"Cleaned up {files_removed} stale RHESSys output files from {output_dir}")
@@ -794,14 +814,18 @@ class RHESSysWorker(BaseWorker):
             # Check for NaN values in simulation
             nan_count = pd.isna(streamflow_m3s).sum()
             if nan_count > 0:
-                self.logger.warning(
-                    f"RHESSys output contains {nan_count} NaN values out of {len(streamflow_m3s)} timesteps"
+                log_once(
+                    self.logger, logging.WARNING,
+                    key='rhessys-output-nan',
+                    message=f"RHESSys output contains {nan_count} NaN values out of {len(streamflow_m3s)} timesteps",
                 )
 
             # Check for zero discharge (model didn't produce runoff)
             if streamflow_m3s.sum() == 0:
-                self.logger.warning(
-                    "RHESSys simulation produced zero streamflow - check model parameters"
+                log_once(
+                    self.logger, logging.WARNING,
+                    key='rhessys-zero-streamflow',
+                    message="RHESSys simulation produced zero streamflow - check model parameters",
                 )
                 return {'kge': self.penalty_score, 'error': 'Zero streamflow from model'}
 
@@ -841,7 +865,8 @@ class RHESSysWorker(BaseWorker):
                         start_str, end_str = calib_period_str.split(',')
                         calib_period_tuple = (start_str.strip(), end_str.strip())
                     except (ValueError, IndexError) as e:
-                        self.logger.warning(f"Could not parse calibration period '{calib_period_str}': {e}")
+                        log_once(self.logger, logging.WARNING, key='rhessys-calib-period-parse',
+                                 message=f"Could not parse calibration period '{calib_period_str}': {e}")
 
                 # Auto-exclude spinup: if no calibration period is set, skip the
                 # first year of simulation to avoid initial condition transients
@@ -852,9 +877,13 @@ class RHESSysWorker(BaseWorker):
                         spinup_end.strftime('%Y-%m-%d'),
                         sim_dates.max().strftime('%Y-%m-%d')
                     )
-                    self.logger.info(
-                        f"No CALIBRATION_PERIOD set; auto-excluding {spinup_days}-day spinup. "
-                        f"Evaluating from {calib_period_tuple[0]} to {calib_period_tuple[1]}"
+                    log_once(
+                        self.logger, logging.INFO,
+                        key='rhessys-auto-spinup',
+                        message=(
+                            f"No CALIBRATION_PERIOD set; auto-excluding {spinup_days}-day spinup. "
+                            f"Evaluating from {calib_period_tuple[0]} to {calib_period_tuple[1]}"
+                        ),
                     )
 
                 # Let StreamflowMetrics handle alignment and period filtering

@@ -227,10 +227,31 @@ class PointScaleForcingExtractor(ConfigMixin):
 
             # Sample DEM at the forcing grid centre
             with rasterio.open(dem_path) as src:
+                # A coarse forcing grid (ERA5, CONUS404, RDRS) centred outside a
+                # small domain DEM must NOT be sampled: rasterio returns the fill
+                # value for out-of-bounds points, and when the DEM has no nodata
+                # set that fill is 0.0, which would masquerade as a sea-level
+                # forcing elevation and drive a spurious ~lapse_rate*S_1 cold
+                # correction. Reject out-of-bounds centres so the caller falls
+                # back to the catchment elevation (zero lapse correction).
+                bounds = src.bounds
+                if not (
+                    bounds.left <= lon_center <= bounds.right
+                    and bounds.bottom <= lat_center <= bounds.top
+                ):
+                    self.logger.warning(
+                        f"Forcing grid centre ({lat_center:.4f}, {lon_center:.4f}) "
+                        f"is outside the domain DEM extent; falling back to the "
+                        f"catchment elevation (no lapse-rate correction)."
+                    )
+                    return None
+
                 # rasterio.sample expects (x, y) = (lon, lat) for geographic CRS
                 samples = list(src.sample([(lon_center, lat_center)]))
-                if samples and samples[0][0] != src.nodata and samples[0][0] != -9999:
-                    return float(samples[0][0])
+                if samples:
+                    value = float(samples[0][0])
+                    if np.isfinite(value) and value != src.nodata and value != -9999:
+                        return value
 
                 self.logger.warning(
                     f"DEM returned nodata at forcing grid centre "
@@ -242,6 +263,49 @@ class PointScaleForcingExtractor(ConfigMixin):
             self.logger.warning(f"Could not extract forcing elevation from DEM: {e}", exc_info=True)
             return None
 
+    def _standardize_if_raw(self, ds: xr.Dataset, file: Path) -> xr.Dataset:
+        """Apply dataset-handler standardisation when *ds* still carries raw names.
+
+        Already-standardised forcing (CF names such as ``air_temperature``)
+        exposes no source names from the handler's rename map, so this is a
+        no-op for the normal merged monthly files. When raw dataset variables
+        are present (e.g. ``CaSR_v3.2_P_TT_1.5m``) the per-handler
+        ``process_dataset`` step was bypassed upstream; run it here so the
+        extracted point forcing gets CF names and the unit conversions
+        (deg_C->K, mb->Pa, m/hr->kg m-2 s-1, kts->m/s) rather than passing raw
+        names straight through to the model preprocessor.
+
+        Returns the standardised dataset, or *ds* unchanged when no raw names
+        are found or no dataset handler is available.
+        """
+        handler = getattr(self, 'dataset_handler', None)
+        if handler is None or not hasattr(handler, 'get_variable_mapping'):
+            return ds
+
+        try:
+            full_map = handler.get_variable_mapping() or {}
+        except Exception as e:  # noqa: BLE001 — defensive guard, don't kill extraction
+            self.logger.debug(f"get_variable_mapping failed for {file.name}: {e}")
+            return ds
+
+        raw_present = [k for k in full_map if k in ds.variables]
+        if not raw_present:
+            return ds
+
+        self.logger.warning(
+            f"{file.name} carries raw dataset variables ({sorted(raw_present)}); "
+            "the per-handler standardisation step was skipped upstream. "
+            "Applying dataset-handler standardisation before point extraction "
+            "so the remapped forcing carries CF names + correct units."
+        )
+        try:
+            return handler.process_dataset(ds)
+        except Exception as e:  # noqa: BLE001 — defensive guard, don't kill extraction
+            self.logger.error(
+                f"Failed to standardise raw forcing variables in {file.name}: {e}"
+            )
+            return ds
+
     def _process_single_file(
         self,
         file: Path,
@@ -252,6 +316,16 @@ class PointScaleForcingExtractor(ConfigMixin):
         self.logger.info(f"Extracting point forcing: {file.name}")
 
         with xr.open_dataset(file, engine="h5netcdf") as ds:
+            # Standardise any file that still carries raw dataset variable
+            # names before extraction. The point-scale path trusts merged_path
+            # to hold already-standardised files, but a raw acquisition
+            # artifact (e.g. the consolidated ``domain_*_RDRS_*.nc`` that is
+            # dataset-tagged and so globbed alongside the standardised monthly
+            # files) can reach here unprocessed. This mirrors the gridded
+            # weight-applier guard so the extracted point forcing always
+            # carries CF names + correct units.
+            ds = self._standardize_if_raw(ds, file)
+
             # Pick the first cell if it's a grid
             spatial_dims = {d: 0 for d in ds.dims if d not in ['time', 'hru']}
 

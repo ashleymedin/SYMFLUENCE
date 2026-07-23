@@ -140,6 +140,7 @@ class ParameterBoundsRegistry:
         'noah_frzk': ParameterInfo(0.0, 10.0, '-', 'NOAH frozen ground parameter', 'soil'),
         'noah_salp': ParameterInfo(-2.0, 2.0, '-', 'NOAH shape parameter', 'soil'),
         'refkdt': ParameterInfo(0.5, 5.0, '-', 'Reference surface runoff parameter (expanded for infiltration control)', 'soil'),
+        'route_k': ParameterInfo(1.0, 40.0, 'days', 'Nash-cascade routing time constant for post-model runoff routing (column LSMs emit unrouted runoff)', 'routing'),
     }
 
     # ========================================================================
@@ -334,6 +335,7 @@ class ParameterBoundsRegistry:
         'KSAT': ParameterInfo(1.0, 500.0, 'mm/hr', 'Saturated hydraulic conductivity', 'soil', 'log'),
         'DRN': ParameterInfo(0.5, 10.0, '-', 'Drainage parameter', 'soil'),
         'SDEP': ParameterInfo(0.5, 1.5, 'm', 'Soil depth', 'soil'),
+        'DD': ParameterInfo(1.0, 100.0, '-', 'CLASS drainage density (line 12)', 'soil'),
         'XSLP': ParameterInfo(0.01, 0.3, '-', 'Slope for overland flow', 'surface'),
         'XDRAINH': ParameterInfo(0.01, 1.0, '-', 'Horizontal drainage coefficient', 'soil'),
         'MANN_CLASS': ParameterInfo(0.01, 0.5, '-', 'Manning coefficient for overland flow', 'surface'),
@@ -944,7 +946,7 @@ def get_mesh_bounds() -> Dict[str, Dict[str, float]]:
     """
     mesh_params = [
         # CLASS.ini parameters (runoff generation)
-        'KSAT', 'DRN', 'SDEP', 'XSLP', 'XDRAINH', 'MANN_CLASS',
+        'KSAT', 'DRN', 'SDEP', 'DD', 'XSLP', 'XDRAINH', 'MANN_CLASS',
         # CLASS.ini vegetation parameters (ET control)
         'LAMX', 'LAMN', 'ROOT', 'CMAS', 'RSMIN',
         'QA50', 'VPDA', 'PSGA',
@@ -1158,7 +1160,7 @@ def get_gsflow_bounds() -> Dict[str, Dict[str, float]]:
 def get_noahmp_bounds() -> Dict[str, Dict[str, Any]]:
     noahmp_params = [
         'slope', 'dksat', 'psisat', 'bexp', 'smcmax', 'smcwlt', 'smcref',
-        'refkdt', 'noah_czil', 'rain_snow_thresh', 'ZREF',
+        'refkdt', 'noah_czil', 'rain_snow_thresh', 'ZREF', 'route_k',
     ]
     return get_registry().get_bounds_for_params(noahmp_params)
 

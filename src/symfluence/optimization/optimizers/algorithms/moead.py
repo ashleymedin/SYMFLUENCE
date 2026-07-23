@@ -79,14 +79,33 @@ class MOEADAlgorithm(OptimizationAlgorithm):
         Returns:
             Optimization results dictionary
         """
+        # Dedicated per-run RNG (OptimizationAlgorithm._new_rng); set in the
+        # dispatcher so both single- and multi-objective paths share it.
+        self._rng = self._new_rng()
+
         # Check if multi-objective
+        objective_names = kwargs.get('objective_names', ['KGE', 'NSE'])
         is_multi_objective = evaluate_population_objectives is not None
 
+        # The all-penalty fallback is decided inside _optimize_multi_objective,
+        # on the initial population it already evaluates. Probing here with a
+        # throwaway random candidate — as this used to — cost an extra draw
+        # from the global RNG on every run, which shifts the entire seeded
+        # search and makes results incomparable with every MOEA/D run made
+        # before the probe existed. It also let a single random candidate
+        # decide the algorithm, so one crashed evaluation could silently
+        # demote a multi-objective calibration.
+        def _fallback_to_single_objective() -> Dict[str, Any]:
+            return self._optimize_single_objective(
+                n_params, evaluate_solution, evaluate_population, denormalize_params,
+                record_iteration, update_best, log_progress, log_initial_population
+            )
+
         if is_multi_objective:
-            objective_names = kwargs.get('objective_names', ['KGE', 'NSE'])
             return self._optimize_multi_objective(
                 n_params, evaluate_population_objectives, objective_names, denormalize_params,
-                record_iteration, update_best, log_progress, log_initial_population
+                record_iteration, update_best, log_progress, log_initial_population,
+                fallback_to_single_objective=_fallback_to_single_objective
             )
         else:
             # Single objective - use weighted sum decomposition with single weight
@@ -139,7 +158,7 @@ class MOEADAlgorithm(OptimizationAlgorithm):
             self.logger.warning(f"MOEA/D validation: {msg}")
 
         # Initialize population
-        population = np.random.uniform(0, 1, (pop_size, n_params))
+        population = self._rng.uniform(0, 1, (pop_size, n_params))
         fitness = evaluate_population(population, 0)
 
         # For single objective, all weight vectors point to same direction
@@ -170,20 +189,20 @@ class MOEADAlgorithm(OptimizationAlgorithm):
 
                 # DE-style reproduction
                 if len(neighbors) >= 2:
-                    r1, r2 = np.random.choice(neighbors, 2, replace=False)
+                    r1, r2 = self._rng.choice(neighbors, 2, replace=False)
                 else:
-                    r1, r2 = np.random.choice(pop_size, 2, replace=False)
+                    r1, r2 = self._rng.choice(pop_size, 2, replace=False)
 
                 # Generate offspring via DE
-                if np.random.random() < cr:
+                if self._rng.random() < cr:
                     offspring = population[i] + f * (population[r1] - population[r2])
                 else:
                     offspring = population[i].copy()
 
                 # Polynomial mutation
                 for j in range(n_params):
-                    if np.random.random() < mutation_rate:
-                        offspring[j] += np.random.normal(0, 0.1)
+                    if self._rng.random() < mutation_rate:
+                        offspring[j] += self._rng.normal(0, 0.1)
 
                 offspring = np.clip(offspring, 0, 1)
 
@@ -212,7 +231,7 @@ class MOEADAlgorithm(OptimizationAlgorithm):
             update_best(best_fit, params_dict, iteration)
 
             # Log progress
-            log_progress(self.name, iteration, best_fit, n_improved, pop_size)
+            log_progress(self.name, iteration, best_fit, n_improved, pop_size, unit='gens')
 
         return {
             'best_solution': best_pos,
@@ -231,7 +250,8 @@ class MOEADAlgorithm(OptimizationAlgorithm):
         record_iteration: Callable,
         update_best: Callable,
         log_progress: Callable,
-        log_initial_population: Optional[Callable]
+        log_initial_population: Optional[Callable],
+        fallback_to_single_objective: Optional[Callable[[], Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """Multi-objective optimization using MOEA/D decomposition."""
         self.logger.info(f"Starting MOEA/D (multi-objective mode) with {n_params} parameters")
@@ -276,7 +296,7 @@ class MOEADAlgorithm(OptimizationAlgorithm):
             self.logger.warning(f"MOEA/D validation: {msg}")
 
         # Determine number of objectives from first evaluation
-        test_solution = np.random.uniform(0, 1, n_params)
+        test_solution = self._rng.uniform(0, 1, n_params)
         test_objectives = evaluate_objectives(test_solution.reshape(1, -1), objective_names, 0)[0]
         n_objectives = len(test_objectives)
 
@@ -290,9 +310,34 @@ class MOEADAlgorithm(OptimizationAlgorithm):
         neighborhoods = self._create_neighborhoods_by_weights(weights, n_neighbors)
 
         # Initialize population
-        population = np.random.uniform(0, 1, (actual_pop_size, n_params))
+        population = self._rng.uniform(0, 1, (actual_pop_size, n_params))
         # Evaluate entire population at once to get proper individual_id assignment
-        objectives = evaluate_objectives(population, objective_names, 0)
+        objectives = np.asarray(evaluate_objectives(population, objective_names, 0))
+
+        # Matches nsga2.py's threshold for the same all-penalty test.
+        PENALTY_THRESHOLD = -900.0
+
+        # Some workers advertise a multi-objective callback but return penalty
+        # objectives for every candidate (multi-objective evaluation is not
+        # wired up for that model). Judge that on the population just
+        # evaluated — like NSGA-II does — rather than on a separate probe:
+        # the evidence is stronger (pop_size candidates, not one) and it costs
+        # neither an extra model run nor an extra draw from the seeded RNG.
+        if objectives.size == 0 or np.all(objectives < PENALTY_THRESHOLD):
+            if fallback_to_single_objective is not None:
+                self.logger.warning(
+                    "MOEA/D: multi-objective evaluation returned all-penalty "
+                    "objectives for the entire initial population; falling back "
+                    "to single-objective evaluation."
+                )
+                return fallback_to_single_objective()
+            raise ValueError(
+                f"All {actual_pop_size} individuals in the MOEA/D initial "
+                f"population returned penalty objectives (all values < "
+                f"{PENALTY_THRESHOLD}), and no single-objective fallback was "
+                f"available. This indicates a broken model or forcing setup "
+                f"for this run rather than a multi-objective limitation."
+            )
 
         # Reference point (ideal point) - best value for each objective
         z_ideal = np.max(objectives, axis=0)
@@ -324,20 +369,20 @@ class MOEADAlgorithm(OptimizationAlgorithm):
 
                 # Select parents from neighborhood
                 if len(neighbors) >= 2:
-                    r1, r2 = np.random.choice(neighbors, 2, replace=False)
+                    r1, r2 = self._rng.choice(neighbors, 2, replace=False)
                 else:
-                    r1, r2 = np.random.choice(actual_pop_size, 2, replace=False)
+                    r1, r2 = self._rng.choice(actual_pop_size, 2, replace=False)
 
                 # DE reproduction
-                if np.random.random() < cr:
+                if self._rng.random() < cr:
                     offspring = population[i] + f * (population[r1] - population[r2])
                 else:
                     offspring = population[i].copy()
 
                 # Mutation
                 for j in range(n_params):
-                    if np.random.random() < mutation_rate:
-                        offspring[j] += np.random.normal(0, 0.1)
+                    if self._rng.random() < mutation_rate:
+                        offspring[j] += self._rng.normal(0, 0.1)
 
                 offspring = np.clip(offspring, 0, 1)
 
@@ -349,7 +394,7 @@ class MOEADAlgorithm(OptimizationAlgorithm):
 
                 # Update neighbors using decomposition (limit to nr replacements)
                 shuffled_neighbors = list(neighbors)
-                np.random.shuffle(shuffled_neighbors)
+                self._rng.shuffle(shuffled_neighbors)
                 n_replaced = 0
                 for j in shuffled_neighbors:
                     if n_replaced >= nr:
@@ -379,7 +424,7 @@ class MOEADAlgorithm(OptimizationAlgorithm):
             update_best(best_fit, params_dict, iteration)
 
             # Log progress
-            log_progress(self.name, iteration, best_fit, n_improved, actual_pop_size)
+            log_progress(self.name, iteration, best_fit, n_improved, actual_pop_size, unit='gens')
 
         # Extract Pareto front from archive
         pareto_solutions = np.array([x for x, _ in archive])
@@ -510,4 +555,4 @@ class MOEADAlgorithm(OptimizationAlgorithm):
             # Trim archive if too large
             if len(archive) > max_size:
                 # Remove most crowded solution
-                archive.pop(np.random.randint(len(archive)))
+                archive.pop(self._rng.randint(len(archive)))

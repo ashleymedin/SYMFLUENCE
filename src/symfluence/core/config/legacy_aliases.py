@@ -34,6 +34,12 @@ NORMALIZATION_ALIASES: Dict[str, str] = {
     # Legacy CONFLUENCE naming (backwards compatibility)
     "CONFLUENCE_DATA_DIR": "SYMFLUENCE_DATA_DIR",
     "CONFLUENCE_CODE_DIR": "SYMFLUENCE_CODE_DIR",
+    # The canonical flat keys for these two paths already carry the SYMFLUENCE_
+    # prefix, so _load_env_overrides (which strips one leading SYMFLUENCE_) turns
+    # a natural `SYMFLUENCE_DATA_DIR` env var into a bare DATA_DIR. Alias it back
+    # so the natural env spelling resolves; the doubled form still works too.
+    "DATA_DIR": "SYMFLUENCE_DATA_DIR",
+    "CODE_DIR": "SYMFLUENCE_CODE_DIR",
     # Legacy domain discretization naming
     "DOMAIN_DISCRETIZATION": "SUB_GRID_DISCRETIZATION",
     # Legacy optimization-metric spelling -> canonical OPTIMIZATION_METRIC
@@ -162,7 +168,7 @@ LEGACY_FLAT_TO_NESTED_ALIASES: Dict[str, Tuple[str, ...]] = {
 # (Resolves the bulk of RTI review open-question Q3 / Tier 3 item 21 noise; see
 # docs/adr/0006-config-unknown-keys-warn-by-default.md. Conceptual-model and
 # unbacked feature families are handled separately — see that ADR's follow-on.)
-# The flat-key audit (docs/config_flat_key_audit.md) emptied this set down
+# The flat-key audit (docs/adr/config_flat_key_audit.md) emptied this set down
 # to deprecated keys: every formerly-recognized key was either promoted to a
 # typed Pydantic field (state/DA, IGNACIO/GNN/LSTM, multi-gauge,
 # optimizer/evaluator odds, HYPE/NGEN/FUSE/GR/mizuRoute/paths, per-model

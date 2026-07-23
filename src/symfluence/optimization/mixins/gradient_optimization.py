@@ -98,8 +98,14 @@ class GradientOptimizationMixin(ConfigMixin):
             f_plus = evaluate_func(x_plus)
             f_minus = evaluate_func(x_minus)
 
-            # Central difference (for maximization, gradient points uphill)
-            gradient[i] = (f_plus - f_minus) / (2 * epsilon)
+            # Divide by the step actually taken, not the requested one. The
+            # perturbations above are clamped to the [0, 1] box, so for a
+            # parameter sitting on a bound the real span is epsilon rather
+            # than 2*epsilon — dividing by 2*epsilon there halves the
+            # gradient and points the search along a systematically wrong
+            # direction exactly where it is most likely to be stuck.
+            step = x_plus[i] - x_minus[i]
+            gradient[i] = (f_plus - f_minus) / step if step > 0 else 0.0
 
         return f_center, gradient
 
@@ -133,9 +139,69 @@ class GradientOptimizationMixin(ConfigMixin):
             x_plus[i] = min(1.0, x[i] + epsilon)
 
             f_plus = evaluate_func(x_plus)
-            gradient[i] = (f_plus - f_x) / epsilon
+            # Step backwards when the forward step is clamped away entirely.
+            # A parameter resting on the upper bound previously produced
+            # (f_x - f_x) / epsilon == 0 — an exactly zero gradient, telling
+            # the optimizer the parameter has no effect and freezing it on
+            # the bound for the rest of the run.
+            step = x_plus[i] - x[i]
+            if step <= 0:
+                x_minus = x.copy()
+                x_minus[i] = max(0.0, x[i] - epsilon)
+                step = x[i] - x_minus[i]
+                if step <= 0:
+                    gradient[i] = 0.0  # degenerate box: lower == upper
+                    continue
+                gradient[i] = (f_x - evaluate_func(x_minus)) / step
+            else:
+                gradient[i] = (f_plus - f_x) / step
 
         return gradient
+
+    #: Fraction of failed line searches above which the search is reported as
+    #: degenerate. Occasional failures are normal; a majority means the
+    #: gradient is not a usable descent direction.
+    _LINE_SEARCH_FAILURE_ALERT = 0.5
+    #: Minimum steps before judging, so short runs do not trip the check.
+    _LINE_SEARCH_MIN_STEPS = 20
+
+    def _warn_if_line_search_degenerate(
+        self, failures: int, steps: int, epsilon: float
+    ) -> None:
+        """Report once when line searches fail so often the method degrades.
+
+        Every failure already logs, but a wall of identical warnings reads as
+        noise, and the run still reports success — a paper calibration was
+        observed taking the steepest-descent fallback on 110 of 125 steps,
+        i.e. not running L-BFGS at all, with nothing saying so. The usual
+        cause is a gradient dominated by evaluation noise: JAX defaults to
+        float32 (~1e-7 relative), and a central difference over ``epsilon``
+        divides that noise by ``2*epsilon``, so an epsilon below
+        ``sqrt(float32 eps) ~= 3.5e-4`` amplifies it rather than resolving a
+        slope.
+        """
+        if steps < self._LINE_SEARCH_MIN_STEPS:
+            return
+        if failures / steps < self._LINE_SEARCH_FAILURE_ALERT:
+            return
+        if getattr(self, '_line_search_degenerate_reported', False):
+            return
+        self._line_search_degenerate_reported = True
+        float32_floor = float(np.sqrt(np.finfo(np.float32).eps))
+        hint = ""
+        if epsilon < float32_floor:
+            hint = (
+                f" gradient_epsilon={epsilon:g} is below sqrt(float32 eps)="
+                f"{float32_floor:.1e}, so if the model evaluates in float32 "
+                f"(the JAX default) the gradient is noise, not slope — raise "
+                f"gradient_epsilon or evaluate in float64."
+            )
+        self.logger.error(
+            "Line search has failed on %d of %d steps (%.0f%%); the optimizer "
+            "is running as steepest descent, not L-BFGS, and its result should "
+            "not be read as a converged quasi-Newton solution.%s",
+            failures, steps, 100 * failures / steps, hint,
+        )
 
     def clip_gradient(self, gradient: np.ndarray) -> np.ndarray:
         """
@@ -278,47 +344,59 @@ class GradientOptimizationMixin(ConfigMixin):
         else:
             x = initial_x.copy()
 
-        # L-BFGS history
-        s_history: List[np.ndarray] = []  # Position differences
-        y_history: List[np.ndarray] = []  # Gradient differences
+        # L-BFGS is formulated for minimization, but evaluate_func returns fitness
+        # to maximize. Minimize g = -fitness internally; grad_g = -grad_fitness.
+        def eval_min(xi: np.ndarray) -> Tuple[float, np.ndarray]:
+            fit, ascent_grad = self.compute_fd_gradients(xi, evaluate_func)
+            return -fit, -ascent_grad
 
-        # Track best
+        # L-BFGS history (minimization space)
+        s_history: List[np.ndarray] = []  # Position differences s_k = x_{k+1} - x_k
+        y_history: List[np.ndarray] = []  # Min-space gradient differences y_k
+
+        # Track best (reported in fitness / maximization terms)
         best_x = x.copy()
         best_fitness = float('-inf')
         history = []
 
-        # Initial gradient
-        fitness, gradient = self.compute_fd_gradients(x, evaluate_func)
+        # Initial minimization-space objective and gradient
+        g, gradient = eval_min(x)
         gradient = self.clip_gradient(gradient)
+        line_search_failures = 0
 
         for step in range(steps):
+            fitness = -g
+
             # Update best
             if fitness > best_fitness:
                 best_fitness = fitness
                 best_x = x.copy()
 
-            # Compute search direction using L-BFGS two-loop recursion
-            direction = self._lbfgs_direction(gradient, s_history, y_history)
+            # Two-loop recursion returns r ≈ H·grad_g; descent direction is -r.
+            direction = -self._lbfgs_direction(gradient, s_history, y_history)
 
-            # Line search
-            step_size, new_fitness, new_gradient = self._line_search(
-                x, direction, fitness, gradient, evaluate_func, lr, c1, c2
+            # Line search in minimization space
+            step_size, g_new, new_gradient = self._line_search(
+                x, direction, g, gradient, eval_min, lr, c1, c2
             )
 
             if step_size is None:
-                # Line search failed, use gradient descent
-                self.logger.warning(f"L-BFGS line search failed at step {step}, using gradient descent")
+                # Line search failed, use steepest descent on g
+                self.logger.warning(f"L-BFGS line search failed at step {step}, using steepest descent")
+                line_search_failures += 1
+                self._warn_if_line_search_degenerate(
+                    line_search_failures, step + 1, epsilon=self.gradient_epsilon
+                )
                 step_size = lr / (step + 1)
-                x_new = x + step_size * gradient  # gradient ascent
-                x_new = np.clip(x_new, 0, 1)
-                new_fitness, new_gradient = self.compute_fd_gradients(x_new, evaluate_func)
+                x_new = np.clip(x - step_size * gradient, 0, 1)  # descent along -grad_g
+                g_new, new_gradient = eval_min(x_new)
             else:
-                x_new = x + step_size * direction
-                x_new = np.clip(x_new, 0, 1)
+                x_new = np.clip(x + step_size * direction, 0, 1)
 
             new_gradient = self.clip_gradient(new_gradient)
 
-            # Update history
+            # Update history (curvature condition y·s > 0 holds where g is convex,
+            # i.e. near a maximum of fitness)
             s = x_new - x
             y = new_gradient - gradient
 
@@ -341,7 +419,7 @@ class GradientOptimizationMixin(ConfigMixin):
 
             # Update state
             x = x_new
-            fitness = new_fitness
+            g = g_new
             gradient = new_gradient
 
             if step % 10 == 0:
@@ -355,6 +433,11 @@ class GradientOptimizationMixin(ConfigMixin):
                 self.logger.info(f"L-BFGS converged at step {step}")
                 break
 
+        # Final point may be the best one found
+        if -g > best_fitness:
+            best_fitness = -g
+            best_x = x.copy()
+
         return best_x, best_fitness, history
 
     def _lbfgs_direction(
@@ -364,15 +447,18 @@ class GradientOptimizationMixin(ConfigMixin):
         y_history: List[np.ndarray]
     ) -> np.ndarray:
         """
-        Compute L-BFGS search direction using two-loop recursion.
+        Compute r = H·gradient via the L-BFGS two-loop recursion.
+
+        Sign-agnostic: the caller forms the descent direction as -r. With an
+        empty history it returns the (scaled) gradient, i.e. steepest descent.
 
         Args:
-            gradient: Current gradient
+            gradient: Current minimization-space gradient
             s_history: History of position differences
-            y_history: History of gradient differences
+            y_history: History of minimization-space gradient differences
 
         Returns:
-            Search direction (for gradient ascent)
+            r = H·gradient (the caller negates this for the descent direction)
         """
         q = gradient.copy()
         m = len(s_history)
@@ -401,48 +487,48 @@ class GradientOptimizationMixin(ConfigMixin):
             beta_i = rho_i * np.dot(y_history[i], r)
             r = r + (alphas[i] - beta_i) * s_history[i]
 
-        return r  # For maximization, this is the ascent direction
+        return r  # H·gradient; caller negates for the descent direction
 
     def _line_search(
         self,
         x: np.ndarray,
         direction: np.ndarray,
-        f_x: float,
+        g_x: float,
         grad_x: np.ndarray,
-        evaluate_func: Callable,
+        eval_min: Callable,
         initial_step: float,
         c1: float,
         c2: float,
         max_iter: int = 20
     ) -> Tuple[Optional[float], float, np.ndarray]:
         """
-        Backtracking line search with Wolfe conditions.
+        Backtracking line search (weak Wolfe) on the minimization objective g.
 
         Returns:
-            Tuple of (step_size, new_fitness, new_gradient)
+            Tuple of (step_size, g_new, grad_new)
             step_size is None if line search failed
         """
         step_size = initial_step
         directional_deriv = np.dot(grad_x, direction)
 
-        if directional_deriv <= 0:
-            # Not an ascent direction
-            return None, f_x, grad_x
+        if directional_deriv >= 0:
+            # Not a descent direction for g
+            return None, g_x, grad_x
 
         for _ in range(max_iter):
             x_new = np.clip(x + step_size * direction, 0, 1)
-            f_new, grad_new = self.compute_fd_gradients(x_new, evaluate_func)
+            g_new, grad_new = eval_min(x_new)
 
-            # Armijo condition (sufficient increase for maximization)
-            if f_new >= f_x + c1 * step_size * directional_deriv:
-                # Curvature condition
+            # Armijo condition (sufficient decrease for minimization)
+            if g_new <= g_x + c1 * step_size * directional_deriv:
+                # Weak-Wolfe curvature condition
                 new_directional_deriv = np.dot(grad_new, direction)
                 if new_directional_deriv >= c2 * directional_deriv:
-                    return step_size, f_new, grad_new
+                    return step_size, g_new, grad_new
 
             step_size *= 0.5
 
             if step_size < 1e-10:
                 break
 
-        return None, f_x, grad_x
+        return None, g_x, grad_x

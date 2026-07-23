@@ -1,0 +1,91 @@
+# MESH - Multi-Model Ensemble (Section 4.2.1, Fig. 7)
+# Modelisation Environmentale communautaire - Surface Hydrology
+
+system:
+  # Steps this experiment runs (self-scoping; see `symfluence workflow list-steps`)
+  workflow_steps:
+  - setup_project
+  - create_pour_point
+  - acquire_attributes
+  - define_domain
+  - discretize_domain
+  - process_observed_data
+  - acquire_forcings
+  - model_agnostic_preprocessing
+  - build_model_ready_store
+  - model_specific_preprocessing
+  - run_model
+  - calibrate_model
+  data_dir: default
+  code_dir: default
+  random_seed: 42
+domain:
+  name: Bow_at_Banff_lumped_era5
+  pour_point_coords: 51.1722/-115.5717
+  bounding_box_coords: 51.76/-116.55/50.95/-115.5
+  definition_method: lumped
+  delineation:
+    routing: lumped
+    geofabric_type: TDX
+    stream_threshold: 5000
+  time_start: 2002-01-01 01:00
+  time_end: 2009-12-31 23:00
+  calibration_period: 2004-01-01, 2007-12-31
+  evaluation_period: 2008-01-01, 2009-12-31
+  spinup_period: 2002-01-01, 2003-12-31
+  discretization: GRUs
+  experiment_id: run_1
+data:
+  streamflow_data_provider: WSC
+forcing:
+  dataset: ERA5
+  time_step_size: 3600
+model:
+  hydrological_model: MESH
+  routing_model: none
+  mesh:
+    # Override the regime-determining CLASS/hydrology fields that meshflow
+    # hard-derives from the input data. Without these, meshflow locks in a
+    # flashy surface-runoff regime (soils SAND 23/25/33, DD 2.96, MID 10,
+    # interflow ON) that calibration cannot escape (best KGE ~0.05). These
+    # restore the framework-default regime the June Fig 7b run used (KGE ~0.6).
+    soil_sand: [50.0, 50.0, 50.0]
+    soil_clay: [20.0, 20.0, 20.0]
+    soil_orgm: [0.0, 0.0, 0.0]
+    drainage_density: 50.0     # DD (CLASS line 12)
+    mid: 100                   # MID (CLASS line 13)
+    init_tbar: [4.0, 2.0, 1.0]
+    init_thlq: [0.25, 0.15, 0.04]
+    veg_cmas: 4.5
+    veg_qa50: 36.0
+    veg_vpda: 0.8
+    veg_vpdb: 1.05
+    iwf: 0                     # interflow OFF (June had no IWF line)
+    # Calibration bounds from the frozen June run (defaults let initials
+    # fall outside the searched space)
+    param_bounds:
+      KSAT: [1.0, 50.0]
+      DRN: [0.5, 4.0]
+      SDEP: [0.5, 5.0]
+      XSLP: [0.005, 0.15]
+      XDRAINH: [0.05, 1.0]
+      MANN_CLASS: [0.03, 0.35]
+      ZSNL: [0.005, 0.08]
+      ZPLS: [0.005, 0.12]
+      ZPLG: [0.02, 0.4]
+      FRZTH: [0.1, 2.0]
+      LAMX: [0.5, 6.0]
+      RSMIN: [100.0, 800.0]
+      ROOT: [0.1, 2.0]
+    params_to_calibrate: KSAT,DRN,SDEP,XSLP,ZSNL,ZPLS,ZPLG,XDRAINH,MANN_CLASS,FRZTH,RSMIN,LAMX,ROOT
+    spatial_mode: lumped
+    spinup_days: 730
+optimization:
+  methods:
+  - iteration
+  algorithm: DDS
+  iterations: 1000
+  metric: KGE
+evaluation:
+  streamflow:
+    station_id: 05BB001

@@ -20,6 +20,7 @@ from typing import Optional
 from symfluence.core.exceptions import ModelExecutionError, symfluence_error_handler
 from symfluence.core.mixins.project import resolve_data_subdir
 from symfluence.core.mpi_utils import find_mpirun
+from symfluence.core.process_exec import run as run_subprocess
 from symfluence.core.registries import R
 from symfluence.models.base.base_runner import BaseModelRunner
 
@@ -162,7 +163,7 @@ class CLMParFlowRunner(BaseModelRunner):
 
             timeout = self._get_timeout()
 
-            result = subprocess.run(
+            result = run_subprocess(
                 cmd,
                 cwd=str(self.output_dir),
                 env=env,
@@ -172,26 +173,15 @@ class CLMParFlowRunner(BaseModelRunner):
                 timeout=timeout,
             )
 
-            if result.stdout:
-                logger.debug(f"CLMParFlow stdout: {result.stdout[-2000:]}")
-            if result.stderr:
-                logger.debug(f"CLMParFlow stderr: {result.stderr[-2000:]}")
+            stdout_log = self.write_stdout_sidecar(
+                'clmparflow', result.stdout, result.stderr
+            )
 
             if result.returncode != 0:
-                logger.error(f"CLMParFlow execution returned code {result.returncode}")
                 logger.error(
-                    f"stderr: {result.stderr[-2000:] if result.stderr else 'none'}"
+                    f"CLMParFlow failed (exit {result.returncode}); "
+                    f"full output: {stdout_log or '(sidecar unavailable)'}"
                 )
-                log_file = self.output_dir / f"{runname}.out.log"
-                if log_file.exists():
-                    log_content = log_file.read_text()
-                    error_lines = [
-                        ln for ln in log_content.splitlines()
-                        if 'error' in ln.lower() or 'failed' in ln.lower()
-                    ]
-                    if error_lines:
-                        logger.error(f"CLMParFlow log errors: {error_lines[-5:]}")
-
                 raise ModelExecutionError(
                     f"CLMParFlow execution failed with return code {result.returncode}"
                 )

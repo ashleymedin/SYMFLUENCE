@@ -32,6 +32,7 @@ from ..execution import SpatialOrchestrator
 from ..mixins import OutputConverterMixin, SpatialModeDetectionMixin
 from ..mizuroute.mixins import MizuRouteConfigMixin
 from ..spatial_modes import SpatialMode
+from .r_environment import configure_r_dll_search, ensure_airgr_available, r_path, run_r_script
 
 # Optional R/rpy2 support - only needed for GR models
 # Broad exception handling is intentional here: rpy2 can raise RuntimeError, RRuntimeError,
@@ -39,6 +40,10 @@ from ..spatial_modes import SpatialMode
 # incompatible versions, etc.). We must catch all to provide graceful fallback.
 # rpy2 prints noisy messages to stderr during R initialization (e.g. "Error importing in
 # API mode", "Trying to import in ABI mode") — redirect stderr to suppress them.
+# configure_r_dll_search() must run first: importing rpy2 starts the embedded
+# interpreter, and on Windows that interpreter can only dyn.load() compiled R
+# packages if R's own bin directory is already on PATH.
+configure_r_dll_search()
 try:
     import contextlib
     import io
@@ -95,10 +100,12 @@ class GRRunner(BaseModelRunner, SpatialOrchestrator, OutputConverterMixin, MizuR
 
         Raises:
             ImportError: If R or rpy2 is not installed (required for GR models).
+            ModelExecutionError: If the embedded R cannot load the airGR package.
 
         Note:
-            GR models require R and the airGR package. The runner will attempt
-            to install airGR automatically if not present.
+            GR models require R and the airGR package. airGR is verified up
+            front rather than installed on demand: installing from CRAN
+            mid-workflow is neither reproducible nor available offline.
         """
         # GR-specific: Check rpy2 dependency BEFORE calling super()
         if not HAS_RPY2:
@@ -110,6 +117,9 @@ class GRRunner(BaseModelRunner, SpatialOrchestrator, OutputConverterMixin, MizuR
                 "`pip install rpy2` (or `pip install -e \".[r]\"`). "
                 "See https://rpy2.github.io/doc/latest/html/overview.html#installation"
             )
+
+        # Fail fast on a broken R rather than several steps into the run.
+        ensure_airgr_available(robjects)
 
         # Call base class
         super().__init__(config, logger, reporting_manager=reporting_manager)
@@ -373,13 +383,7 @@ class GRRunner(BaseModelRunner, SpatialOrchestrator, OutputConverterMixin, MizuR
         try:
             # Initialize R environment
             importr('base')
-
-            # Install airGR if not already installed
-            robjects.r('''
-                if (!require("airGR")) {
-                    install.packages("airGR", repos="https://cloud.r-project.org")
-                }
-            ''')
+            ensure_airgr_available(robjects)
 
             # Load forcing data
             forcing_file = self.forcing_gr_path / f"{self.domain_name}_input_distributed.nc"
@@ -462,7 +466,7 @@ class GRRunner(BaseModelRunner, SpatialOrchestrator, OutputConverterMixin, MizuR
                     library(airGR)
 
                     # Load HRU data
-                    BasinObs <- read.csv("{str(temp_csv)}")
+                    BasinObs <- read.csv({r_path(temp_csv)})
 
                     # Preparation of InputsModel
                     InputsModel <- CreateInputsModel(
@@ -516,7 +520,7 @@ class GRRunner(BaseModelRunner, SpatialOrchestrator, OutputConverterMixin, MizuR
                 '''
 
                 # Execute R script
-                result_df = robjects.r(r_script)
+                result_df = run_r_script(robjects, r_script, "distributed GR4J script")
 
                 # Convert to pandas
                 with localconverter(robjects.default_converter + pandas2ri.converter):
@@ -729,6 +733,7 @@ class GRRunner(BaseModelRunner, SpatialOrchestrator, OutputConverterMixin, MizuR
         try:
             # Initialize R environment
             importr('base')
+            ensure_airgr_available(robjects)
             skip_calibration = self._skip_calibration
             default_params = self._get_config_value(
                 lambda: self.config.model.gr.default_params,
@@ -778,13 +783,6 @@ class GRRunner(BaseModelRunner, SpatialOrchestrator, OutputConverterMixin, MizuR
             self.logger.debug(f"Calibration period: {calib_start} to {calib_end}")
             self.logger.debug(f"Run period: {run_start} to {run_end}")
 
-            # Install airGR if not already installed
-            robjects.r('''
-                if (!require("airGR")) {
-                    install.packages("airGR", repos="https://cloud.r-project.org")
-                }
-            ''')
-
             # Determine parameters for R script
             # Use instance variable for external params (config_dict is read-only)
             # When external params only cover a subset (e.g. X1-X4 but not
@@ -812,7 +810,7 @@ class GRRunner(BaseModelRunner, SpatialOrchestrator, OutputConverterMixin, MizuR
                 skip_calibration <- {"TRUE" if skip_calibration else "FALSE"}
 
                 # Loading catchment data
-                BasinObs <- read.csv("{str(self.forcing_gr_path / f"{self.domain_name}_input.csv")}")
+                BasinObs <- read.csv({r_path(self.forcing_gr_path / f"{self.domain_name}_input.csv")})
 
                 # Convert time column to POSIXct format
                 BasinObs$time_posix <- as.POSIXct(BasinObs$time)
@@ -888,7 +886,7 @@ class GRRunner(BaseModelRunner, SpatialOrchestrator, OutputConverterMixin, MizuR
                         CalibOptions = CalibOptions,
                         FUN_MOD = RunModel_CemaNeigeGR4J
                     )
-                    save(OutputsCalib, file = "{str(self.output_path / 'GR_calib.Rdata')}")
+                    save(OutputsCalib, file = {r_path(self.output_path / 'GR_calib.Rdata')})
                     Param <- OutputsCalib$ParamFinalR
                 }} else {{
                     # Use provided parameters or defaults
@@ -913,27 +911,27 @@ class GRRunner(BaseModelRunner, SpatialOrchestrator, OutputConverterMixin, MizuR
                 # Results preview
                 if ({"TRUE" if self.reporting_manager and self.reporting_manager.visualize else "FALSE"}) {{
                     # Create plots directory
-                    dir.create("{str(self.project_dir / 'reporting' / 'results')}", recursive = TRUE, showWarnings = FALSE)
-                    png("{str(self.project_dir / 'reporting' / 'results' / 'GRhydrology_plot.png')}", height = 900, width = 900)
+                    dir.create({r_path(self.project_dir / 'reporting' / 'results')}, recursive = TRUE, showWarnings = FALSE)
+                    png({r_path(self.project_dir / 'reporting' / 'results' / 'GRhydrology_plot.png')}, height = 900, width = 900)
                     plot(OutputsModel, Qobs = BasinObs$q_obs[Ind_Run])
                     dev.off()
                 }}
 
                 # Save results
-                save(OutputsModel, file = "{str(self.output_path / 'GR_results.Rdata')}")
+                save(OutputsModel, file = {r_path(self.output_path / 'GR_results.Rdata')})
 
                 # Export to CSV for post-processing and metrics
                 results_df <- data.frame(
                     datetime = format(OutputsModel$DatesR, "%Y-%m-%d %H:%M:%S"),
                     q_sim = OutputsModel$Qsim
                 )
-                write.csv(results_df, "{str(self.output_path / 'GR_results.csv')}", row.names = FALSE)
+                write.csv(results_df, {r_path(self.output_path / 'GR_results.csv')}, row.names = FALSE)
 
                 "GR model execution completed successfully"
             '''
 
             # Execute the R script
-            robjects.r(r_script)
+            run_r_script(robjects, r_script, "lumped GR4J script")
             self.logger.debug("R script executed successfully!")
 
             # Verify output file was actually created

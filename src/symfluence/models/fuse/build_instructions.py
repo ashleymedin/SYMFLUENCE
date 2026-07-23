@@ -19,6 +19,7 @@ from symfluence.cli.services import (
     get_hdf5_detection,
     get_netcdf_detection,
     get_netcdf_lib_detection,
+    get_safe_build_path,
 )
 from symfluence.core.registries import R
 
@@ -38,6 +39,7 @@ def get_fuse_build_instructions():
     netcdf_detect = get_netcdf_detection()
     hdf5_detect = get_hdf5_detection()
     netcdf_lib_detect = get_netcdf_lib_detection()
+    safe_build_path = get_safe_build_path()
 
     return {
         'description': 'Framework for Understanding Structural Errors',
@@ -56,6 +58,10 @@ def get_fuse_build_instructions():
             netcdf_detect,
             hdf5_detect,
             netcdf_lib_detect,
+            # Relocate onto a Make/shell-safe path (spaces / '@' in the install
+            # path, e.g. Google Drive) before deriving F_MASTER / the wrapper
+            # dir from $(pwd).
+            safe_build_path,
             r'''
 # Map to FUSE Makefile variable names
 export NCDF_PATH="$NETCDF_FORTRAN"
@@ -301,14 +307,19 @@ make clean 2>/dev/null || true
 # as a safety net with explicit flags.
 echo "Pre-compiling sce_16plus.f (fixed-form Fortran)..."
 FFLAGS_FIXED="-O2 -c -ffixed-form -fallow-argument-mismatch -std=legacy -Wno-error"
-${FC} ${FFLAGS_FIXED} -o sce_16plus.o "FUSE_SRC/FUSE_SCE/sce_16plus.f" || echo "Warning: sce_16plus.f pre-compilation issue"
+"${FC}" ${FFLAGS_FIXED} -o sce_16plus.o "FUSE_SRC/FUSE_SCE/sce_16plus.f" || echo "Warning: sce_16plus.f pre-compilation issue"
 
 # IMPORTANT: Do NOT pass FC="<wrapper-path>" on the make command line.
 # The Makefile uses `ifeq "$(FC)" "gfortran"` to set FLAGS_FIXED, FLAGS_NORMA,
 # and NetCDF detection. Passing the full wrapper path breaks these conditionals.
 # Instead, the wrapper at $WRAPPER_DIR/gfortran is already first in $PATH,
 # so the Makefile's default `FC = gfortran` will find our wrapper automatically.
-make -j1 F_MASTER="${F_MASTER}" LIBRARIES="${LIBS}" INCLUDE="${INCLUDES}"
+# SYMF_MAKE_TMP (from the common build environment) passes a native
+# Windows temp dir to make's children on the command line — env vars do
+# not survive the Git-bash -> MSYS2-make runtime hop, and without a
+# usable TMPDIR gfortran fails with "Cannot create temporary file in
+# C:\Windows\".  Empty (expands to nothing) on non-Windows.
+make -j1 "${SYMF_MAKE_TMP[@]}" F_MASTER="${F_MASTER}" LIBRARIES="${LIBS}" INCLUDE="${INCLUDES}"
 
 # Check result
 if [ -f "fuse.exe" ] || [ -f "../bin/fuse.exe" ]; then

@@ -5,6 +5,12 @@
 # (multiset semantics) so a new identical handler in the same scope
 # is still detected as a new occurrence.
 src/symfluence/__init__.py:<module>:except Exception:  # noqa: BLE001 — top-level fallback
+src/symfluence/agent/context.py:_summarize_config:except Exception:  # noqa: BLE001 — unreadable / not YAML: not a config, not an error
+src/symfluence/agent/diagnostics.py:run_diagnostics:except Exception as e:  # noqa: BLE001 — a diagnostic must report, not raise
+src/symfluence/agent/inspection.py:update_config:except Exception as e:  # noqa: BLE001 — any validation failure blocks the edit
+src/symfluence/agent/mcp_server.py:_tool_validate_config:except Exception as e:  # noqa: BLE001 — any load failure is the tool's answer
+src/symfluence/agent/mcp_server.py:_tools_call_result:except Exception as e:  # noqa: BLE001 — tool errors go in-band per MCP spec
+src/symfluence/agent/mcp_server.py:handle_message:except Exception as e:  # noqa: BLE001 — the server must answer, not crash
 src/symfluence/cli/__init__.py:main:except Exception as e:  # noqa: BLE001 — top-level fallback
 src/symfluence/cli/commands/base.py:BaseCommand.load_typed_config:except Exception as e:  # noqa: BLE001 — top-level fallback
 src/symfluence/cli/commands/config_commands.py:ConfigCommands.resolve:except Exception:  # noqa: BLE001 — top-level fallback
@@ -89,7 +95,7 @@ src/symfluence/data/acquisition/handlers/cnes_grgs_tws.py:CNESGRGSAcquirer.downl
 src/symfluence/data/acquisition/handlers/daymet.py:DaymetAcquirer._download_opendap_subset:except Exception as e:  # noqa: BLE001
 src/symfluence/data/acquisition/handlers/daymet.py:DaymetAcquirer._download_single_pixel:except Exception as e:  # noqa: BLE001 — data acquisition resilience
 src/symfluence/data/acquisition/handlers/daymet.py:DaymetAcquirer._merge_year_files:except Exception as e:  # noqa: BLE001 — merge is best-effort
-src/symfluence/data/acquisition/handlers/era5.py:_safe_to_netcdf:except Exception:
+src/symfluence/data/acquisition/handlers/era5.py:_write_netcdf_with_fallbacks:except Exception:
 src/symfluence/data/acquisition/handlers/esa_cci_sm.py:ESACCISMAcquirer.download:except Exception as exc:  # noqa: BLE001 — preprocessing resilience
 src/symfluence/data/acquisition/handlers/fluxcom_et.py:FLUXCOMETAcquirer._download_from_icos:except Exception as e:  # noqa: BLE001 — preprocessing resilience
 src/symfluence/data/acquisition/handlers/fluxcom_et.py:FLUXCOMETAcquirer._download_from_icos:except Exception as e:  # noqa: BLE001 — preprocessing resilience
@@ -164,6 +170,7 @@ src/symfluence/data/acquisition/handlers/pelletier.py:PelletierAcquirer._create_
 src/symfluence/data/acquisition/handlers/pelletier.py:PelletierAcquirer.download:except Exception as e:  # noqa: BLE001 — preprocessing resilience
 src/symfluence/data/acquisition/handlers/polaris.py:POLARISAcquirer.download:except Exception as e:  # noqa: BLE001 — preprocessing resilience
 src/symfluence/data/acquisition/handlers/rdrs.py:RDRSAcquirer._download_http:except Exception as e:  # noqa: BLE001 — preprocessing resilience
+src/symfluence/data/acquisition/handlers/rdrs.py:RDRSAcquirer._download_http_daily:except Exception as e:  # noqa: BLE001 — preprocessing resilience
 src/symfluence/data/acquisition/handlers/rdrs.py:RDRSAcquirer.download:except Exception as e:  # noqa: BLE001 — preprocessing resilience
 src/symfluence/data/acquisition/handlers/sentinel1_sm.py:Sentinel1SMAcquirer._download_product:except Exception as e:  # noqa: BLE001 — preprocessing resilience
 src/symfluence/data/acquisition/handlers/sentinel1_sm.py:Sentinel1SMAcquirer._get_access_token:except Exception as e:  # noqa: BLE001 — preprocessing resilience
@@ -346,6 +353,8 @@ src/symfluence/data/preprocessing/resampling/file_processor.py:FileProcessor.pro
 src/symfluence/data/preprocessing/resampling/file_validator.py:FileValidator.validate:except Exception as e:  # noqa: BLE001 — preprocessing resilience
 src/symfluence/data/preprocessing/resampling/geometry_validator.py:GeometryValidator.validate_and_repair.repair_geometry:except Exception as e:  # noqa: BLE001 — preprocessing resilience
 src/symfluence/data/preprocessing/resampling/point_scale_extractor.py:PointScaleForcingExtractor._get_forcing_elevation_from_dem:except Exception as e:  # noqa: BLE001 — preprocessing resilience
+src/symfluence/data/preprocessing/resampling/point_scale_extractor.py:PointScaleForcingExtractor._standardize_if_raw:except Exception as e:  # noqa: BLE001 — defensive guard, don't kill extraction
+src/symfluence/data/preprocessing/resampling/point_scale_extractor.py:PointScaleForcingExtractor._standardize_if_raw:except Exception as e:  # noqa: BLE001 — defensive guard, don't kill extraction
 src/symfluence/data/preprocessing/resampling/point_scale_extractor.py:PointScaleForcingExtractor.should_use_point_scale:except Exception as e:  # noqa: BLE001 — preprocessing resilience
 src/symfluence/data/preprocessing/resampling/shapefile_processor.py:ShapefileProcessor.ensure_unique_hru_ids:except Exception as e:  # noqa: BLE001 — preprocessing resilience
 src/symfluence/data/preprocessing/resampling/shapefile_processor.py:ShapefileProcessor.ensure_unique_hru_ids:except Exception as e:  # noqa: BLE001 — wrap-and-raise to domain error
@@ -418,6 +427,7 @@ src/symfluence/evaluation/evaluators/tws.py:TWSEvaluator.get_diagnostic_data:exc
 src/symfluence/evaluation/koopman_analysis.py:KoopmanAnalyzer.run_koopman_analysis:except Exception as e:  # noqa: BLE001 — must-not-raise contract
 src/symfluence/evaluation/likelihood.py:load_fluxnet_uncertainties:except Exception as e:  # noqa: BLE001 — optional feature, must not break evaluation
 src/symfluence/evaluation/sensitivity_analysis.py:SensitivityAnalyzer.perform_sensitivity_analysis:except Exception as e:  # noqa: BLE001 — must-not-raise contract
+src/symfluence/evaluation/sensitivity_analysis.py:SensitivityAnalyzer.run_sensitivity_analysis:except Exception as e:  # noqa: BLE001 — resilience across SA methods
 src/symfluence/evaluation/structure_ensemble.py:BaseStructureEnsembleAnalyzer.analyze_results:except Exception as e:  # noqa: BLE001 — must-not-raise contract
 src/symfluence/evaluation/structure_ensemble.py:BaseStructureEnsembleAnalyzer.run_analysis:except Exception as e:  # noqa: BLE001 — must-not-raise contract
 src/symfluence/evaluation/structure_ensemble.py:BaseStructureEnsembleAnalyzer.visualize_results:except Exception as e:  # noqa: BLE001 — must-not-raise contract
@@ -456,7 +466,7 @@ src/symfluence/geospatial/geofabric/delineators/coastal_delineator.py:CoastalWat
 src/symfluence/geospatial/geofabric/delineators/distributed_delineator.py:GeofabricDelineator._subset_upstream_geofabric:except Exception as e:  # noqa: BLE001 — preprocessing resilience
 src/symfluence/geospatial/geofabric/delineators/distributed_delineator.py:GeofabricDelineator.delineate_geofabric:except Exception as e:  # noqa: BLE001 — wrap-and-raise to domain error
 src/symfluence/geospatial/geofabric/delineators/grid_delineator.py:GridDelineator._add_grid_attributes:except Exception as e:  # noqa: BLE001 — preprocessing resilience
-src/symfluence/geospatial/geofabric/delineators/grid_delineator.py:GridDelineator._clip_grid_to_watershed:except Exception as e:  # noqa: BLE001 — preprocessing resilience
+src/symfluence/geospatial/geofabric/delineators/grid_delineator.py:GridDelineator._clip_grid_to_watershed:except Exception as e:  # noqa: BLE001 — re-raised as a domain error below
 src/symfluence/geospatial/geofabric/delineators/grid_delineator.py:GridDelineator._compute_d8_flow_directions:except Exception as e:  # noqa: BLE001 — preprocessing resilience
 src/symfluence/geospatial/geofabric/delineators/grid_delineator.py:GridDelineator._create_grid_from_bbox:except Exception as e:  # noqa: BLE001 — preprocessing resilience
 src/symfluence/geospatial/geofabric/delineators/grid_delineator.py:GridDelineator._create_native_grid:except Exception as e:  # noqa: BLE001 — preprocessing resilience
@@ -697,6 +707,7 @@ src/symfluence/models/gr/postprocessor.py:<module>:except Exception:  # noqa: BL
 src/symfluence/models/gr/postprocessor.py:GRPostProcessor.extract_streamflow:except Exception as e:  # noqa: BLE001 — wrap-and-raise to domain error
 src/symfluence/models/gr/preprocessor.py:GRPreProcessor._apply_area_weighted_aggregation:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/gr/preprocessor.py:GRPreProcessor.prepare_forcing_data:except Exception as e:  # noqa: BLE001 — wrap-and-raise to domain error
+src/symfluence/models/gr/r_environment.py:verify_gr_r_runtime:except Exception as exc:  # noqa: BLE001 - Broad exception required for rpy2 import failures
 src/symfluence/models/gr/runner.py:<module>:except Exception:  # noqa: BLE001 - Broad exception required for rpy2 import failures
 src/symfluence/models/gr/runner.py:GRRunner._calculate_and_log_metrics:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/gr/runner.py:GRRunner._execute_gr_distributed:except Exception as cleanup_error:  # noqa: BLE001 — model execution resilience
@@ -797,6 +808,7 @@ src/symfluence/models/mesh/calibration/worker.py:MESHWorker._get_basin_area:exce
 src/symfluence/models/mesh/calibration/worker.py:MESHWorker.calculate_metrics:except Exception:  # noqa: BLE001 — calibration resilience
 src/symfluence/models/mesh/extractor.py:MESHResultExtractor.extract_variable:except Exception as e:  # noqa: BLE001 — wrap-and-raise to domain error
 src/symfluence/models/mesh/postprocessor.py:MESHPostProcessor.extract_streamflow:except Exception as e:  # noqa: BLE001 — model execution resilience
+src/symfluence/models/mesh/preprocessing/class_file_manager.py:CLASSFileManager.apply_field_overrides:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mesh/preprocessing/class_file_manager.py:CLASSFileManager.create_elevation_band_blocks:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mesh/preprocessing/class_file_manager.py:CLASSFileManager.fix_initial_conditions:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mesh/preprocessing/class_file_manager.py:CLASSFileManager.fix_nm:except Exception as e:  # noqa: BLE001 — model execution resilience
@@ -825,6 +837,7 @@ src/symfluence/models/mesh/preprocessing/ddb_file_manager.py:DDBFileManager.reno
 src/symfluence/models/mesh/preprocessing/ddb_file_manager.py:DDBFileManager.trim_empty_gru_columns:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mesh/preprocessing/ddb_file_manager.py:DDBFileManager.trim_empty_gru_columns:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mesh/preprocessing/ddb_file_manager.py:DDBFileManager.trim_to_active_grus:except Exception as e:  # noqa: BLE001 — model execution resilience
+src/symfluence/models/mesh/preprocessing/drainage_database.py:MESHDrainageDatabase._correct_gridarea_scale:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mesh/preprocessing/drainage_database.py:MESHDrainageDatabase._ensure_completeness_impl:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mesh/preprocessing/drainage_database.py:MESHDrainageDatabase._get_landcover_class_ids:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mesh/preprocessing/drainage_database.py:MESHDrainageDatabase.convert_to_elevation_band_grus:except Exception as e:  # noqa: BLE001 — model execution resilience
@@ -838,8 +851,11 @@ src/symfluence/models/mesh/preprocessing/forcing_processor.py:MESHForcingProcess
 src/symfluence/models/mesh/preprocessing/meshflow_manager.py:<module>:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mesh/preprocessing/meshflow_manager.py:MESHFlowManager.run:except Exception as e:  # noqa: BLE001 — wrap-and-raise to domain error
 src/symfluence/models/mesh/preprocessing/meshflow_manager.py:_patch_meshflow_network_bug:except Exception as e:  # noqa: BLE001 — model execution resilience
+src/symfluence/models/mesh/preprocessing/meshflow_manager.py:_patch_meshflow_network_bug:except Exception:  # noqa: BLE001 — best-effort second binding
+src/symfluence/models/mesh/preprocessing/parameter_fixer.py:MESHParameterFixer.apply_hydrology_field_overrides:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mesh/preprocessing/parameter_fixer.py:MESHParameterFixer.configure_lumped_outputs:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mesh/preprocessing/parameter_fixer.py:MESHParameterFixer.create_safe_forcing:except Exception as e:  # noqa: BLE001 — model execution resilience
+src/symfluence/models/mesh/preprocessing/parameter_fixer.py:MESHParameterFixer.fix_gru_dependent_hydrology_params:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mesh/preprocessing/parameter_fixer.py:MESHParameterFixer.fix_hydrology_wf_r2:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mesh/preprocessing/parameter_fixer.py:MESHParameterFixer.fix_hydrology_wf_r2:except Exception:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mesh/preprocessing/parameter_fixer.py:MESHParameterFixer.fix_missing_hydrology_params:except Exception as e:  # noqa: BLE001 — model execution resilience
@@ -865,7 +881,7 @@ src/symfluence/models/mhm/extractor.py:MHMResultExtractor.extract_variable:excep
 src/symfluence/models/mhm/postprocessor.py:MHMPostProcessor.extract_streamflow:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mhm/preprocessor.py:MHMPreProcessor._build_distributed_grids._resample_class:except Exception:  # noqa: BLE001
 src/symfluence/models/mhm/preprocessor.py:MHMPreProcessor._build_distributed_grids:except Exception as e:  # noqa: BLE001 — model execution resilience
-src/symfluence/models/mhm/preprocessor.py:MHMPreProcessor._generate_forcing_files:except Exception as e:  # noqa: BLE001 — model execution resilience
+src/symfluence/models/mhm/preprocessor.py:MHMPreProcessor._generate_forcing_files:except Exception as e:  # noqa: BLE001 — smoke-test fallback only
 src/symfluence/models/mhm/preprocessor.py:MHMPreProcessor._generate_gauge_data:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mhm/preprocessor.py:MHMPreProcessor._get_catchment_properties:except Exception as e:  # noqa: BLE001 — model execution resilience
 src/symfluence/models/mhm/preprocessor.py:MHMPreProcessor.run_preprocessing:except Exception as e:  # noqa: BLE001 — model execution resilience
@@ -1210,6 +1226,7 @@ src/symfluence/optimization/optimizers/algorithms/sce_ua.py:SCEUAAlgorithm.optim
 src/symfluence/optimization/optimizers/algorithms/sce_ua.py:SCEUAAlgorithm.optimize:except Exception as e:  # noqa: BLE001 - best-effort path setup
 src/symfluence/optimization/optimizers/base_model_optimizer.py:BaseModelOptimizer._build_algorithm_callbacks.save_checkpoint:except Exception as e:  # noqa: BLE001 — must-not-raise contract
 src/symfluence/optimization/optimizers/final_evaluation/runner.py:FinalEvaluationRunner._worker_period_metrics:except Exception as e:  # noqa: BLE001 — resilience in final eval
+src/symfluence/project/logging_manager.py:CountingHandler.emit:except Exception:  # noqa: BLE001 — logging must never raise
 src/symfluence/project/project_manager.py:ProjectManager.create_pour_point:except Exception as e:  # noqa: BLE001 — configuration resilience
 src/symfluence/project/system.py:SYMFLUENCE.run_all_diagnostics:except Exception as e:  # noqa: BLE001 — must-not-raise contract
 src/symfluence/project/system.py:SYMFLUENCE.run_diagnostics_for_step:except Exception as e:  # noqa: BLE001 — must-not-raise contract
@@ -1229,7 +1246,9 @@ src/symfluence/reporting/plotters/workflow_diagnostic_plotter.py:WorkflowDiagnos
 src/symfluence/reporting/plotters/workflow_diagnostic_plotter.py:WorkflowDiagnosticPlotter.plot_attributes_diagnostic:except Exception as e:  # noqa: BLE001 — reporting resilience
 src/symfluence/reporting/plotters/workflow_diagnostic_plotter.py:WorkflowDiagnosticPlotter.plot_attributes_diagnostic:except Exception as e:  # noqa: BLE001 — reporting resilience
 src/symfluence/reporting/plotters/workflow_diagnostic_plotter.py:WorkflowDiagnosticPlotter.plot_domain_definition_diagnostic:except Exception as e:  # noqa: BLE001 — reporting resilience
+src/symfluence/resources/manager.py:parse_frontmatter:except Exception:  # noqa: BLE001 — malformed frontmatter is "no frontmatter"
 src/symfluence/tui/screens/workflow_launcher.py:WorkflowLauncherScreen._run_mode:except Exception as exc:  # noqa: BLE001 — UI resilience
+src/symfluence/tui/services/agent_session.py:AgentChatSession.send:except Exception as e:  # noqa: BLE001 — the UI must get an event, not a traceback
 src/symfluence/tui/services/workflow_service.py:WorkflowService.get_domain_name:except Exception:  # noqa: BLE001 — UI resilience
 src/symfluence/tui/services/workflow_service.py:WorkflowService.get_experiment_id:except Exception:  # noqa: BLE001 — UI resilience
 src/symfluence/tui/services/workflow_service.py:WorkflowService.get_status:except Exception as exc:  # noqa: BLE001 — UI resilience

@@ -96,9 +96,13 @@ class NSGA2Algorithm(OptimizationAlgorithm):
             dict_key='NSGA2_ETA_M'
         )
 
+        # Dedicated per-run RNG (see OptimizationAlgorithm._new_rng) so the
+        # genetic operators are reproducible and isolated from the global state.
+        self._rng = self._new_rng()
+
         # Initialize population
         self.logger.debug(f"Initializing population ({pop_size} individuals)...")
-        population = np.random.uniform(0, 1, (pop_size, n_params))
+        population = self._rng.uniform(0, 1, (pop_size, n_params))
         objectives = np.full((pop_size, num_objectives), np.nan)
 
         # Evaluate initial population
@@ -110,16 +114,27 @@ class NSGA2Algorithm(OptimizationAlgorithm):
             if num_objectives > 1:
                 objectives[:, 1] = fitness
 
-        # Check for all-penalty objectives (indicates model doesn't support multi-objective)
-        # Penalty values are typically large negative numbers like -1e6
+        # Check for all-penalty objectives (indicates the worker could not evaluate
+        # the multi-objective set). Rather than aborting the whole run, degrade to
+        # single-objective evaluation on the primary metric and duplicate it across
+        # objective columns -- this yields a valid calibration result and matches the
+        # behaviour of workers that only expose single-objective evaluation, so the
+        # algorithm x model matrix stays consistent instead of leaving holes.
         PENALTY_THRESHOLD = -900.0
+        if np.all(objectives < PENALTY_THRESHOLD) and multiobjective and evaluate_population is not None:
+            self.logger.warning(
+                "Multi-objective evaluation returned all-penalty objectives; falling back "
+                "to single-objective (%s) evaluation for NSGA-II.", objective_names[0]
+            )
+            fitness = np.asarray(evaluate_population(population, 0)).reshape(-1)
+            objectives = np.repeat(fitness.reshape(-1, 1), num_objectives, axis=1)
+
         if np.all(objectives < PENALTY_THRESHOLD):
             raise ValueError(
-                f"All {pop_size} individuals in the initial population returned penalty objectives "
-                f"(all values < {PENALTY_THRESHOLD}). This typically indicates that the model's "
-                f"worker does not support multi-objective evaluation. Only SUMMA models "
-                f"currently support NSGA-II multi-objective optimization. "
-                f"Use single-objective algorithms (DDS, PSO, DE, SCE-UA) instead."
+                f"All {pop_size} individuals in the initial population returned penalty "
+                f"objectives (all values < {PENALTY_THRESHOLD}), even after falling back to "
+                f"single-objective evaluation. This indicates a broken model or forcing "
+                f"setup for this run rather than a multi-objective limitation."
             )
 
         # Perform NSGA-II selection
@@ -149,7 +164,9 @@ class NSGA2Algorithm(OptimizationAlgorithm):
             self.logger.info(f"Initial population complete | Best obj1: {best_fitness:.4f}")
 
         # Main NSGA-II loop with error handling
+        prev_best_fitness = best_fitness
         for generation in range(1, self.max_iterations + 1):
+            n_improved = 0
             try:
                 # Generate offspring through selection, crossover, and mutation
                 offspring = np.zeros_like(population)
@@ -160,7 +177,7 @@ class NSGA2Algorithm(OptimizationAlgorithm):
                     p1, p2 = population[p1_idx], population[p2_idx]
 
                     # Crossover
-                    if np.random.random() < crossover_rate:
+                    if self._rng.random() < crossover_rate:
                         c1, c2 = self._sbx_crossover(p1, p2, eta_c)
                     else:
                         c1, c2 = p1.copy(), p2.copy()
@@ -204,6 +221,9 @@ class NSGA2Algorithm(OptimizationAlgorithm):
                 ranks = self._fast_non_dominated_sort(objectives)
                 crowding_distances = self._calculate_crowding_distance(objectives, ranks)
 
+                # Offspring beating the previous generation's best (progress metric)
+                n_improved = int(np.sum(offspring_objectives[:, 0] > prev_best_fitness))
+
                 # Update best solution
                 current_best_idx = np.argmax(objectives[:, 0])
                 if objectives[current_best_idx, 0] > best_fitness:
@@ -229,12 +249,15 @@ class NSGA2Algorithm(OptimizationAlgorithm):
             )
             update_best(best_fitness, params_dict, generation)
 
-            # Log progress
+            # Progress line (tracker throttles emission)
             log_progress(
                 self.name, generation, best_fitness,
+                n_improved=n_improved, pop_size=pop_size,
                 secondary_score=best_secondary,
-                secondary_label=objective_names[1] if best_secondary is not None else None
+                secondary_label=objective_names[1] if best_secondary is not None else None,
+                unit='gens'
             )
+            prev_best_fitness = best_fitness
 
         return {
             'best_solution': best_solution,
@@ -321,7 +344,7 @@ class NSGA2Algorithm(OptimizationAlgorithm):
         pop_size: int
     ) -> int:
         """Tournament selection for NSGA-II."""
-        candidates = np.random.choice(pop_size, 2, replace=False)
+        candidates = self._rng.choice(pop_size, 2, replace=False)
         best_idx = candidates[0]
 
         for candidate in candidates[1:]:
@@ -385,7 +408,7 @@ class NSGA2Algorithm(OptimizationAlgorithm):
         for i in range(n_params):
             # SBX_SWAP_PROBABILITY = 0.5: equal chance of swapping each gene
             # SBX_EPSILON = 1e-9: minimum parent distance to avoid numerical issues
-            if (np.random.random() < NSGA2Defaults.SBX_SWAP_PROBABILITY and
+            if (self._rng.random() < NSGA2Defaults.SBX_SWAP_PROBABILITY and
                     abs(p1[i] - p2[i]) > NSGA2Defaults.SBX_EPSILON):
                 # Order parents so y1 <= y2
                 if p1[i] < p2[i]:
@@ -394,7 +417,7 @@ class NSGA2Algorithm(OptimizationAlgorithm):
                     y1, y2 = p2[i], p1[i]
 
                 # Generate spread factor using polynomial distribution
-                rand = np.random.random()
+                rand = self._rng.random()
 
                 # Beta calculation for bounded SBX (Deb & Agrawal 1995, Eq. 9-11)
                 # beta = (2 * y1 / (y2 - y1))^(eta+1) at lower bound
@@ -448,13 +471,13 @@ class NSGA2Algorithm(OptimizationAlgorithm):
         n_params = len(solution)
 
         for i in range(n_params):
-            if np.random.random() < mutation_rate:
+            if self._rng.random() < mutation_rate:
                 y = mutated[i]
                 # Distance to bounds (used to bias mutation toward feasible region)
                 delta1 = y - 0.0  # Distance to lower bound
                 delta2 = 1.0 - y  # Distance to upper bound
 
-                rand = np.random.random()
+                rand = self._rng.random()
                 # Mutation power: 1/(eta_m + 1) controls perturbation magnitude
                 mut_pow = 1.0 / (eta_m + 1.0)
 

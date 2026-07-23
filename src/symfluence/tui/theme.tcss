@@ -228,3 +228,104 @@ DataTable > .datatable--header {
 #help-content {
     text-style: none;
 }
+
+/* Agent home */
+#agent-home {
+    align: center middle;
+    padding: 1 4;
+}
+
+#agent-home-title {
+    text-style: bold;
+    width: 64;
+    margin: 0 0 1 0;
+}
+
+#agent-mode-list {
+    width: 64;
+    height: auto;
+    border: round #287f95;
+    background: $panel;
+    padding: 1 1;
+}
+
+#agent-mode-list > .option-list--option-highlighted {
+    background: #287f95 30%;
+}
+
+#agent-config-line, #agent-ready-line {
+    width: 64;
+    margin: 1 0 0 0;
+}
+
+/* Agent details modal */
+#agent-details {
+    width: 72;
+    max-height: 80%;
+    border: round #287f95;
+    background: $panel;
+    padding: 1 2;
+}
+
+/* Modelling chat */
+#chat-body {
+    height: 1fr;
+}
+
+#chat-log {
+    width: 3fr;
+    padding: 1 2;
+}
+
+#agent-run-status {
+    width: 1fr;
+    min-width: 24;
+    border-left: solid #287f95;
+    padding: 1 2;
+}
+
+#chat-input {
+    dock: bottom;
+    margin: 0 1 1 1;
+}
+
+ChatMessage {
+    margin: 0 0 1 0;
+}
+
+.chat-msg-user {
+    color: $text;
+}
+
+.chat-msg-agent {
+    color: $text;
+}
+
+.chat-msg-system {
+    color: $text-muted;
+}
+
+.tool-card {
+    margin: 0 0 1 2;
+    padding: 0 1;
+    border-left: solid #287f95;
+}
+
+.tool-card.-running {
+    border-left: solid $warning;
+}
+
+.tool-card.-ok {
+    border-left: solid #43d6b5;
+}
+
+.tool-card.-err {
+    border-left: solid $error;
+}
+
+#agent-approval {
+    width: 64;
+    border: round $warning;
+    background: $panel;
+    padding: 1 2;
+}

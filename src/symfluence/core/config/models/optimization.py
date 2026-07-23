@@ -31,7 +31,10 @@ OptimizationAlgorithmType = Literal[
 # Supported optimization metrics (uppercase for case-insensitive validation)
 OptimizationMetricType = Literal[
     'KGE', 'KGEP', 'NSE', 'RMSE', 'MAE', 'PBIAS', 'R2', 'CORRELATION',
-    'COMPOSITE'
+    'COMPOSITE',
+    # Transformed-flow variants (transformation applied to obs/sim before scoring)
+    'KGE_LOG', 'KGE_INV', 'KGE_SQRT', 'KGE_BOX_COX',
+    'NSE_LOG', 'NSE_SQRT', 'RMSE_LOG'
 ]
 
 # Supported sampling methods
@@ -344,6 +347,10 @@ class LBFGSConfig(BaseModel):
     history_size: int = Field(default=10, alias='LBFGS_HISTORY_SIZE', ge=1)
     c1: float = Field(default=1e-4, alias='LBFGS_C1', gt=0, lt=1.0)
     c2: float = Field(default=0.9, alias='LBFGS_C2', gt=0, lt=1.0)
+    steps: Optional[int] = Field(
+        default=None, alias='LBFGS_STEPS', ge=1,
+        description='Number of L-BFGS optimization steps (falls back to NUMBER_OF_ITERATIONS)'
+    )
 
 
 class EmulationConfig(BaseModel):
@@ -431,6 +438,11 @@ class OptimizationConfig(BaseModel):
     calibration_timestep: str = Field(default='daily', alias='CALIBRATION_TIMESTEP')
     algorithm: OptimizationAlgorithmType = Field(default='PSO', alias='ITERATIVE_OPTIMIZATION_ALGORITHM')
     metric: OptimizationMetricType = Field(default='KGE', alias='OPTIMIZATION_METRIC')
+    box_cox_lambda: float = Field(
+        default=0.2, alias='BOX_COX_LAMBDA', ge=0.0, le=1.0,
+        description="Lambda for the Box-Cox flow transformation used by *_BOX_COX "
+                    "metrics (0 = log transform, smaller values emphasize low flows more)"
+    )
     iterations: int = Field(default=1000, alias='NUMBER_OF_ITERATIONS', ge=1)
     population_size: int = Field(default=50, alias='POPULATION_SIZE', ge=2, le=10000)
     final_evaluation_numerical_method: str = Field(default='ida', alias='FINAL_EVALUATION_NUMERICAL_METHOD')
@@ -445,7 +457,9 @@ class OptimizationConfig(BaseModel):
     skip_warm_start: Optional[bool] = Field(
         default=None,
         alias='SKIP_WARM_START',
-        description='Skip warm-starting from previous best parameters'
+        description='Skip warm-starting from previous best parameters. Unset defaults to '
+                    'true (no warm start), so calibrations are reproducible regardless of '
+                    'what previous runs exist on the machine; set false to opt in.'
     )
     parameter_bounds: Optional[Dict[str, Any]] = Field(
         default=None,

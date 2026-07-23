@@ -128,6 +128,7 @@ from symfluence.core.mixins.project import resolve_data_subdir
 from symfluence.data.acquisition.cloud_downloader import CloudForcingDownloader, check_cloud_access_availability
 from symfluence.data.acquisition.maf_pipeline import datatoolRunner, gistoolRunner
 from symfluence.data.acquisition.registry import AcquisitionRegistry
+from symfluence.data.acquisition.request_planning import expected_forcing_times, forcing_request_facts
 from symfluence.data.cache import RawForcingCache
 from symfluence.data.utils.variable_utils import VariableHandler
 from symfluence.geospatial.raster_utils import calculate_landcover_mode
@@ -315,14 +316,15 @@ class AcquisitionService(ConfigurableMixin):
             self.logger.info(f"{desc}: {len(tasks)} tasks (serial)")
             for name, func in tasks:
                 try:
-                    self.logger.info(f"Starting: {name}")
+                    self.logger.debug(f"Starting: {name}")
                     results[name] = func()
-                    self.logger.info(f"Completed: {name}")
+                    self.logger.debug(f"Completed: {name}")
                 except (OSError, FileNotFoundError, KeyError, ValueError,
                         TypeError, RuntimeError, ImportError,
                         AttributeError, IndexError) as exc:
                     results[name] = exc
                     self.logger.warning(f"Failed: {name}: {exc}")
+            self._log_task_summary(desc, results)
             return results
 
         self.logger.info(
@@ -332,21 +334,31 @@ class AcquisitionService(ConfigurableMixin):
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_name: Dict[concurrent.futures.Future, str] = {}
             for name, func in tasks:
-                self.logger.info(f"Submitting: {name}")
+                self.logger.debug(f"Submitting: {name}")
                 future_to_name[executor.submit(func)] = name
 
             for future in concurrent.futures.as_completed(future_to_name):
                 name = future_to_name[future]
                 try:
                     results[name] = future.result()
-                    self.logger.info(f"Completed: {name}")
+                    self.logger.debug(f"Completed: {name}")
                 except (OSError, FileNotFoundError, KeyError, ValueError,
                         TypeError, RuntimeError, ImportError,
                         AttributeError, IndexError) as exc:
                     results[name] = exc
                     self.logger.warning(f"Failed: {name}: {exc}")
 
+        self._log_task_summary(desc, results)
         return results
+
+    def _log_task_summary(self, desc: str, results: Dict[str, Any]) -> None:
+        """Log a one-line INFO summary of a task batch (failures already warned)."""
+        n_failed = sum(1 for value in results.values() if isinstance(value, Exception))
+        n_ok = len(results) - n_failed
+        if n_failed:
+            self.logger.info(f"{desc}: {n_ok}/{len(results)} tasks succeeded, {n_failed} failed")
+        else:
+            self.logger.info(f"{desc}: all {len(results)} tasks completed")
 
     def acquire_attributes(self):
         """Acquire geospatial attributes including DEM, soil, and land cover data."""
@@ -671,21 +683,9 @@ class AcquisitionService(ConfigurableMixin):
         gistool_runner.execute_gistool_command(gistool_command)
 
     def _expected_forcing_times(self, dataset: str) -> Optional[pd.DatetimeIndex]:
-        resolution_hours = {
-            "CARRA": 1,
-            "CERRA": 3,
-        }
-        dataset_key = dataset.upper()
-        if dataset_key not in resolution_hours:
-            return None
-
-        start = pd.to_datetime(self._get_config_value(lambda: self.config.domain.time_start, dict_key='EXPERIMENT_TIME_START'))
-        end = pd.to_datetime(self._get_config_value(lambda: self.config.domain.time_end, dict_key='EXPERIMENT_TIME_END'))
-        if pd.isna(start) or pd.isna(end) or end < start:
-            return None
-
-        freq = f"{resolution_hours[dataset_key]}h"
-        return pd.date_range(start, end, freq=freq)
+        start = self._get_config_value(lambda: self.config.domain.time_start, dict_key='EXPERIMENT_TIME_START')
+        end = self._get_config_value(lambda: self.config.domain.time_end, dict_key='EXPERIMENT_TIME_END')
+        return expected_forcing_times(dataset, start, end)
 
     def _cached_forcing_has_expected_times(
         self, cached_file: Path, expected_times: pd.DatetimeIndex
@@ -713,15 +713,12 @@ class AcquisitionService(ConfigurableMixin):
         """
         time_start = self._get_config_value(lambda: self.config.domain.time_start)
         time_end = self._get_config_value(lambda: self.config.domain.time_end)
-        window = (str(time_start), str(time_end)) if time_start and time_end else None
-
         dataset_vars_key = f"{forcing_dataset.upper()}_VARS"
         variables = self._get_config_value(lambda: None, default=None, dict_key=dataset_vars_key)
+        defaults = None
         if variables is None:
-            variables = self._get_config_value(
-                lambda: self.config.forcing.variables, dict_key='FORCING_VARIABLES')
-        variables = frozenset(variables) if isinstance(variables, list) and variables else None
-        return window, variables
+            defaults = self._get_config_value(lambda: self.config.forcing.variables, dict_key='FORCING_VARIABLES')
+        return forcing_request_facts(time_start, time_end, variables, defaults)
 
     def _maybe_select_protocol_backend(self, forcing_dataset: str):
         """Consult the AcquisitionBackend selector — only once it can matter.
@@ -1233,6 +1230,8 @@ class AcquisitionService(ConfigurableMixin):
         'MODIS_ET':   ('mod16_et',   'et',          'modis_et_default_observation_path',    'et_mm_day',         1.0),
         'FLUXNET_ET': ('fluxnet_et', 'et',          'fluxnet_et_default_observation_path',  'et_mm_day',         1.0),
         'USGS_GW':    ('usgs_gw',    'groundwater', 'groundwater_default_observation_path', 'depth',             1.0),
+        'SMAP':       ('smap_sm',    'soil_moisture', 'smap_default_observation_path',        'soil_moisture',     1.0),
+        'CHIRPS':     ('chirps_precip', 'precipitation', 'chirps_default_observation_path',    'precipitation_mm',   1.0),
     }
 
     def _route_community_nonstreamflow_obs(self, additional_obs) -> set:
@@ -1317,6 +1316,22 @@ class AcquisitionService(ConfigurableMixin):
         """
         if provider == 'grace':
             return self._community_grace_connector_config()
+        if provider == 'smap_sm':
+            return self._community_staged_connector_config('soil_moisture', ('smap', 'raw_data'))
+        if provider == 'chirps_precip':
+            return self._community_staged_connector_config('precipitation', ('chirps', 'raw_data'))
+        return {}
+
+    def _community_staged_connector_config(self, family: str, subdirs: tuple) -> Dict[str, Any]:
+        """Return a staged NetCDF for a COS gridded connector, if one exists."""
+        root = resolve_data_subdir(self.project_dir, 'observations') / family
+        candidates = [root]
+        candidates.extend(root / part for part in subdirs)
+        for directory in candidates:
+            if directory.exists():
+                files = sorted(directory.glob('*.nc'))
+                if files:
+                    return {'nc_path': str(files[0])}
         return {}
 
     def _community_station_ids(self, provider: str) -> tuple:

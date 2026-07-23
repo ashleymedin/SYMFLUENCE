@@ -23,11 +23,11 @@ Optional Overrides:
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import random
 import tempfile
 from abc import ABC, abstractmethod
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -45,7 +45,9 @@ from .algorithms import ALGORITHM_REGISTRY, get_algorithm
 from .component_factory import OptimizerComponentFactory
 from .evaluators import PopulationEvaluator, TaskBuilder
 from .final_evaluation import FinalEvaluationOrchestrator, FinalResultsSaver
+from .lifecycle import adjust_end_time_for_forcing, fallback_simulation_dir
 from .metrics_tracker import EvaluationMetricsTracker
+from .run_lock import RunDirectoryLock
 
 if TYPE_CHECKING:
     from symfluence.core.config.models import SymfluenceConfig
@@ -238,7 +240,8 @@ class BaseModelOptimizer(
                 use_parallel=self.use_parallel,
                 num_processes=self.num_processes,
                 model_name=self._get_model_name(),
-                logger=self.logger
+                logger=self.logger,
+                metrics_tracker=self._metrics_tracker
             )
         return require_not_none(self._population_evaluator, "population_evaluator", OptimizationError)
 
@@ -676,25 +679,15 @@ class BaseModelOptimizer(
             forcing_timestep_seconds = self._get_config_value(
                 lambda: self.config.forcing.time_step_size, default=3600
             )
-
-            if forcing_timestep_seconds >= 3600:  # Hourly or coarser
-                # Parse the end time
-                end_time = datetime.strptime(end_time_str, '%Y-%m-%d %H:%M')
-
-                # Calculate the last valid hour based on timestep
-                forcing_timestep_hours = forcing_timestep_seconds / 3600
-                last_hour = int(24 - (24 % forcing_timestep_hours)) - forcing_timestep_hours
-                if last_hour < 0:
-                    last_hour = 0
-
-                # Adjust if needed
-                if end_time.hour > last_hour or (end_time.hour == 23 and last_hour < 23):
-                    end_time = end_time.replace(hour=int(last_hour), minute=0)
-                    adjusted_str = end_time.strftime('%Y-%m-%d %H:%M')
-                    self.logger.info(f"Adjusted end time from {end_time_str} to {adjusted_str} for {forcing_timestep_hours}h forcing")
-                    return adjusted_str
-
-            return end_time_str
+            adjusted = adjust_end_time_for_forcing(end_time_str, forcing_timestep_seconds)
+            if adjusted != end_time_str:
+                self.logger.info(
+                    "Adjusted end time from %s to %s for %sh forcing",
+                    end_time_str,
+                    adjusted,
+                    forcing_timestep_seconds / 3600,
+                )
+            return adjusted
 
         except (ValueError, TypeError) as e:
             self.logger.warning(f"Could not adjust end time: {e}")
@@ -756,7 +749,7 @@ class BaseModelOptimizer(
         try:
             base_dir.mkdir(parents=True, exist_ok=True)
         except PermissionError:
-            fallback = Path(tempfile.gettempdir()) / "symfluence" / self.domain_name / f'run_{algorithm}'
+            fallback = fallback_simulation_dir(tempfile.gettempdir(), self.domain_name, algorithm)
             fallback.mkdir(parents=True, exist_ok=True)
             self.logger.warning(
                 f"Simulations directory not writable: {base_dir}. "
@@ -773,6 +766,16 @@ class BaseModelOptimizer(
         ).lower()
 
         base_dir = self._resolve_sim_base_dir(algorithm)
+
+        # Claim the run directory before staging anything into it. These
+        # directories are keyed by domain + algorithm only, so a second
+        # process would re-stage settings over a live run's files (and its
+        # cleanup() would delete them) — see issue #329.
+        self._run_lock = RunDirectoryLock(
+            base_dir, self.experiment_id, self.logger, model=self._get_model_name()
+        )
+        if self._run_lock.acquire():
+            atexit.register(self._run_lock.release)
 
         self.parallel_dirs = self.setup_parallel_processing(
             base_dir,
@@ -798,14 +801,17 @@ class BaseModelOptimizer(
         secondary_label: Optional[str] = None,
         n_improved: Optional[int] = None,
         population_size: Optional[int] = None,
-        crash_stats: Optional[Dict[str, Any]] = None
+        crash_stats: Optional[Dict[str, Any]] = None,
+        unit: str = 'evals',
+        total: Optional[int] = None,
+        force: bool = False
     ) -> None:
         """Log optimization progress. Delegates to EvaluationMetricsTracker."""
         self._metrics_tracker.log_iteration_progress(
             algorithm_name, iteration, best_score,
             secondary_score=secondary_score, secondary_label=secondary_label,
             n_improved=n_improved, population_size=population_size,
-            crash_stats=crash_stats
+            crash_stats=crash_stats, unit=unit, total=total, force=force
         )
 
     def log_initial_population(
@@ -868,9 +874,14 @@ class BaseModelOptimizer(
 
         # Compute scale factors for gradient chain rule
         # d(loss)/d(x_norm) = d(loss)/d(x_phys) * d(x_phys)/d(x_norm)
-        # where d(x_phys)/d(x_norm) = (upper - lower) for linear scaling
+        # where d(x_phys)/d(x_norm) = (upper - lower) for linear scaling.
+        # A parameter present in all_param_names but absent from bounds (no
+        # calibration range, e.g. SAC-SMA's PXADJ) is held fixed: denormalize()
+        # already skips it, so its scale factor is 0.0 — the chain rule then
+        # zeroes its normalized gradient and the optimiser never moves it,
+        # matching the gradient-free path that logs "No bounds, skipping".
         scale_factors = np.array([
-            bounds[name]['max'] - bounds[name]['min']
+            (bounds[name]['max'] - bounds[name]['min']) if name in bounds else 0.0
             for name in param_names
         ])
 
@@ -898,8 +909,12 @@ class BaseModelOptimizer(
                     f"Check {self.worker.__class__.__name__}.evaluate_with_gradient() implementation."
                 )
 
-            # Convert gradient dict to array (same order as param_names)
-            grad_physical = np.array([grad_dict[name] for name in param_names])
+            # Convert gradient dict to array (same order as param_names).
+            # Boundless params were skipped by denormalize_parameters, so the
+            # worker never saw them and grad_dict omits them; default to 0.0 so
+            # the array stays aligned with param_names. Their scale factor is
+            # also 0.0, so the normalized gradient is 0 and they stay fixed.
+            grad_physical = np.array([grad_dict.get(name, 0.0) for name in param_names])
 
             # Transform gradient from physical to normalized space via chain rule
             grad_normalized = grad_physical * scale_factors
@@ -1096,12 +1111,14 @@ class BaseModelOptimizer(
         def update_best(score, params, iteration):
             self.update_best(score, params, iteration)
 
-        def log_progress(alg_name, iteration, best_score, n_improved=None, pop_size=None, secondary_score=None, secondary_label=None):
+        def log_progress(alg_name, iteration, best_score, n_improved=None, pop_size=None,
+                         secondary_score=None, secondary_label=None, unit='evals',
+                         total=None, force=False):
             self.log_iteration_progress(
                 alg_name, iteration, best_score,
                 secondary_score=secondary_score, secondary_label=secondary_label,
                 n_improved=n_improved, population_size=pop_size,
-                crash_stats=self.get_crash_stats()
+                unit=unit, total=total, force=force
             )
 
         callbacks = {
@@ -1145,8 +1162,14 @@ class BaseModelOptimizer(
         # Build callbacks and kwargs for the algorithm
         callbacks, kwargs = self._build_algorithm_callbacks(algorithm.name)
 
-        # Seed optimization using INITIAL_GUESS, previous best parameters, then defaults
-        skip_warm_start = self._get_config_value(lambda: None, default=False, dict_key='SKIP_WARM_START')
+        # Seed optimization using INITIAL_GUESS, previous best parameters, then defaults.
+        # Warm-starting from previous runs is opt-in (SKIP_WARM_START defaults to true):
+        # it seeds the search from whatever experiments happen to exist in the domain's
+        # optimization directory, which makes results depend on machine history.
+        skip_warm_start = self._get_config_value(
+            lambda: self.config.optimization.skip_warm_start,
+            default=True, dict_key='SKIP_WARM_START'
+        )
         initial_params_dict = self._get_config_initial_guess()
         try:
             if initial_params_dict:
@@ -1155,8 +1178,8 @@ class BaseModelOptimizer(
                 )
             elif skip_warm_start:
                 self.logger.info(
-                    "SKIP_WARM_START is set — skipping warm-start from previous runs. "
-                    "Optimization will start from model default initial parameters."
+                    "Warm-start disabled (default) — starting from model default initial "
+                    "parameters. Set SKIP_WARM_START: false to seed from previous runs."
                 )
                 initial_params_dict = self.param_manager.get_initial_parameters()
             else:
@@ -1224,6 +1247,19 @@ class BaseModelOptimizer(
                 )
 
             kwargs['gradient_mode'] = gradient_mode
+
+        # Apply runtime overrides set by the convenience methods (run_adam /
+        # run_lbfgs). These map algorithm-specific keys onto the generic
+        # 'steps'/'lr' kwargs the algorithms consume. Only one gradient
+        # algorithm runs per call, so there is no key collision in practice.
+        override_map = {
+            'ADAM_STEPS': 'steps', 'LBFGS_STEPS': 'steps',
+            'ADAM_LR': 'lr', 'LBFGS_LR': 'lr',
+        }
+        for override_key, kwarg_name in override_map.items():
+            value = self._runtime_overrides.get(override_key)
+            if value is not None:
+                kwargs[kwarg_name] = value
 
         # Run the algorithm
         result = algorithm.optimize(
@@ -1319,36 +1355,44 @@ class BaseModelOptimizer(
         """Run Approximate Bayesian Computation (ABC-SMC) for likelihood-free inference."""
         return self.run_optimization('abc')
 
-    def run_adam(self, steps: int = 100, lr: float = 0.01) -> Path:
+    def run_adam(self, steps: Optional[int] = None, lr: Optional[float] = None) -> Path:
         """
         Run Adam gradient-based optimization.
 
         Args:
-            steps: Number of optimization steps (passed via config ADAM_STEPS)
-            lr: Learning rate (passed via config ADAM_LR)
+            steps: Number of optimization steps. If None, resolved from config
+                   (ADAM_STEPS, then NUMBER_OF_ITERATIONS).
+            lr: Learning rate. If None, resolved from config (ADAM_LR).
 
         Returns:
             Path to results file
         """
-        # Store parameters in runtime overrides for the algorithm to use
-        self._runtime_overrides['ADAM_STEPS'] = steps
-        self._runtime_overrides['ADAM_LR'] = lr
+        # Only override config when an explicit value is supplied, so config
+        # keys (ADAM_STEPS / NUMBER_OF_ITERATIONS / ADAM_LR) still take effect.
+        if steps is not None:
+            self._runtime_overrides['ADAM_STEPS'] = steps
+        if lr is not None:
+            self._runtime_overrides['ADAM_LR'] = lr
         return self.run_optimization('adam')
 
-    def run_lbfgs(self, steps: int = 50, lr: float = 0.1) -> Path:
+    def run_lbfgs(self, steps: Optional[int] = None, lr: Optional[float] = None) -> Path:
         """
         Run L-BFGS gradient-based optimization.
 
         Args:
-            steps: Maximum number of steps (passed via config LBFGS_STEPS)
-            lr: Initial step size (passed via config LBFGS_LR)
+            steps: Maximum number of steps. If None, resolved from config
+                   (LBFGS_STEPS, then NUMBER_OF_ITERATIONS).
+            lr: Initial step size. If None, resolved from config (LBFGS_LR).
 
         Returns:
             Path to results file
         """
-        # Store parameters in runtime overrides for the algorithm to use
-        self._runtime_overrides['LBFGS_STEPS'] = steps
-        self._runtime_overrides['LBFGS_LR'] = lr
+        # Only override config when an explicit value is supplied, so config
+        # keys (LBFGS_STEPS / NUMBER_OF_ITERATIONS / LBFGS_LR) still take effect.
+        if steps is not None:
+            self._runtime_overrides['LBFGS_STEPS'] = steps
+        if lr is not None:
+            self._runtime_overrides['LBFGS_LR'] = lr
         return self.run_optimization('lbfgs')
 
     # =========================================================================
@@ -1491,7 +1535,15 @@ class BaseModelOptimizer(
     # =========================================================================
 
     def cleanup(self) -> None:
-        """Cleanup parallel processing directories and temporary files."""
+        """Cleanup parallel processing directories and temporary files.
+
+        Deleting the per-process directories is skipped unless this instance
+        holds the run lock. The directories are shared by every optimizer for
+        the same domain + algorithm, this method has no in-tree callers, and
+        an external script that merely constructed an optimizer once deleted
+        a live calibration's settings mid-run — every later evaluation failed
+        while the workflow still reported success (issue #329).
+        """
         self._shutdown_mpi_strategy()
 
         # Stage results from local scratch back to permanent storage
@@ -1501,4 +1553,17 @@ class BaseModelOptimizer(
                 self.project_dir = self._original_project_dir
 
         if self.parallel_dirs:
-            self.cleanup_parallel_processing(self.parallel_dirs)
+            lock = getattr(self, '_run_lock', None)
+            if lock is not None and not lock.owned:
+                self.logger.warning(
+                    "Skipping cleanup of %s: this optimizer does not hold the "
+                    "run lock, so another process may be using these "
+                    "directories. Deleting them would corrupt that run.",
+                    self.project_dir / 'simulations',
+                )
+            else:
+                self.cleanup_parallel_processing(self.parallel_dirs)
+
+        lock = getattr(self, '_run_lock', None)
+        if lock is not None:
+            lock.release()

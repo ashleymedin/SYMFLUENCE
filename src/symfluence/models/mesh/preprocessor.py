@@ -259,8 +259,15 @@ class MESHPreProcessor(BaseModelPreProcessor):  # type: ignore[misc]
 
         self.parameter_fixer.fix_hydrology_wf_r2()
         self.parameter_fixer.fix_missing_hydrology_params()
+        # Multi-GRU domains need one hydrology value per GRU; expand after any
+        # RCHARG/FRZTH injection above so the section count stays consistent.
+        self.parameter_fixer.fix_gru_dependent_hydrology_params()
         self.parameter_fixer.fix_class_initial_conditions()
         self.parameter_fixer.fix_class_vegetation_parameters()
+        # Config-driven overrides of regime-determining CLASS/hydrology fields
+        # (applied last so they win over meshflow-derived defaults).
+        self.parameter_fixer.apply_class_field_overrides()
+        self.parameter_fixer.apply_hydrology_field_overrides()
         self.parameter_fixer.fix_reservoir_file()
         self.parameter_fixer.configure_lumped_outputs()
         self.parameter_fixer.create_safe_forcing()
@@ -327,7 +334,7 @@ class MESHPreProcessor(BaseModelPreProcessor):  # type: ignore[misc]
         all_landcover_classes = _get_mesh_config_value('MESH_LANDCOVER_CLASSES', MESHConfigDefaults.LANDCOVER_CLASSES)
         if detected_gru_classes:
             landcover_classes = {k: v for k, v in all_landcover_classes.items() if k in detected_gru_classes}
-            self.logger.info(f"Filtered landcover_classes to detected classes: {list(landcover_classes.keys())}")
+            self.logger.debug(f"Filtered landcover_classes to detected classes: {list(landcover_classes.keys())}")
         else:
             landcover_classes = all_landcover_classes
 
@@ -522,8 +529,15 @@ class MESHPreProcessor(BaseModelPreProcessor):  # type: ignore[misc]
         self.parameter_fixer.fix_run_options_output_dirs()
         self.parameter_fixer.fix_hydrology_wf_r2()
         self.parameter_fixer.fix_missing_hydrology_params()
+        # Multi-GRU domains need one hydrology value per GRU; expand after any
+        # RCHARG/FRZTH injection above so the section count stays consistent.
+        self.parameter_fixer.fix_gru_dependent_hydrology_params()
         self.parameter_fixer.fix_class_initial_conditions()
         self.parameter_fixer.fix_class_vegetation_parameters()
+        # Config-driven overrides of regime-determining CLASS/hydrology fields
+        # (applied last so they win over meshflow-derived defaults).
+        self.parameter_fixer.apply_class_field_overrides()
+        self.parameter_fixer.apply_hydrology_field_overrides()
         # Fix reservoir file after drainage database is finalized
         self.parameter_fixer.fix_reservoir_file()
         # Configure output for lumped mode calibration
@@ -545,6 +559,19 @@ class MESHPreProcessor(BaseModelPreProcessor):  # type: ignore[misc]
         if isinstance(apply_lapse, str):
             apply_lapse = apply_lapse.lower() in ('true', '1', 'yes')
         lapse_rate = float(self._get_config_value(lambda: self.config.forcing.lapse_rate, default=0.0065))
+        # Orographic precipitation gradient (fraction of ref-elevation precip per
+        # metre). Default 0.0 = precip replicated unchanged (backwards-compatible).
+        # A positive value corrects reanalysis precip under-catch in steep basins.
+        precip_lapse_rate = float(self._get_config_value(
+            lambda: self.config.forcing.precip_lapse_rate,
+            default=0.0, dict_key='MESH_PRECIP_LAPSE_RATE'
+        ))
+        # Uniform gauge-undercatch correction (default 1.0 = unchanged). Orthogonal
+        # to the orographic gradient above; corrects net reanalysis precip bias.
+        precip_multiplier = float(self._get_config_value(
+            lambda: self.config.forcing.precip_multiplier,
+            default=1.0, dict_key='MESH_PRECIP_MULTIPLIER'
+        ))
 
         # Find elevation band HRU shapefile
         experiment_id = self.experiment_id
@@ -613,9 +640,15 @@ class MESHPreProcessor(BaseModelPreProcessor):  # type: ignore[misc]
 
         # Apply forcing lapsing (only for multi-subbasin approach)
         if apply_lapse:
-            self.forcing_processor.apply_elevation_lapsing(elevation_info, lapse_rate)
+            self.forcing_processor.apply_elevation_lapsing(
+                elevation_info, lapse_rate,
+                precip_lapse_rate=precip_lapse_rate,
+                precip_multiplier=precip_multiplier,
+            )
 
         self.logger.info(
             f"Successfully configured {n_bands} elevation band GRUs for MESH"
             + (f" with temperature lapsing (rate={lapse_rate} K/m)" if apply_lapse else "")
+            + (f" and orographic precip lapsing (rate={precip_lapse_rate:g}/m)"
+               if apply_lapse and precip_lapse_rate != 0.0 else "")
         )

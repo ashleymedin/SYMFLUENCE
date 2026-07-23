@@ -37,6 +37,43 @@ class TestWorkflowRun:
         mock_instance.run_workflow.assert_called_once()
 
     @patch('symfluence.SYMFLUENCE')
+    def test_run_passes_quiet_mode(self, mock_symfluence_class, temp_config_dir):
+        """--quiet is plumbed through to the SYMFLUENCE system."""
+        config_file = temp_config_dir / "config_files" / "config_template.yaml"
+        mock_symfluence_class.return_value = MagicMock()
+
+        args = Namespace(
+            config=str(config_file),
+            debug=False,
+            visualise=False,
+            profile=False,
+            quiet=True,
+        )
+
+        result = WorkflowCommands.run(args)
+
+        assert result == ExitCode.SUCCESS
+        assert mock_symfluence_class.call_args.kwargs['quiet_mode'] is True
+
+    @patch('symfluence.SYMFLUENCE')
+    def test_run_quiet_defaults_false(self, mock_symfluence_class, temp_config_dir):
+        """Without --quiet the system is constructed with quiet_mode=False."""
+        config_file = temp_config_dir / "config_files" / "config_template.yaml"
+        mock_symfluence_class.return_value = MagicMock()
+
+        args = Namespace(
+            config=str(config_file),
+            debug=False,
+            visualise=False,
+            profile=False,
+        )
+
+        result = WorkflowCommands.run(args)
+
+        assert result == ExitCode.SUCCESS
+        assert mock_symfluence_class.call_args.kwargs['quiet_mode'] is False
+
+    @patch('symfluence.SYMFLUENCE')
     def test_run_missing_config(self, mock_symfluence_class):
         """Test workflow run with missing config file."""
         args = Namespace(
@@ -297,7 +334,7 @@ class TestWorkflowClean:
 
         args = Namespace(
             config=str(config_file),
-            level='temp',
+            level='intermediate',
             dry_run=False,
             debug=False
         )
@@ -305,7 +342,23 @@ class TestWorkflowClean:
         result = WorkflowCommands.clean(args)
 
         assert result == ExitCode.SUCCESS
-        mock_instance.clean_workflow_files.assert_called_once_with(level='temp', dry_run=False)
+        mock_instance.clean_workflow_files.assert_called_once_with(level='intermediate', dry_run=False)
+
+    @patch('symfluence.cli.commands.base.BaseCommand.confirm_action', return_value=False)
+    @patch('symfluence.SYMFLUENCE')
+    def test_clean_outputs_requires_confirmation(
+        self, mock_symfluence_class, mock_confirm, temp_config_dir
+    ):
+        config_file = temp_config_dir / "config_files" / "config_template.yaml"
+        args = Namespace(
+            config=str(config_file), level='outputs', dry_run=False, debug=False
+        )
+
+        result = WorkflowCommands.clean(args)
+
+        assert result == ExitCode.SUCCESS
+        mock_confirm.assert_called_once()
+        mock_symfluence_class.assert_not_called()
 
     @patch('symfluence.SYMFLUENCE')
     def test_clean_without_method(self, mock_symfluence_class, temp_config_dir):
@@ -338,7 +391,7 @@ class TestWorkflowClean:
 
         args = Namespace(
             config=str(config_file),
-            level='output',
+            level='outputs',
             dry_run=False,
             debug=False
         )

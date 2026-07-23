@@ -29,6 +29,9 @@ from ..base import BaseAcquisitionHandler
 from ..mixins import ChunkedDownloadMixin, RetryMixin, SpatialSubsetMixin
 from .era5_processing import era5_to_summa_schema
 
+# ERA5 reanalysis single-levels are served on a 0.25-deg regular lat/lon grid.
+ERA5_GRID_RESOLUTION_DEG = 0.25
+
 
 @R.acquisition_handlers.add('ERA5_CDS')
 class ERA5CDSAcquirer(BaseAcquisitionHandler, RetryMixin, ChunkedDownloadMixin, SpatialSubsetMixin):
@@ -80,7 +83,36 @@ class ERA5CDSAcquirer(BaseAcquisitionHandler, RetryMixin, ChunkedDownloadMixin, 
     def _download_month_chunk(self, year_month: tuple) -> Optional[Path]:
         """Download a single month chunk (called by download_chunks_parallel)."""
         year, month = year_month
+        cached = self._cached_month_chunk(year, month, self._output_dir)
+        if cached is not None:
+            return cached
         return self._download_and_process_month(year, month, self._output_dir)
+
+    def _cached_month_chunk(self, year: int, month: int, output_dir: Path) -> Optional[Path]:
+        """Return an already-downloaded month chunk, or None to fetch it.
+
+        A CDS request spends most of its wall-clock queued server-side (an hour
+        is not unusual), so re-requesting months that are already on disk makes
+        any interruption cost the whole multi-hour download. The ARCO pathway
+        already skips chunks it has; mirror that here, including its validity
+        check, so a partially-completed CDS download resumes instead of
+        restarting from the first month.
+        """
+        chunk_file = output_dir / (
+            f"{self.domain_name}_era5_cds_processed_{year}{month:02d}_temp.nc"
+        )
+        if not chunk_file.exists():
+            return None
+        try:
+            with xr.open_dataset(chunk_file) as existing:
+                if 'time' in existing.dims and existing.sizes['time'] > 0:
+                    self.logger.debug(
+                        f"ERA5 CDS chunk {chunk_file.name} already downloaded, skipping")
+                    return chunk_file
+        except (OSError, ValueError, KeyError):
+            self.logger.debug(
+                f"Existing chunk {chunk_file.name} is unreadable, re-downloading")
+        return None
 
     def _download_and_process_month(self, year: int, month: int, output_dir: Path) -> Path:
         """Download and process a single month of ERA5 data (executed in thread)."""
@@ -114,8 +146,10 @@ class ERA5CDSAcquirer(BaseAcquisitionHandler, RetryMixin, ChunkedDownloadMixin, 
         days = sorted(list(set([f"{d.day:02d}" for d in dates])))
         times = sorted(list(set([f"{d.hour:02d}:00" for d in dates])))
 
-        # Bounding box for CDS using mixin method
-        area = self.bbox_to_cds_area()
+        # Bounding box for CDS using mixin method. Snap to ERA5's 0.25-deg
+        # grid so point/sub-cell domains still enclose at least one node —
+        # a raw sub-cell rectangle makes MARS reject the crop.
+        area = self.bbox_to_cds_area(snap_resolution=ERA5_GRID_RESOLUTION_DEG)
 
         # Temp files for this month (analysis + forecast, like CARRA/CERRA)
         analysis_file = output_dir / f"{self.domain_name}_era5_analysis_{year}{month:02d}_temp.nc"
@@ -162,7 +196,7 @@ class ERA5CDSAcquirer(BaseAcquisitionHandler, RetryMixin, ChunkedDownloadMixin, 
             }
 
             # Download both products using mixin's retry logic
-            self.logger.info(f"Downloading ERA5 analysis data for {year}-{month:02d}...")
+            self.logger.debug(f"Downloading ERA5 analysis data for {year}-{month:02d}")
             self.execute_with_retry(
                 lambda: c.retrieve('reanalysis-era5-single-levels', analysis_request, str(analysis_file)),
                 max_retries=3,
@@ -170,7 +204,7 @@ class ERA5CDSAcquirer(BaseAcquisitionHandler, RetryMixin, ChunkedDownloadMixin, 
                 retry_condition=self.is_retryable_cds_error
             )
 
-            self.logger.info(f"Downloading ERA5 forecast data for {year}-{month:02d}...")
+            self.logger.debug(f"Downloading ERA5 forecast data for {year}-{month:02d}")
             self.execute_with_retry(
                 lambda: c.retrieve('reanalysis-era5-single-levels', forecast_request, str(forecast_file)),
                 max_retries=3,
@@ -186,7 +220,7 @@ class ERA5CDSAcquirer(BaseAcquisitionHandler, RetryMixin, ChunkedDownloadMixin, 
             chunk_file = output_dir / f"{self.domain_name}_era5_cds_processed_{year}{month:02d}_temp.nc"
             _safe_to_netcdf(ds_chunk, chunk_file, logger=self.logger)
 
-            self.logger.info(f"✓ Processed ERA5 chunk for {year}-{month:02d}")
+            self.logger.debug(f"Processed ERA5 chunk for {year}-{month:02d}")
             return chunk_file
 
         finally:
@@ -221,19 +255,19 @@ class ERA5CDSAcquirer(BaseAcquisitionHandler, RetryMixin, ChunkedDownloadMixin, 
 
             # Handle ensemble members if present (forecast file)
             if 'number' in dsf.dims:
-                self.logger.info("Ensemble data detected. Selecting first member.")
+                self.logger.debug("Ensemble data detected. Selecting first member.")
                 dsf = dsf.isel(number=0)
 
             # Sort by time
             dsa = dsa.sortby('time')
             dsf = dsf.sortby('time')
 
-            self.logger.info(f"Analysis variables: {list(dsa.data_vars)}")
-            self.logger.info(f"Forecast variables: {list(dsf.data_vars)}")
+            self.logger.debug(f"Analysis variables: {list(dsa.data_vars)}")
+            self.logger.debug(f"Forecast variables: {list(dsf.data_vars)}")
 
             # Merge analysis and forecast (inner join on time)
             dsm = xr.merge([dsa, dsf], join='inner')
-            self.logger.info(f"Merged variables: {list(dsm.data_vars)}")
+            self.logger.debug(f"Merged variables: {list(dsm.data_vars)}")
 
             # Now process variables (rename, convert units, derive, etc.)
             dsm = era5_to_summa_schema(dsm, source='cds', logger=self.logger)

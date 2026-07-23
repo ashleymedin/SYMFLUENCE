@@ -27,6 +27,7 @@ import xarray as xr
 
 from symfluence.core.constants import PhysicalConstants
 from symfluence.core.exceptions import FileOperationError, ModelExecutionError
+from symfluence.models.summa.forcing_time import infer_forcing_step_from_filenames
 
 from ..utilities import BaseForcingProcessor
 
@@ -138,6 +139,19 @@ class SummaForcingProcessor(BaseForcingProcessor):
         """
         self.logger.info("Starting memory-efficient temperature lapse rate and data step application")
 
+        # Names written by this run. Stale leftovers are removed only at the
+        # end, against this set, so the leap-day files added after the main
+        # batches are not mistaken for stale.
+        self._written_forcing_names: set = set()
+
+        if self._forcing_outputs_are_current():
+            self.logger.info(
+                "SUMMA forcing files are already current — skipping regeneration. "
+                "This directory is shared by every experiment on the domain, so "
+                "a redundant rewrite would break any run reading it."
+            )
+            return
+
         # Check if model-agnostic elevation correction already applied
         already_corrected = self._check_already_corrected()
 
@@ -167,6 +181,10 @@ class SummaForcingProcessor(BaseForcingProcessor):
 
         if self._source_calendar in ('noleap', '365_day'):
             self._insert_noleap_leap_days()
+
+        # Only now that every replacement is in place is it safe to drop
+        # leftovers — deleting first is what opened the gap readers died in.
+        self._remove_stale_forcing_files(self._written_forcing_names)
 
         self.logger.info(
             f"Completed processing of {len(forcing_files)} "
@@ -207,19 +225,19 @@ class SummaForcingProcessor(BaseForcingProcessor):
             )
             if (self.intersect_path / f"{legacy_base}.csv").exists():
                 intersect_csv = self.intersect_path / f"{legacy_base}.csv"
-                self.logger.info(f"Using legacy intersection CSV: {intersect_csv.name}")
+                self.logger.debug(f"Using legacy intersection CSV: {intersect_csv.name}")
             elif (self.intersect_path / f"{legacy_base}.shp").exists():
                 intersect_shp = self.intersect_path / f"{legacy_base}.shp"
-                self.logger.info(f"Using legacy intersection SHP: {intersect_shp.name}")
+                self.logger.debug(f"Using legacy intersection SHP: {intersect_shp.name}")
 
         # Convert shapefile → CSV if needed
         if not intersect_csv.exists() and intersect_shp.exists():
-            self.logger.info(f"Converting {intersect_shp} to CSV format")
+            self.logger.debug(f"Converting {intersect_shp} to CSV format")
             try:
                 shp_df = gpd.read_file(intersect_shp)
                 shp_df['weight'] = shp_df['AP1']
                 shp_df.to_csv(intersect_csv, index=False)
-                self.logger.info(f"Successfully created {intersect_csv}")
+                self.logger.debug(f"Successfully created {intersect_csv}")
                 del shp_df
                 gc.collect()
             except Exception as e:  # noqa: BLE001 — wrap-and-raise to domain error
@@ -230,7 +248,7 @@ class SummaForcingProcessor(BaseForcingProcessor):
             case_name = f"{self.domain_name}_{self._get_config_value(lambda: self.config.forcing.dataset)}"
             remap_file = self.intersect_path / f"{case_name}_{hru_id_field}_remapping.csv"
             if remap_file.exists():
-                self.logger.info(f"Intersected shapefile missing, falling back to remapping weights: {remap_file.name}")
+                self.logger.debug(f"Intersected shapefile missing, falling back to remapping weights: {remap_file.name}")
                 intersect_csv = remap_file
             else:
                 self.logger.error(f"Missing both intersected shapefile and remapping weights in {self.intersect_path}")
@@ -242,7 +260,7 @@ class SummaForcingProcessor(BaseForcingProcessor):
 
     def _load_topology_data(self, intersect_csv):
         """Load intersection CSV with truncated-column handling."""
-        self.logger.info("Loading topology data...")
+        self.logger.debug("Loading topology data")
         try:
             sample_df = pd.read_csv(intersect_csv, nrows=0)
             dtype_dict = {}
@@ -264,7 +282,7 @@ class SummaForcingProcessor(BaseForcingProcessor):
                 hru_col_truncated = hru_col[:10]
                 if hru_col_truncated in sample_df.columns:
                     dtype_dict[hru_col_truncated] = 'int32'
-                    self.logger.info(f"Using truncated column name: {hru_col_truncated} (original: {hru_col})")
+                    self.logger.debug(f"Using truncated column name: {hru_col_truncated} (original: {hru_col})")
                 else:
                     self.logger.warning(f"Column {hru_col} not found in CSV, will try to load without dtype")
             else:
@@ -293,12 +311,12 @@ class SummaForcingProcessor(BaseForcingProcessor):
                 if trunc in topo_data.columns:
                     rename_dict[trunc] = f'S_1_{self.gruId}'
             if rename_dict:
-                self.logger.info(f"Renaming truncated columns: {rename_dict}")
+                self.logger.debug(f"Renaming truncated columns: {rename_dict}")
                 topo_data.rename(columns=rename_dict, inplace=True)
 
-            self.logger.info(f"Loaded topology data: {len(topo_data)} rows, {topo_data.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
-            self.logger.info(f"Columns after rename: {topo_data.columns.tolist()[:15]}")
-            self.logger.info(f"Sample HRU IDs: {topo_data[f'S_1_{self.hruId}'].head(5).tolist()}")
+            self.logger.debug(f"Loaded topology data: {len(topo_data)} rows, {topo_data.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
+            self.logger.debug(f"Columns after rename: {topo_data.columns.tolist()[:15]}")
+            self.logger.debug(f"Sample HRU IDs: {topo_data[f'S_1_{self.hruId}'].head(5).tolist()}")
             return topo_data
         except Exception as e:  # noqa: BLE001 — wrap-and-raise to domain error
             self.logger.error(f"Error loading topology data: {str(e)}")
@@ -317,15 +335,73 @@ class SummaForcingProcessor(BaseForcingProcessor):
         return forcing_files
 
     def _prepare_forcing_output_dir(self):
-        """Create output directory and remove stale forcing files."""
+        """Create the output directory.
+
+        Deliberately does NOT delete the existing forcing files. This directory
+        is shared by every experiment on the domain
+        (``{project_dir}/data/forcing/SUMMA_input``, no experiment_id in the
+        path), so deleting up front and rewriting one file at a time opened a
+        window in which the forcing simply did not exist. A SUMMA run reading
+        it during that window dies with a bare ``STOP 1`` and no diagnostic
+        output whatsoever — reproduced by timing: a read at 13:43:54 inside a
+        13:42:21-13:44:34 rewrite window failed, identical reads after it
+        succeeded.
+
+        Files are now replaced atomically as each is regenerated, and anything
+        genuinely stale is removed afterwards by
+        :meth:`_remove_stale_forcing_files`.
+        """
         self.forcing_summa_path.mkdir(parents=True, exist_ok=True)
-        prefix = f"{self.domain_name}_{self.forcing_dataset}".lower()
+
+    def _stale_forcing_prefix(self) -> str:
+        return f"{self.domain_name}_{self.forcing_dataset}".lower()
+
+    def _forcing_outputs_are_current(self) -> bool:
+        """True when every source file already has a newer SUMMA output.
+
+        Regeneration is the hazard, not the cost: this directory is shared by
+        all experiments on the domain, so a run that rewrites forcing another
+        run is reading kills it. Skipping when nothing changed removes almost
+        every collision, since the repeat work was redundant anyway.
+
+        Conservative by construction — any missing output, or any source
+        touched more recently than its output, forces a full regeneration.
+        """
+        try:
+            sources = [
+                f for f in os.listdir(self.forcing_basin_path)
+                if f.startswith(f"{self.domain_name}") and f.endswith('.nc')
+            ]
+        except OSError:
+            return False
+        if not sources:
+            return False
+
+        for name in sources:
+            out = self.forcing_summa_path / name
+            src = self.forcing_basin_path / name
+            try:
+                if not out.exists() or out.stat().st_mtime < src.stat().st_mtime:
+                    return False
+            except OSError:
+                return False
+        return True
+
+    def _remove_stale_forcing_files(self, keep: set) -> None:
+        """Drop leftover outputs that this run did not regenerate.
+
+        Runs after the new files are in place, so a concurrent reader never
+        sees a gap where its forcing used to be.
+        """
+        prefix = self._stale_forcing_prefix()
         for existing_file in self.forcing_summa_path.glob("*.nc"):
             if not existing_file.name.lower().startswith(prefix):
                 continue
+            if existing_file.name in keep:
+                continue
             try:
                 existing_file.unlink()
-                self.logger.info(f"Removed stale SUMMA forcing file {existing_file}")
+                self.logger.debug(f"Removed stale SUMMA forcing file {existing_file}")
             except OSError as exc:
                 self.logger.warning(f"Failed to remove stale SUMMA forcing file {existing_file}: {exc}")
 
@@ -380,9 +456,34 @@ class SummaForcingProcessor(BaseForcingProcessor):
         if catchment_elev not in topo_data.columns and 'S_1_elev_mean' in topo_data.columns:
             catchment_elev = 'S_1_elev_mean'
 
-        self.logger.info(f"Pre-calculating lapse rate corrections (Rate: {lapse_rate_km:.2f} K/km)...")
+        self.logger.debug(f"Pre-calculating lapse rate corrections (Rate: {lapse_rate_km:.2f} K/km)")
+
+        # Guard the forcing-grid elevation before it enters the lapse term. A forcing
+        # cell whose elevation failed to populate lands as 0.0 (unset attribute) or
+        # -9999 (elevation-calculator nodata) in the intersection. Trusting it would
+        # apply lapse_rate * (0 - S_1_elev) of spurious cooling -- roughly -9 K for a
+        # 1400 m site -- freezing the forcing and corrupting snow/SWE. Fall back to the
+        # catchment elevation (zero lapse) for such cells so the correction is a no-op
+        # rather than a large fabricated bias.
+        fe = topo_data[forcing_elev]
+        ce = topo_data[catchment_elev]
+        invalid_forcing_elev = (
+            ~np.isfinite(fe)
+            | (fe == 0.0)
+            | (fe <= -100.0)
+            | ((fe - ce).abs() > 4000.0)
+        )
+        n_invalid = int(invalid_forcing_elev.sum())
+        if n_invalid:
+            self.logger.warning(
+                f"{n_invalid}/{len(topo_data)} forcing cell(s) have an invalid "
+                f"elevation (0, nodata, or implausible vs the catchment); applying "
+                f"zero lapse correction for those cells instead of a spurious bias."
+            )
+            fe = fe.where(~invalid_forcing_elev, ce)
+
         topo_data['lapse_values'] = (
-            topo_data[weights] * lapse_rate * (topo_data[forcing_elev] - topo_data[catchment_elev])
+            topo_data[weights] * lapse_rate * (fe - ce)
         )
 
         if gru_id == hru_id:
@@ -391,15 +492,15 @@ class SummaForcingProcessor(BaseForcingProcessor):
             lapse_values = topo_data.groupby([gru_id, hru_id])['lapse_values'].sum().reset_index()
 
         lapse_values = lapse_values.sort_values(hru_id).set_index(hru_id)
-        self.logger.info(f"Prepared lapse corrections for {len(lapse_values)} HRUs")
-        self.logger.info(f"Lapse values HRU IDs: {lapse_values.index.tolist()}")
+        self.logger.debug(f"Prepared lapse corrections for {len(lapse_values)} HRUs")
+        self.logger.debug(f"Lapse values HRU count: {len(lapse_values)}")
         return lapse_values, lapse_rate
 
     def _process_forcing_batches(self, forcing_files, lapse_values, lapse_rate):
         """Process forcing files in memory-efficient batches."""
         total_files = len(forcing_files)
         batch_size = self._determine_batch_size(total_files)
-        self.logger.info(f"Processing files in batches of {batch_size}")
+        self.logger.debug(f"Processing files in batches of {batch_size}")
 
         for batch_start in range(0, total_files, batch_size):
             batch_end = min(batch_start + batch_size, total_files)
@@ -497,7 +598,7 @@ class SummaForcingProcessor(BaseForcingProcessor):
                 # Handle cases where intermediate remapping (e.g. EASYMORE)
                 # might have converted to m/s but SUMMA expects kg m-2 s-1 (mm/s)
                 if dat.precipitation_flux.attrs.get('units') == 'm s-1' and float(dat.precipitation_flux.mean()) < 1e-6:
-                    self.logger.info(f"File {file}: Converting pptrate from m s-1 to kg m-2 s-1 (x1000)")
+                    self.logger.debug(f"File {file}: Converting pptrate from m s-1 to kg m-2 s-1 (x1000)")
                     dat['precipitation_flux'] = dat['precipitation_flux'] * 1000.0
 
                 dat.precipitation_flux.attrs.update({
@@ -565,11 +666,31 @@ class SummaForcingProcessor(BaseForcingProcessor):
                     summa_renames.get(k, k): v for k, v in encoding.items()
                 }
 
-            dat.to_netcdf(output_path, encoding=encoding)
+            # Write beside the target and swap it in atomically. A reader on
+            # this shared directory must never observe a partially written
+            # forcing file (SUMMA fails on one with a bare STOP 1 and no
+            # output at all). os.replace is atomic, so a reader sees either
+            # the old file or the new one.
+            tmp_path = output_path.with_name(output_path.name + '.tmp')
+            dat.to_netcdf(tmp_path, encoding=encoding)
 
             # Explicit cleanup
             dat.close()
             del dat
+
+            try:
+                os.replace(tmp_path, output_path)
+                self._written_forcing_names.add(output_path.name)
+            except OSError as exc:
+                # On Windows the swap fails while another process holds the
+                # target open. Say so loudly: silently leaving the old forcing
+                # in place would feed the next run stale data.
+                tmp_path.unlink(missing_ok=True)
+                raise FileOperationError(
+                    f"Could not replace forcing file {output_path.name}: {exc}. "
+                    f"Another process is likely reading this domain's forcing "
+                    f"while it is being regenerated."
+                ) from exc
 
     def _insert_noleap_leap_days(self):
         """
@@ -772,8 +893,11 @@ class SummaForcingProcessor(BaseForcingProcessor):
 
             leap_ds.to_netcdf(out_path, encoding=encoding)
             leap_ds.close()
+            # Claim it so the stale sweep does not treat a file this run just
+            # created as a leftover.
+            getattr(self, '_written_forcing_names', set()).add(out_path.name)
             inserted += 1
-            self.logger.info("Inserted leap-day forcing file: %s", out_name)
+            self.logger.debug("Inserted leap-day forcing file: %s", out_name)
 
         self.logger.info("Leap-day insertion complete: inserted %d leap-day file(s)", inserted)
 
@@ -901,7 +1025,7 @@ class SummaForcingProcessor(BaseForcingProcessor):
                         f"File {filename}: Expected step: {expected_step}s, Actual median: {actual_median_step:.0f}s"
                     )
                     if actual_median_step > 0 and abs(actual_median_step - expected_step) > expected_step * 0.01:
-                        self.logger.info(
+                        self.logger.warning(
                             f"File {filename}: Updating data_step from {self.data_step}s to {actual_median_step}s "
                             f"based on actual forcing timestep"
                         )
@@ -1102,7 +1226,7 @@ class SummaForcingProcessor(BaseForcingProcessor):
                 rename_dict[old_name] = new_name
 
         if rename_dict:
-            self.logger.info(f"File {filename}: Renaming variables: {rename_dict}")
+            self.logger.debug(f"File {filename}: Renaming variables: {rename_dict}")
             dataset = dataset.rename(rename_dict)
 
         return dataset
@@ -1252,7 +1376,7 @@ class SummaForcingProcessor(BaseForcingProcessor):
             for var in missing_vars[:]:  # Use slice to allow modification during iteration
                 if var == 'specific_humidity' and 'relative_humidity' in dataset and 'air_temperature' in dataset and 'surface_air_pressure' in dataset:
                     # Compute specific humidity from relative humidity
-                    self.logger.info(f"File {filename}: Computing spechum from relhum, airtemp, airpres")
+                    self.logger.debug(f"File {filename}: Computing spechum from relhum, airtemp, airpres")
                     dataset['specific_humidity'] = self._compute_specific_humidity(
                         dataset['air_temperature'],
                         dataset['relative_humidity'],
@@ -1263,7 +1387,7 @@ class SummaForcingProcessor(BaseForcingProcessor):
 
                 elif var == 'wind_speed' and 'eastward_wind' in dataset and 'northward_wind' in dataset:
                     # Compute wind speed from components
-                    self.logger.info(f"File {filename}: Computing windspd from windspd_u and windspd_v")
+                    self.logger.debug(f"File {filename}: Computing windspd from windspd_u and windspd_v")
                     dataset['wind_speed'] = self._compute_wind_speed(
                         dataset['eastward_wind'],
                         dataset['northward_wind']
@@ -1451,28 +1575,7 @@ class SummaForcingProcessor(BaseForcingProcessor):
         self.logger.debug(f"File {filename}: Passed final validation for SUMMA compatibility")
 
     def _infer_forcing_step_from_filenames(self, forcing_files: List[str]) -> int | None:
-        forcing_times = []
-        for forcing_file in forcing_files:
-            stem = Path(forcing_file).stem
-            time_token = stem.split("_")[-1]
-            try:
-                forcing_times.append(datetime.strptime(time_token, "%Y-%m-%d-%H-%M-%S"))
-            except ValueError:
-                continue
-
-        if len(forcing_times) < 2:
-            return None
-
-        forcing_times.sort()
-        diffs = [
-            (forcing_times[idx] - forcing_times[idx - 1]).total_seconds()
-            for idx in range(1, len(forcing_times))
-            if forcing_times[idx] > forcing_times[idx - 1]
-        ]
-        if not diffs:
-            return None
-
-        return int(np.median(diffs))
+        return infer_forcing_step_from_filenames(forcing_files)
 
     def _determine_batch_size(self, total_files: int) -> int:
         """
@@ -1531,7 +1634,7 @@ class SummaForcingProcessor(BaseForcingProcessor):
             FileNotFoundError: If no forcing files are found.
             IOError: If there are issues writing the file list.
         """
-        self.logger.info("Creating forcing file list")
+        self.logger.debug("Creating forcing file list")
 
         forcing_dataset = self._get_config_value(lambda: self.config.forcing.dataset)
         domain_name = self._get_config_value(lambda: self.config.domain.name)
@@ -1568,7 +1671,7 @@ class SummaForcingProcessor(BaseForcingProcessor):
             )
             prefix = f"{domain_name}_"
 
-        self.logger.info(
+        self.logger.debug(
             "Looking for SUMMA forcing files in %s with prefix '%s' and extension '.nc'",
             forcing_path,
             prefix,
@@ -1619,7 +1722,7 @@ class SummaForcingProcessor(BaseForcingProcessor):
             for fname in forcing_files:
                 fobj.write(f"{fname}\n")
 
-        self.logger.info(
+        self.logger.debug(
             "Forcing file list created at %s with %d files",
             file_list_path,
             len(forcing_files),

@@ -127,12 +127,21 @@ class AdamAlgorithm(OptimizationAlgorithm):
             - best_params: Denormalized best parameters (dictionary)
             - gradient_method: 'native' or 'finite_difference' (which was used)
         """
-        # Adam hyperparameters from config
-        steps = kwargs.get('steps', self._get_config_value(
-            lambda: self.config.optimization.iterations,
-            default=self.max_iterations,
-            dict_key='NUMBER_OF_ITERATIONS'
-        ))
+        # Adam hyperparameters from config. Step-count precedence:
+        # explicit kwarg > ADAM_STEPS (per-algorithm) > NUMBER_OF_ITERATIONS.
+        steps = kwargs.get('steps')
+        if steps is None:
+            steps = self._get_config_value(
+                lambda: self.config.optimization.adam.steps,
+                default=None,
+                dict_key='ADAM_STEPS'
+            )
+        if steps is None:
+            steps = self._get_config_value(
+                lambda: self.config.optimization.iterations,
+                default=self.max_iterations,
+                dict_key='NUMBER_OF_ITERATIONS'
+            )
         lr = kwargs.get('lr', self._get_config_value(
             lambda: self.config.optimization.adam.lr,
             default=AdamDefaults.LR,
@@ -184,19 +193,21 @@ class AdamAlgorithm(OptimizationAlgorithm):
             epsilon=gradient_epsilon
         )
 
-        self.logger.info(f"Starting Adam optimization with {n_params} parameters")
-        self.logger.info(f"  Steps: {steps}, LR: {lr}, Beta1: {beta1}, Beta2: {beta2}")
-        self.logger.info(f"  Gradient method: {gradient_method}")
+        self.logger.info(
+            f"Starting Adam optimization with {n_params} parameters "
+            f"({steps} epochs, gradients: {gradient_method})"
+        )
+        self.logger.debug(f"Adam hyperparameters: lr={lr}, beta1={beta1}, beta2={beta2}, eps={eps}")
         if use_native:
-            self.logger.info("  Using native gradients (~2 evals/step)")
+            self.logger.debug("Using native gradients (~2 evals/step)")
         else:
-            self.logger.info(f"  Using finite differences ({2*n_params + 1} evals/step)")
+            self.logger.debug(f"Using finite differences ({2*n_params + 1} evals/step)")
 
         # Initialize from initial_guess if provided, otherwise midpoint
         initial_guess = kwargs.get('initial_guess')
         if initial_guess is not None and len(initial_guess) == n_params:
             x = np.array(initial_guess, dtype=float)
-            self.logger.info("  Warm-starting from provided initial guess")
+            self.logger.debug("Warm-starting Adam from provided initial guess")
         else:
             x = np.full(n_params, 0.5)
 
@@ -207,6 +218,7 @@ class AdamAlgorithm(OptimizationAlgorithm):
         # Track best
         best_x = x.copy()
         best_fitness = float('-inf')
+        n_improvements = 0
 
         for step in range(steps):
             # Compute gradients using unified gradient function
@@ -215,8 +227,11 @@ class AdamAlgorithm(OptimizationAlgorithm):
             # Check for NaN fitness — skip step entirely
             if np.isnan(fitness):
                 self.logger.warning(f"ADAM step {step}: NaN fitness detected, skipping update")
-                if step % 10 == 0:
-                    log_progress(self.name, step, best_fitness)
+                log_progress(
+                    self.name, step + 1, best_fitness,
+                    n_improved=n_improvements, pop_size=step + 1,
+                    unit='epochs', total=steps
+                )
                 continue
 
             # Clip gradient (handles NaN elements internally)
@@ -226,6 +241,7 @@ class AdamAlgorithm(OptimizationAlgorithm):
             if fitness > best_fitness:
                 best_fitness = fitness
                 best_x = x.copy()
+                n_improvements += 1
 
             # Record iteration with enhanced tracking for response surface analysis
             params_dict = denormalize_params(best_x)
@@ -251,9 +267,12 @@ class AdamAlgorithm(OptimizationAlgorithm):
             # Clip to [0, 1]
             x = np.clip(x, 0, 1)
 
-            # Log progress
-            if step % 10 == 0:
-                log_progress(self.name, step, best_fitness)
+            # Progress line (tracker throttles emission)
+            log_progress(
+                self.name, step + 1, best_fitness,
+                n_improved=n_improvements, pop_size=step + 1,
+                unit='epochs', total=steps
+            )
 
         return {
             'best_solution': best_x,

@@ -37,8 +37,40 @@ def bootstrap() -> None:
     _bootstrap_delineation_aliases(R)
     _bootstrap_bmi_adapters(R)
     _bootstrap_model_aliases(R)
-    _bootstrap_metrics(R)
+    # Deferred: seeding R.metrics imports the evaluation stack (~1 s of
+    # pandas/scipy/geospatial), which most CLI invocations never read.
+    R.metrics.set_seeder(lambda: _bootstrap_metrics(R))
+    # Deferred: delineation strategies self-register via decorators when the
+    # delineation machinery is imported; importing it eagerly costs ~1 s of
+    # raster stack. First strategy lookup triggers the import instead.
+    R.delineation_strategies.set_seeder(_seed_delineation_strategies)
+    # Deferred: evaluators self-register via decorators in
+    # symfluence.evaluation.evaluators, which pulls the observation stack.
+    R.evaluators.set_seeder(_seed_evaluators)
+    # Deferred: the in-tree model optimizers/workers/parameter managers
+    # register when optimization.model_optimizers is imported (~0.6 s).
+    R.optimizers.set_seeder(_seed_model_optimizers)
+    R.workers.set_seeder(_seed_model_optimizers)
+    R.parameter_managers.set_seeder(_seed_model_optimizers)
     _discover_plugins()
+
+
+def _seed_delineation_strategies() -> None:
+    """Import the delineation machinery so its strategy decorators register."""
+    import importlib
+    importlib.import_module("symfluence.geospatial.delineation")
+
+
+def _seed_evaluators() -> None:
+    """Import the evaluators package so its decorators and aliases register."""
+    import importlib
+    importlib.import_module("symfluence.evaluation.evaluators")
+
+
+def _seed_model_optimizers() -> None:
+    """Import the in-tree model optimizers so their decorators register."""
+    import importlib
+    importlib.import_module("symfluence.optimization.model_optimizers")
 
 
 def _bootstrap_delineation_aliases(R: type) -> None:  # noqa: N803
@@ -224,16 +256,37 @@ def _discover_plugins() -> None:
             if ep.value.startswith("symfluence.models."):
                 in_tree_loaded += 1
         except ImportError as exc:
-            # A missing import almost always means an optional dependency isn't
-            # installed (e.g. an MPI/GPU model on a laptop). Keep this quiet —
-            # the same models were debug-logged by the old import loop — so it
-            # doesn't drown the logs on every `import symfluence`.
-            logger.debug(
-                "Plugin %r (%s) not loaded — optional dependency missing: %s",
-                ep.name,
-                ep.value,
-                exc,
-            )
+            missing_module = getattr(exc, "name", None) or ""
+            if (
+                isinstance(exc, ModuleNotFoundError)
+                and missing_module.partition(".")[0] not in ("", "symfluence")
+            ):
+                # A missing *third-party* module almost always means an optional
+                # dependency isn't installed (e.g. an MPI/GPU model on a
+                # laptop). Keep this quiet — the same models were debug-logged
+                # by the old import loop — so it doesn't drown the logs on
+                # every `import symfluence`.
+                logger.debug(
+                    "Plugin %r (%s) not loaded — optional dependency missing: %s",
+                    ep.name,
+                    ep.value,
+                    exc,
+                )
+            else:
+                # Any other ImportError (e.g. "cannot import name ... from
+                # symfluence...") means the installed plugin was built against
+                # a different SYMFLUENCE API. Burying this at DEBUG as an
+                # "optional dependency" silently removes the plugin's models
+                # from the registry, so calibration runs fail later with an
+                # unhelpful "unknown model" error. Warn loudly instead.
+                logger.warning(
+                    "Plugin %r (%s) is incompatible with this SYMFLUENCE "
+                    "version (%s). Its models will be unavailable — upgrade "
+                    "the plugin package to a compatible release.",
+                    ep.name,
+                    ep.value,
+                    exc,
+                )
         except Exception:  # noqa: BLE001 — never let a broken plugin crash the framework
             logger.warning(
                 "Failed to load symfluence plugin %r (%s); skipping.",
